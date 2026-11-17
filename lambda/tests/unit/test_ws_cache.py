@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for shared/ws_cache (fable-scale chunk 03).
 
 Covers:

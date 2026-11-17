@@ -351,8 +351,8 @@ The Azure DevOps Boards integration ingests **work items** (User
 Stories, Bugs, Tasks, Epics, Features) into the platform's knowledge
 base as searchable context — the ADO analog of the Jira integration.
 It's a **separate integration** from Repos with independent OAuth
-consent, an independent workspace-settings tab, an independent
-disconnect flow, and its own license-layer counting bucket
+consent, an independent workspace-settings tab, and an independent
+disconnect flow
 ([ADR-039](../adr/ADR-039-azure-devops-boards-integration.md)).
 
 Boards reuses the Entra ID app you already registered for Repos
@@ -499,8 +499,5 @@ re-uploading unchanged content.
 
 - Architectural decisions for this integration:
   [ADR-036 — Azure DevOps source-code integration](../adr/ADR-036-azure-devops-integration.md)
-- License layer counting (ADO repos count toward customer repo limit;
-  Boards projects count as a separate `azure_devops_boards:` identifier):
-  ADR-019
 - Multi-region active/passive (the integration is duplicated under
   `aws.secondary` so failover preserves access): ADR-022

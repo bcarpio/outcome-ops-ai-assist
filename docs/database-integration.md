@@ -83,10 +83,7 @@ images allow up to 10 GB):
 
 Plus a third zip-based Lambda (`database-scheduler`) for the hourly cron.
 
-1. **Build + push the two container images**. The script also stages the
-   OutcomeOps license validator layer content into the sync image at
-   build time (container-image Lambdas can't attach Lambda layers, so
-   the license code is baked in):
+1. **Build + push the two container images**:
    ```bash
    ENVIRONMENT=prd make build-database-images
    ```
@@ -123,7 +120,6 @@ Settings → Integrations** for workspace admins. Continue to
 - `lambda/db-introspection-requirements.txt` changes (introspection-engine release bump, DB driver bump)
 - Either Lambda's Dockerfile changes
 - The handler Python code changes (rebuild + redeploy to pick up the new code)
-- The OutcomeOps license layer version changes (`outcomeops_license_layer_arn` in tfvars bumps)
 
 See [`docs/deployment-guide.md`](./deployment-guide.md#container-image-updates) for the broader image-update story.
 
@@ -261,9 +257,7 @@ Admin selects schemas -> Save
      |
      v
 database-sync Lambda (also fired hourly by database-scheduler)
-  - license-validate (ADR-019)
   - decrypts credential -> emits DB_CREDENTIAL_USED audit row
-  - check_repo_limit("database:{engine}:{host_hash}")
   - SCOPED introspect: walks only admin-selected schemas; every
     table in those schemas is auto-discovered (no per-table list)
   - STRIPS top_values from YAML in-memory
@@ -422,7 +416,7 @@ but is queryable via `?action=DB_CREDENTIAL_USED` in the audit API.
 |---|---|
 | `sync_id` | Stable id for this sync run; appears in CloudWatch logs and the drift email |
 | `engine` | `postgres` / `mysql` / `mssql` |
-| `host_hash` | First 16 hex chars of SHA-256 over the connection host — used for license-tracking repo identity |
+| `host_hash` | First 16 hex chars of SHA-256 over the connection host — stable per-source identity for the connection |
 | `tables_count` | Number of tables in scope after auto-discovery |
 | `columns_count` | Total column count across all in-scope tables |
 | `top_values_stripped` | Always `true` — the strip ran (defense-in-depth check) |
@@ -459,7 +453,6 @@ specific customer ask we're tracking:
 | **Picker returns HTTP 502 with `{"error": "...", "error_type": "introspection_failed"}`** | Picker hit a real introspection failure (auth, network, malformed config, upstream exception) — distinct from "user genuinely has zero visible schemas." | The `error` field carries the upstream Python exception message verbatim. Most common causes: SSL cert rejection (see [Adding customer trust roots](./database-integration-readonly-user.md#adding-customer-trust-roots-non-rds--on-prem)), revoked DB credential (reconnect with new password), or a recently-changed RO user that lost `SELECT` on `information_schema`. The Lambda log carries the full traceback. |
 | **MySQL: "Access denied for user 'X'@'%' to database 'Y'"** (error code 1044) | User authenticated but has no grants on the named database. Different error from MSSQL — MySQL surfaces this distinctly. | `GRANT SELECT ON <db>.* TO '<user>'@'%';` then re-test. |
 | **`auth_error`** on a connection after some time | DB password rotated, user revoked, or SSL cert changed | Workspace admin disconnects and reconnects with the new creds. (DB-side auth has no refresh-token equivalent — manual rotation is the path.) |
-| **`blocked_license_limit`** status | Hitting the repo-limit for your OutcomeOps tier | Same as any other source — increase your tier or trim connections. Repo identity is `{engine}:{host_hash}` so the same physical DB across multiple workspace connections counts ONCE |
 | **Schema picker is slow / empty** | Large warehouse, slow `INFORMATION_SCHEMA` introspection, or the connection user lacks `SELECT` on the schemas | Confirm the user has the right grants per [`database-integration-readonly-user.md`](./database-integration-readonly-user.md). For very large warehouses (10k+ tables), a DDB-cached schema tree is on the roadmap |
 | **MSSQL columns have `stats: null`** despite sampling=on | The upstream introspection plugin doesn't implement per-column stats for MSSQL. Schema metadata + sample rows still work; aggregate column stats don't. | No customer-side fix — tracked as a v2 follow-up. Postgres + MySQL get full stats; MSSQL gets schema + samples only. |
 | **Connection card returns "Server misconfiguration: schema introspection engine unavailable"** | Container image wasn't built (or not yet pushed) before terraform apply | Run `ENVIRONMENT=prd make build-database-images` then `terraform apply` |
@@ -467,5 +460,4 @@ specific customer ask we're tracking:
 ## Related
 
 - [`docs/azure-ad-m365-integrations.md`](./azure-ad-m365-integrations.md) — M365 source setup (OneDrive, SharePoint, Outlook, Teams, OneNote)
-- ADR-019 — license-layer rollout (database-sync is license-gated like every other sync)
 - ADR-018 — audit logging (every DB integration event emits an audit row)

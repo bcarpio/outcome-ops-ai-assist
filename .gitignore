@@ -89,7 +89,6 @@ lambda/terraform-layer/bin/
 # second plan needs to run alongside one already in `plan/`.
 plan/
 plan-*/
-lambda/.license-layer-staging/
 
 # Customer CA bundles fetched from SSM SecureString at image-build time
 # by scripts/build-database-images.sh. The directory itself stays in the

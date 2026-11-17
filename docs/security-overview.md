@@ -12,7 +12,7 @@ OutcomeOps AI Assist is deployed **in the customer's own AWS account**. This is 
 | **Data Residency** | Customer-controlled (their chosen AWS region) |
 | **Infrastructure** | Customer-owned and managed |
 | **Access** | Customer's IAM, networking, and identity systems |
-| **Billing** | Usage-based license; all AWS costs are the customer's |
+| **Billing** | No OutcomeOps license or billing; all AWS costs are the customer's |
 
 ---
 
@@ -569,7 +569,6 @@ All secrets are managed through AWS Systems Manager Parameter Store. No secrets 
 | GitHub PAT | `/{env}/{app_name}/github/token` | SecureString |
 | GitHub Webhook Secret | `/{env}/{app_name}/github/webhook-secret` | SecureString |
 | OIDC Client Secret | `/{env}/{app_name}/oidc/client-secret` | SecureString |
-| License Key (optional) | `/{env}/{app_name}/license/key` | SecureString |
 | SonarQube MCP Token | `/{env}/{app_name}/mcp/sonarqube-token` | SecureString |
 | Snyk MCP Token | `/{env}/{app_name}/mcp/snyk-token` | SecureString |
 
@@ -766,7 +765,7 @@ For context, here is how this customer-deployed model differs from a typical Saa
 | Data location | Customer's AWS account | Vendor's infrastructure |
 | Authentication | Customer's Azure AD | Vendor-managed (magic links, OAuth) |
 | Multi-tenancy | Not needed (single tenant) | Required (org/workspace isolation) |
-| Billing integration | Usage-based license key | Stripe/billing in application |
+| Billing integration | None — all AWS costs are the customer's | Stripe/billing in application |
 | OAuth integrations | PAT tokens (simpler) | Full OAuth flows (required for SaaS) |
 | Infrastructure access | Customer has full AWS access | Vendor-managed, no customer access |
 | Compliance scope | Customer's existing compliance posture | Vendor must achieve certifications |

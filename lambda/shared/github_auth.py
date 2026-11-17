@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """GitHub App installation-token cache (fable-scale chunk 06).
 
 Prior behavior: every sync/PR-check minted a fresh JWT + called

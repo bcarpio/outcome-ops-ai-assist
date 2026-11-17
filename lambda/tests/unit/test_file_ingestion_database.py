@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for file-ingestion Lambda - database YAML artifact handler."""
 
 import importlib.util
@@ -58,28 +60,6 @@ def reset_mocks():
     handler_module.KB_BUCKET = "test-kb-bucket"
     handler_module._account_id = "123456789012"
     yield
-
-
-@pytest.fixture(autouse=True)
-def stub_outcomeops_license():
-    """ADR-019: the handler imports validate_license / check_repo_limit
-    INSIDE lambda_handler, so the layer module must exist in sys.modules
-    before each invocation."""
-    stub = MagicMock()
-    stub.validate_license.return_value = {"sub": "test-customer"}
-    allowed = MagicMock()
-    allowed.allowed = True
-    allowed.reason = None
-    allowed.current = 0
-    allowed.limit = 100
-    stub.check_repo_limit.return_value = allowed
-    saved = sys.modules.get("outcomeops_license")
-    sys.modules["outcomeops_license"] = stub
-    yield stub
-    if saved is not None:
-        sys.modules["outcomeops_license"] = saved
-    else:
-        sys.modules.pop("outcomeops_license", None)
 
 
 # ============================================================================
@@ -357,30 +337,3 @@ class TestLambdaHandlerDispatchDatabase:
         assert kwargs["connection_id"] == "c"
         assert kwargs["file_info"]["table_id"] == "cat.sch.users"
         assert kwargs["sync_id"] == "s"
-
-    def test_repo_identifier_uses_engine_and_host_hash(self):
-        """The composite repo identifier composed at file-ingestion
-        must use engine + host_hash so license-server dedup matches
-        the form database-sync calls check_repo_limit with.
-
-        _build_repo_identifier scrubs colons/slashes from the inner
-        ident segment to keep the parseability of the outer composite
-        (workspace:source:ident). So the engine+host_hash colon gets
-        rewritten to an underscore at this layer - parseable downstream."""
-        ident = handler_module._build_repo_identifier(
-            source="database",
-            workspace_id="ws_1",
-            body={},
-            file_info={"engine": "postgres", "host_hash": "abc123"},
-        )
-        # Composite shape: workspace:source:{engine_hosthash}
-        assert ident == "ws_1:database:postgres_abc123"
-
-    def test_repo_identifier_missing_engine_or_host_returns_empty_ident(self):
-        ident = handler_module._build_repo_identifier(
-            source="database",
-            workspace_id="ws_1",
-            body={},
-            file_info={"engine": "postgres", "host_hash": ""},
-        )
-        assert ident == "ws_1:database:"

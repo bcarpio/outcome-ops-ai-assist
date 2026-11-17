@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for servicenow-scheduler Lambda (chunk 04)."""
 
 import importlib.util

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 Jira Sync Lambda for OutcomeOps AI Assist.
 
@@ -26,21 +28,7 @@ from botocore.exceptions import ClientError
 # Make shared/ importable; deploy package now bundles lambda/shared/.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared import dual_write  # noqa: E402
-from shared.audit_writer import log_license_fail_open, log_source_sync  # noqa: E402
-
-# ADR-019: license validator + enforcement + usage tracking come from the
-# outcomeops_license layer (mounted at /opt/python in Lambda). Wrap the
-# top-level import in try/except so the module still loads when the layer is
-# unattached -- lambda_handler then catches the missing-symbol case and emits
-# a LICENSE_FAIL_OPEN regression-detector audit row before re-raising.
-try:
-    from outcomeops_license import (  # noqa: E402
-        check_repo_limit,
-        validate_license,
-    )
-except ImportError:  # pragma: no cover - deploy bug path, exercised in tests
-    validate_license = None  # type: ignore[assignment]
-    check_repo_limit = None  # type: ignore[assignment]
+from shared.audit_writer import log_source_sync  # noqa: E402
 
 from jira_api import (
     JiraAPIError,
@@ -332,29 +320,6 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
             project_key = project.get("key")
             project_name = project.get("name", project_key)
 
-            # ADR-019: per-project repo limit. Use a stable, namespaced
-            # identifier (`jira:{project_key}`) so the license-server's
-            # string-equality dedupe never collides with GitHub repo names.
-            # Already-tracked projects always return allowed=True.
-            source_id = f"jira:{project_key}"
-            try:
-                limit_result = check_repo_limit(repo=source_id)
-                if not limit_result.allowed:
-                    logger.warning(
-                        f"[jira-sync] Repo limit reached for {source_id}: "
-                        f"{limit_result.reason} "
-                        f"(current={limit_result.current}/{limit_result.limit})"
-                    )
-                    projects_blocked.append(project_name)
-                    continue
-            except Exception as e:
-                # Layer's network-error fallback handles this; if we got here
-                # the call itself blew up unexpectedly. Log and continue.
-                logger.warning(
-                    f"[jira-sync] check_repo_limit failed for "
-                    f"{source_id}: {e}"
-                )
-
             logger.info(f"[{sync_type}] Listing issues in project: {project_name} ({project_key})")
 
             try:
@@ -454,8 +419,6 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
             duration_ms=int((time.time() - sync_start) * 1000),
             extra_details={"sync_id": sync_id, "sync_type": sync_type},
         )
-        # ADR-019: liveness tracking now lives in connect/disconnect handlers
-        # via report_repos_snapshot (license layer v2.0.0 desired-state model).
         result = {
             "status": "success",
             "sync_id": sync_id,
@@ -489,27 +452,6 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 
     Receives sync requests and queues individual issues for file ingestion.
     """
-    # ADR-019: validate license before doing any work. SQS-driven, so we
-    # raise on validation failure rather than returning a status code.
-    try:
-        if validate_license is None:
-            raise ImportError("outcomeops_license layer not attached")
-        claims = validate_license()
-        logger.info(
-            f"[jira-sync] License validated: {claims.get('sub')}"
-        )
-    except ImportError:
-        logger.error(
-            "[jira-sync] License layer not attached - deploy bug (ADR-019)"
-        )
-        log_license_fail_open(
-            os.environ.get("AUDIT_TABLE", ""), "jira-sync"
-        )
-        raise
-    except Exception as e:
-        logger.error(f"[jira-sync] License validation failed: {e}")
-        raise
-
     logger.info(f"Jira sync handler invoked with {len(event.get('Records', []))} records")
 
     if "Records" not in event:

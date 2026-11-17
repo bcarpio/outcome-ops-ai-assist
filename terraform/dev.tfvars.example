@@ -266,20 +266,6 @@ github_usernames_to_tag = "yourusername"
 # security_scanner_email   = "security-scanner@outcomeops.local"
 
 # ============================================================================
-# License Telemetry
-# ============================================================================
-
-# OutcomeOps license validator Lambda layer ARN. Empty = telemetry disabled.
-# outcomeops_license_layer_arn = ""
-
-# License server URL (defaulted; override only for testing against a
-# non-production license server).
-# outcomeops_license_server_url = "https://license.example.com"
-
-# SSM parameter path for the license key.
-# outcomeops_license_ssm_param = "/outcome-ops-ai-assist/license/key"
-
-# ============================================================================
 # Encryption (CMK)
 # ============================================================================
 

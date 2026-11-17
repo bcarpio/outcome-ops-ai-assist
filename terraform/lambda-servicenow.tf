@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # ServiceNow Knowledge Base Integration Lambda
 # Handles OAuth flow (env-level SSM credentials, one OAuth app per deploy)
@@ -50,10 +52,6 @@ module "servicenow_integration_lambda" {
 
   quiet_archive_local_exec = true
 
-  # ADR-019: license validator layer required for every customer-facing Lambda.
-  layers = [
-    var.outcomeops_license_layer_arn,
-  ]
 
   environment_variables = merge(
     {
@@ -73,7 +71,6 @@ module "servicenow_integration_lambda" {
       SERVICENOW_CALLBACK_URL = var.domain != "" ? "https://${local.fqdn}/api/servicenow/callback" : ""
     },
     local.servicenow_common_env,
-    local.outcomeops_license_env,
     local.ha_writer_env,
     local.ha_scheduler_env,
   )
@@ -135,7 +132,6 @@ module "servicenow_integration_lambda" {
         ]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam,
     local.ha_scheduler_iam,
   )
@@ -255,9 +251,6 @@ module "servicenow_sync_lambda" {
 
   quiet_archive_local_exec = true
 
-  layers = [
-    var.outcomeops_license_layer_arn,
-  ]
 
   environment_variables = merge(
     {
@@ -275,7 +268,6 @@ module "servicenow_sync_lambda" {
       AUDIT_RETENTION_DAYS  = tostring(var.audit_retention_days)
     },
     local.servicenow_common_env,
-    local.outcomeops_license_env,
     local.ha_writer_env,
   )
 
@@ -341,7 +333,6 @@ module "servicenow_sync_lambda" {
         resources = [module.audit_logs_table.dynamodb_table_arn]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam,
   )
 

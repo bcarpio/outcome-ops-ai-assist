@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 Dead Letter Queue Handler for failed code generation steps.
 
@@ -164,22 +166,6 @@ def handle_dlq_message(message: StepExecutionMessage) -> Dict[str, Any]:
     if existing_pr:
         logger.info(f"[dlq] PR already exists: {existing_pr.get('html_url')}")
 
-        # Always track usage - if we're in the DLQ, usage was never tracked
-        # (the success path in step_executor.py didn't complete)
-        try:
-            from outcomeops_license import track_pr_generated
-            track_pr_generated(
-                repo=message.repo_full_name,
-                pr_number=existing_pr.get("number"),
-                issue_number=message.issue_number,
-                customer_id=message.customer_id  # Pass from message since cache is empty in DLQ
-            )
-            logger.info("[dlq] Tracked PR generation for license usage (existing PR)")
-        except ImportError:
-            logger.warning("[dlq] License layer not available, skipping usage tracking")
-        except Exception as e:
-            logger.error(f"[dlq] Failed to track usage: {e}")
-
         return {
             "success": True,
             "reason": "pr_already_exists",
@@ -251,22 +237,6 @@ This PR contains whatever code was successfully generated before the failure.
                 )
         except Exception as e:
             logger.warning(f"[dlq] Failed to emit CODE_GEN_DLQ_SALVAGE_PR_CREATED: {e}")
-
-        # Track usage - we count this as a PR generated even though it failed
-        # This is fair because we consumed resources attempting the generation
-        try:
-            from outcomeops_license import track_pr_generated
-            track_pr_generated(
-                repo=message.repo_full_name,
-                pr_number=pr_number,
-                issue_number=message.issue_number,
-                customer_id=message.customer_id  # Pass from message since cache is empty in DLQ
-            )
-            logger.info(f"[dlq] Tracked PR generation for license usage")
-        except ImportError:
-            logger.warning("[dlq] License layer not available, skipping usage tracking")
-        except Exception as e:
-            logger.error(f"[dlq] Failed to track usage: {e}")
 
         # Add comment to the issue
         try:

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for ``shared.context_builder``.
 
 Covers:
@@ -71,21 +73,21 @@ def test_facts_block_renders_callers_with_definition():
         graph_sha="a1b2c3def012345",
         staleness_seconds=47,
     )
-    definition = _site("lambda/shared/outcomeops_license.py", 42)
+    definition = _site("lambda/shared/audit.py", 42)
 
     block = build_symbol_facts_block(
         relation="callers",
-        target_symbol_id="python:lambda.shared.outcomeops_license::report_repos_snapshot",
+        target_symbol_id="python:lambda.shared.audit::log_audit_entry",
         result=result,
         definition_site=definition,
     )
 
     assert SYMBOL_FACTS_HEADER in block
     assert (
-        "Question target: python:lambda.shared.outcomeops_license::report_repos_snapshot"
+        "Question target: python:lambda.shared.audit::log_audit_entry"
         in block
     )
-    assert "Defined at: lambda/shared/outcomeops_license.py:42" in block
+    assert "Defined at: lambda/shared/audit.py:42" in block
     assert "Direct callers (2 sites" in block
     assert "lambda/github-integration/handler.py:137" in block
     assert "lambda/jira-integration/handler.py:114" in block
@@ -259,19 +261,19 @@ def test_no_staleness_suffix_when_anchors_missing():
 
 def test_definition_block_zero_matches_surfaces_not_found():
     block = build_symbol_definition_block(
-        symbol_candidate="report_repos_snapshot",
+        symbol_candidate="log_audit_entry",
         definitions=[],
     )
-    assert "No symbol matching `report_repos_snapshot` found" in block
+    assert "No symbol matching `log_audit_entry` found" in block
 
 
 def test_definition_block_single_match_renders_definition_site():
-    d = _site("lambda/shared/outcomeops_license.py", 42)
+    d = _site("lambda/shared/audit.py", 42)
     block = build_symbol_definition_block(
-        symbol_candidate="report_repos_snapshot",
+        symbol_candidate="log_audit_entry",
         definitions=[d],
     )
-    assert "Defined at: lambda/shared/outcomeops_license.py:42" in block
+    assert "Defined at: lambda/shared/audit.py:42" in block
 
 
 def test_definition_block_multiple_matches_lists_all():
@@ -342,7 +344,7 @@ class TestAuditCoverageChecklist:
             "How does our auth flow work?",
             "What are our Python standards?",
             "Explain how analytics aggregation works",
-            "Who calls report_repos_snapshot?",
+            "Who calls log_audit_entry?",
             "",
         ],
     )

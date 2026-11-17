@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for shared/github_auth (fable-scale chunk 06).
 
 Covers the SSM-cached installation-token wrapper:

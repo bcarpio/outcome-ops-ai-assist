@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """GitLab instance registry — one deploy, many GitLab instances.
 
 A deployment can connect gitlab.com AND one or more self-managed instances at

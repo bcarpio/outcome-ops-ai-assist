@@ -1,3 +1,5 @@
+// Copyright 2025-2026 OutcomeOps
+// SPDX-License-Identifier: Apache-2.0
 /**
  * Client-side audit-event exporter for the InfoSec drill flow.
  *

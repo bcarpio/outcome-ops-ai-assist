@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Chat-side context builder.
 
 Renders structured retrieval results into the model's input context.

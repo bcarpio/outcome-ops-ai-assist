@@ -14,7 +14,6 @@ OutcomeOps AI Assist is deployed entirely within the **customer's own AWS accoun
 | Responsibility | Owner |
 |---|---|
 | Vulnerabilities in OutcomeOps software (application code, Lambda functions, Terraform modules) | OutcomeOps |
-| Vulnerabilities in the licensing layer and OutcomeOps-operated licensing endpoint | OutcomeOps |
 | Operational incident response (breach detection, containment, forensics) | Customer (SOC/SRE team) |
 | AWS infrastructure security (IAM, GuardDuty, CloudTrail, VPC) | Customer |
 | Identity and access management (Azure AD, MFA, conditional access) | Customer |
@@ -79,7 +78,7 @@ Notifications will include:
 - Affected component and versions
 - Whether a workaround exists
 - Target patch date
-- Instructions for applying the fix (Terraform module version bump or layer ARN update)
+- Instructions for applying the fix (Terraform module version bump)
 
 **Note:** Because OutcomeOps software is customer-deployed, OutcomeOps cannot push patches. Customers are responsible for applying updates within a reasonable timeframe following notification.
 
@@ -102,33 +101,7 @@ Dependency vulnerabilities that affect Lambda runtimes or container base images 
 
 ---
 
-## 5. Licensing Layer and Shared Endpoint
-
-OutcomeOps operates a licensing endpoint used by deployments that have not configured a custom enterprise Lambda layer ARN. This is the one component of OutcomeOps that operates as shared infrastructure across customer deployments.
-
-### 5.1 Scope of the Licensing Component
-
-| Component | Description |
-|---|---|
-| Lambda layer | Distributed as a versioned ARN; contains JWT verification logic |
-| Licensing endpoint | OutcomeOps-operated; validates license keys and checks compliance counters |
-| Data transmitted | PR count, repository count per workspace — no code, content, or PII |
-| Frequency | Per PR generation event (non-Enterprise deployments without custom layer ARN) |
-
-### 5.2 Accelerated Response for Licensing Component
-
-Because the licensing layer runs inside the customer's AWS account but contains OutcomeOps-operated code, and because the licensing endpoint is OutcomeOps-operated infrastructure, vulnerabilities affecting these components are treated with elevated urgency:
-
-- **Any severity** affecting the licensing layer or endpoint: patch available within **7 days**, mandatory customer notification regardless of CVSS score
-- Customers are notified of the new layer ARN and must update their `tfvars` to pull in the patched layer
-
-### 5.3 Disabling Phone-Home (Enterprise)
-
-Customers with an Enterprise license agreement may disable the phone-home licensing check by providing a custom Lambda layer ARN in their Terraform configuration. This completely removes the outbound licensing call from their deployment. Enterprise customers requiring this arrangement should contact their OutcomeOps account contact to establish an alternative compliance verification method (e.g., quarterly audit, contractual attestation).
-
----
-
-## 6. Coordinated Disclosure Policy
+## 5. Coordinated Disclosure Policy
 
 OutcomeOps follows a **90-day coordinated disclosure** policy for externally reported vulnerabilities:
 
@@ -143,7 +116,7 @@ If a vulnerability is being actively exploited in the wild, OutcomeOps reserves 
 
 ---
 
-## 7. Customer Responsibilities
+## 6. Customer Responsibilities
 
 Because OutcomeOps software runs in the customer's AWS account, customers are responsible for:
 
@@ -156,18 +129,17 @@ Because OutcomeOps software runs in the customer's AWS account, customers are re
 
 ---
 
-## 8. Security Contact
+## 7. Security Contact
 
 | Contact | Details |
 |---|---|
 | Security disclosures | security@outcomeops.ai |
 | General security questions | security@outcomeops.ai |
-| Enterprise licensing / phone-home opt-out | Contact your OutcomeOps account representative |
 | Security advisories | Published at github.com/outcomeops (GitHub Security Advisories) |
 
 ---
 
-## 9. Document History
+## 8. Document History
 
 | Version | Date | Changes |
 |---|---|---|

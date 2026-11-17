@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """GitHub base-URL resolution — GHES (GitHub Enterprise Server) support.
 
 Every GitHub call site derives its URLs from these helpers instead of

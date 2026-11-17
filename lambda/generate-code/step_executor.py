@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 Step execution flow.
 
@@ -1334,20 +1336,6 @@ def finalize_and_publish_event(
         github_token: GitHub token
     """
     logger.info("[step-exec] Publishing completion event (PR will be created after tests)")
-
-    # Track PR generation for license usage (primary billing metric)
-    try:
-        from outcomeops_license import track_pr_generated
-        track_pr_generated(
-            repo=plan.repo_full_name,
-            issue_number=plan.issue_number
-        )
-        logger.info(f"[step-exec] Tracked PR generation for {plan.repo_full_name}")
-    except ImportError:
-        logger.debug("[step-exec] License layer not available, skipping usage tracking")
-    except Exception as e:
-        # Non-blocking - usage tracking failures shouldn't stop code generation
-        logger.warning(f"[step-exec] Failed to track usage: {e}")
 
     # Generate plan filename using same pattern
     base_name = generate_branch_name(plan.issue_number, plan.issue_title)

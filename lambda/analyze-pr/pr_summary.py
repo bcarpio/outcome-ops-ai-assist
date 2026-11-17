@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """pr_summary — build the PR/MR summary comment body.
 
 Internal builder for ``analyze-pr``. Given provider-agnostic PR metadata and

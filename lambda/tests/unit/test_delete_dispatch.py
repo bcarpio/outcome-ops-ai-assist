@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for shared.delete_dispatch (delete-bug 01/02/03)."""
 from __future__ import annotations
 

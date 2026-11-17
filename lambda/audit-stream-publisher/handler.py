@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 Audit Stream Publisher - DynamoDB Streams consumer that re-emits audit-log
 INSERT events into a Kinesis Data Stream as OCSF v1.3.0 envelopes.

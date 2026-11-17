@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # Code Generation Lambda Functions
 # - generate-code: Process GitHub webhook to generate code from approved issues
@@ -44,11 +46,10 @@ module "generate_code_lambda" {
   # Suppress verbose archive output
   quiet_archive_local_exec = true
 
-  # Attach layers: terraform fmt, git (for terraform formatting), license validator
+  # Attach layers: terraform fmt, git (for terraform formatting)
   layers = [
     module.terraform_tools_layer.lambda_layer_arn,
     module.runtime_tools_layer.lambda_layer_arn,
-    var.outcomeops_license_layer_arn,
   ]
 
   # Environment variables
@@ -93,7 +94,6 @@ module "generate_code_lambda" {
       # Scan IAM attached below (guarded by the same enable_workspaces flag).
       WORKSPACES_TABLE = var.enable_workspaces ? module.workspaces_table[0].dynamodb_table_id : ""
     },
-    local.outcomeops_license_env,
     # ADR-016 v1.2 -- generate-code is the code-gen workload.
     local.bedrock_code_gen_env,
   )
@@ -238,7 +238,6 @@ module "generate_code_lambda" {
         ]
       }
     } : {},
-    local.outcomeops_license_iam,
   )
 
   tags = {
@@ -313,10 +312,6 @@ module "generate_code_dlq_lambda" {
   # Suppress verbose archive output
   quiet_archive_local_exec = true
 
-  # Attach license layer for usage tracking
-  layers = [
-    var.outcomeops_license_layer_arn,
-  ]
 
   # Environment variables
   environment_variables = merge(
@@ -327,7 +322,6 @@ module "generate_code_dlq_lambda" {
       AUDIT_TABLE          = module.audit_logs_table.dynamodb_table_id
       AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
     },
-    local.outcomeops_license_env,
   )
 
   # IAM permissions
@@ -365,7 +359,6 @@ module "generate_code_dlq_lambda" {
         ]
       }
     },
-    local.outcomeops_license_iam,
   )
 
   tags = {
@@ -658,10 +651,6 @@ module "handle_command_lambda" {
   # Suppress verbose archive output
   quiet_archive_local_exec = true
 
-  # OutcomeOps license validator layer
-  layers = [
-    var.outcomeops_license_layer_arn,
-  ]
 
   # Environment variables
   environment_variables = merge(
@@ -678,7 +667,6 @@ module "handle_command_lambda" {
       BEDROCK_BASIC_INPUT_PRICE          = tostring(var.bedrock_basic_input_price)
       BEDROCK_BASIC_OUTPUT_PRICE         = tostring(var.bedrock_basic_output_price)
     },
-    local.outcomeops_license_env,
     # ADR-016 v1.2 -- handle-command dispatches PR-comment commands
     # ("fix readme", "fix tests", etc.), classified as code-gen since
     # the downstream effect is code changes.
@@ -743,7 +731,6 @@ module "handle_command_lambda" {
         ]
       }
     },
-    local.outcomeops_license_iam,
   )
 
   tags = {

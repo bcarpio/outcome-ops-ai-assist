@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """HA primary/secondary parity checker (ADR-022).
 
 Every primary-region terraform module with a ``*_secondary`` mirror must

@@ -124,7 +124,6 @@ key). You can run it multiple times if a region was unreachable mid-run.
 
 - The **active** region runs:
   - All scheduled Lambdas (github-scheduler, jira-scheduler, etc.)
-  - The license-heartbeat-scheduler
   - Writer Lambdas that fire from scheduled work
 - The **passive** region runs:
   - The replicator-applier Lambda (replays cross-region events)
@@ -442,11 +441,9 @@ flips.
   images appear in the secondary region's ECR within minutes. The
   Fargate services in either region pull from their own region's
   registry.
-- **Lambda layers** (license layer + platform_ca CA-bundle layer) are
-  published per-region. The `outcomeops_license_layer_arn_secondary`
-  tfvars value is the secondary-region ARN published by the license
-  server's per-account push (see ADR-019 for the license-layer
-  topology).
+- **Lambda layers** (the platform_ca CA-bundle layer) are
+  published per-region, so functions in either region reference
+  their own region's layer version.
 
 ### Failover order across regions
 
@@ -472,22 +469,7 @@ operator UX is confusing.
 Before the full `terraform apply` can succeed against an HA-enabled
 deployment, the secondary region needs:
 
-1. **The license-validator Lambda layer** in the secondary region's
-   account/region. The license server pushes a copy to every region
-   it knows about once an account is enrolled, so this is usually
-   already in place when you flip on HA. Fetch the ARN:
-
-   ```bash
-   AWS_REGION=us-east-2 aws lambda list-layer-versions \
-       --layer-name prd-outcomeops-license-validator-v2-0-0 \
-       --query 'LayerVersions[0].LayerVersionArn' \
-       --output text
-   ```
-
-   Drop that ARN into the `outcomeops_license_layer_arn_secondary`
-   line of your tfvars (replacing the `PLACEHOLDER` value).
-
-2. **Container images** in the secondary region's ECR for every
+1. **Container images** in the secondary region's ECR for every
    container-based service:
 
    | Image | Used by |
@@ -519,7 +501,7 @@ deployment, the secondary region needs:
    detects the tfvars setting, so it's obvious whether the
    multi-region push fired.
 
-3. **Lambda layer zips that terraform publishes from local files**
+2. **Lambda layer zips that terraform publishes from local files**
    (today: `platform_ca`). These need to exist on disk BEFORE
    apply — terraform reads the zip and publishes the same content to
    both regions in one shot. Build once:
@@ -560,22 +542,16 @@ are now enabling HA:
 # 1. Set secondary_region in tfvars (and ui_vpc_id_secondary +
 #    ui_private_subnet_ids_secondary + ui_container_image_secondary).
 
-# 2. Fetch + update the secondary-region license layer ARN.
-AWS_REGION=us-east-2 aws lambda list-layer-versions \
-    --layer-name prd-outcomeops-license-validator-v2-0-0 \
-    --query 'LayerVersions[0].LayerVersionArn' --output text
-# → paste into outcomeops_license_layer_arn_secondary in tfvars
-
-# 3. Push every container image to both regions in one command.
+# 2. Push every container image to both regions in one command.
 ENVIRONMENT=prd make build-all-images
 
-# 4. (Optional) Re-encrypt OAuth tokens / DB credentials under the
+# 3. (Optional) Re-encrypt OAuth tokens / DB credentials under the
 #    soon-to-be-MRK KMS keys. Skip if you're fine reconnecting
 #    integrations after apply (see "Multi-region KMS" below).
 AWS_PROFILE=ops ENV=prd ARGS="--plan"    make ha-kms-migrate
 AWS_PROFILE=ops ENV=prd ARGS="--execute" make ha-kms-migrate
 
-# 5. Full apply.
+# 4. Full apply.
 cd terraform && terraform apply -var-file=prd.tfvars
 ```
 
@@ -584,8 +560,8 @@ cd terraform && terraform apply -var-file=prd.tfvars
 This is a brand-new customer who's enabling HA on first install:
 
 ```bash
-# 1. tfvars: set both aws_region and secondary_region; populate VPC,
-#    subnet, license-layer fields for both regions.
+# 1. tfvars: set both aws_region and secondary_region; populate VPC
+#    and subnet fields for both regions.
 
 # 2. Layers: build the local zips (read by terraform from disk).
 make build-platform-layer
@@ -696,9 +672,6 @@ customer-facing prod, run the migration first.
 - **Replication lag** — ~5 minutes is normal under steady-state load.
   Schedulers fire hourly; a flip with lag <5 min loses at most one
   scheduler tick's worth of work, which the next tick reconciles.
-- **License-server is single-region** — paid tiers (annual) fail-open
-  during license-server outages so chat / MCP keep working. PoC / pilot
-  tiers fail-hard.
 - **Cross-region failover is operator-driven, not automatic** — AWS
   outages rarely localize cleanly (Oct 2025 us-east-1 control-plane
   affected services in non-us-east regions). Human in the loop matters

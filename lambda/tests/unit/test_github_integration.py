@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for github-integration Lambda handler."""
 
 import importlib.util
@@ -83,22 +85,10 @@ _now_iso = handler_module._now_iso
 
 @pytest.fixture(autouse=True)
 def reset_module_globals():
-    """Reset cached module globals between tests.
-
-    Also pins `report_repos_snapshot` to None so the license-snapshot
-    helper short-circuits during tests that don't explicitly exercise it.
-    Other test modules in the suite (e.g. test_confluence_sync) inject a
-    MagicMock outcomeops_license into sys.modules at import time, which
-    would otherwise cause our handler's `from outcomeops_license import
-    report_repos_snapshot` to succeed and then drive the helper into a
-    real DDB scan against a generic MagicMock (infinite-loop risk).
-    """
+    """Reset cached module globals between tests."""
     handler_module._dynamodb = None
     handler_module._sqs = None
-    saved_snapshot = handler_module.report_repos_snapshot
-    handler_module.report_repos_snapshot = None
     yield
-    handler_module.report_repos_snapshot = saved_snapshot
 
 
 @pytest.fixture
@@ -2657,154 +2647,3 @@ class TestLambdaHandlerErrorHandling:
         body = json.loads(result["body"])
         assert "error" in body
 
-
-# ============================================================================
-# License snapshot wiring (chunk 03 of license-layer-v2 migration)
-# ============================================================================
-
-class TestLicenseSnapshotWiring:
-    """The connect (add repos) and disconnect (delete repo) paths must
-    fire report_repos_snapshot with the full active-repo set so the
-    license server's view tracks DDB truth.
-    """
-
-    @patch.object(handler_module, 'queue_sync_job')
-    @patch.object(handler_module, 'update_repo_sync_status')
-    @patch.object(handler_module, 'save_repo')
-    @patch.object(handler_module, 'get_repo')
-    @patch.object(handler_module, 'get_installation')
-    @patch.object(handler_module, 'report_repos_snapshot')
-    @patch.object(handler_module, 'get_active_repos_for_customer')
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_add_repos_publishes_snapshot(
-        self, mock_db, mock_get_active, mock_snapshot, mock_get_inst,
-        mock_get_repo, mock_save_repo, mock_update_status, mock_queue_sync,
-        mock_dynamodb, mock_table, sample_installation,
-    ):
-        """Adding a repo must publish the active-repo snapshot."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        mock_get_inst.return_value = sample_installation
-        mock_get_repo.return_value = None
-        mock_save_repo.return_value = {
-            "repo_name": "test-org/my-repo",
-            "installation_id": "12345",
-            "include_code_maps": True,
-            "repo_type": "application",
-        }
-        mock_get_active.return_value = ["github:test-org/my-repo"]
-
-        event = _authed_event(
-            method="POST",
-            path="/workspaces/ws_test/github/repos",
-            path_params={"id": "ws_test"},
-            email="admin@example.com",
-            body={
-                "repos": [
-                    {"repo_name": "test-org/my-repo", "installation_id": "12345"}
-                ]
-            },
-        )
-
-        result = handle_add_repos(event)
-        assert result["statusCode"] == 201
-        mock_snapshot.assert_called_once_with(active_repos=["github:test-org/my-repo"])
-
-    @patch.object(handler_module, 'queue_sync_job')
-    @patch.object(handler_module, 'update_repo_sync_status')
-    @patch.object(handler_module, 'save_repo')
-    @patch.object(handler_module, 'get_repo')
-    @patch.object(handler_module, 'get_installation')
-    @patch.object(handler_module, 'report_repos_snapshot')
-    @patch.object(handler_module, 'get_active_repos_for_customer',
-                  side_effect=RuntimeError("ddb boom"))
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_add_repos_swallows_snapshot_failure(
-        self, mock_db, mock_get_active, mock_snapshot, mock_get_inst,
-        mock_get_repo, mock_save_repo, mock_update_status, mock_queue_sync,
-        mock_dynamodb, mock_table, sample_installation,
-    ):
-        """Snapshot failures must not block the connect response."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        mock_get_inst.return_value = sample_installation
-        mock_get_repo.return_value = None
-        mock_save_repo.return_value = {
-            "repo_name": "test-org/my-repo",
-            "installation_id": "12345",
-            "include_code_maps": True,
-            "repo_type": "application",
-        }
-
-        event = _authed_event(
-            method="POST",
-            path="/workspaces/ws_test/github/repos",
-            path_params={"id": "ws_test"},
-            email="admin@example.com",
-            body={
-                "repos": [
-                    {"repo_name": "test-org/my-repo", "installation_id": "12345"}
-                ]
-            },
-        )
-
-        result = handle_add_repos(event)
-        # The add succeeded despite the snapshot failure.
-        assert result["statusCode"] == 201
-        # report_repos_snapshot is NEVER called because the active-repo
-        # enumeration raised before we got to it.
-        mock_snapshot.assert_not_called()
-
-    @patch.object(handler_module, 'delete_repo')
-    @patch.object(handler_module, 'queue_delete_job')
-    @patch.object(handler_module, 'get_repo')
-    @patch.object(handler_module, 'report_repos_snapshot')
-    @patch.object(handler_module, 'get_active_repos_for_customer')
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_delete_repo_publishes_snapshot(
-        self, mock_db, mock_get_active, mock_snapshot, mock_get_repo,
-        mock_queue_del, mock_del_repo, mock_dynamodb, mock_table, sample_repo,
-    ):
-        """Deleting a repo must publish the active-repo snapshot."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        mock_get_repo.return_value = sample_repo
-        mock_get_active.return_value = []  # last repo just removed
-
-        event = _authed_event(
-            method="DELETE",
-            path="/workspaces/ws_test/github/repos/test-org/my-repo",
-            path_params={"id": "ws_test", "repoName": "test-org/my-repo"},
-            email="admin@example.com",
-        )
-
-        result = handle_delete_repo(event)
-        assert result["statusCode"] == 200
-        mock_snapshot.assert_called_once_with(active_repos=[])
-
-    @patch.object(handler_module, 'delete_repo')
-    @patch.object(handler_module, 'queue_delete_job')
-    @patch.object(handler_module, 'get_repo')
-    @patch.object(handler_module, 'report_repos_snapshot')
-    @patch.object(handler_module, 'get_active_repos_for_customer',
-                  side_effect=RuntimeError("ddb boom"))
-    @patch.object(handler_module, '_get_dynamodb')
-    def test_delete_repo_swallows_snapshot_failure(
-        self, mock_db, mock_get_active, mock_snapshot, mock_get_repo,
-        mock_queue_del, mock_del_repo, mock_dynamodb, mock_table, sample_repo,
-    ):
-        """Snapshot failures must not block the disconnect response."""
-        mock_db.return_value = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        mock_get_repo.return_value = sample_repo
-
-        event = _authed_event(
-            method="DELETE",
-            path="/workspaces/ws_test/github/repos/test-org/my-repo",
-            path_params={"id": "ws_test", "repoName": "test-org/my-repo"},
-            email="admin@example.com",
-        )
-
-        result = handle_delete_repo(event)
-        assert result["statusCode"] == 200
-        mock_snapshot.assert_not_called()

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # KMS Key for Data-at-Rest Encryption (CMK)
 # Shared key for S3, DynamoDB, SQS, SNS, and ECR when enable_cmk_encryption = true

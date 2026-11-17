@@ -1,4 +1,6 @@
 #!/bin/bash
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 set -e
 
 # Build a Lambda layer containing just terraform

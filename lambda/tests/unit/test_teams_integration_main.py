@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for teams-integration/main.py FastAPI shim (chunk 17 Group B)."""
 
 import importlib.util

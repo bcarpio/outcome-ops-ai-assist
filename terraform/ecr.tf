@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # ECR Repository for run-tests Lambda Container Image
 # ============================================================================
@@ -144,7 +146,7 @@ output "chat_ui_ecr_repository_arn" {
 #
 # Two repos, one per Lambda:
 #   - database-integration: UI-facing picker (validate connection, list schemas)
-#   - database-sync:        SQS worker (full schema introspection + license-gated)
+#   - database-sync:        SQS worker (full schema introspection)
 #
 # Bootstrap (same pattern as run-tests):
 #   ENVIRONMENT=prd make build-database-images
@@ -280,8 +282,7 @@ output "database_sync_ecr_repository_url" {
 #      the secondary region from tfvars and builds + pushes each image to
 #      BOTH regions in one command. Each target creates its secondary
 #      ECR repo via -target as needed.
-#   3. Fetch the secondary-region license-layer ARN, update tfvars.
-#   4. Run the full `terraform apply`. The secondary Fargate services and
+#   3. Run the full `terraform apply`. The secondary Fargate services and
 #      container Lambdas find their images already in place and start
 #      cleanly.
 #

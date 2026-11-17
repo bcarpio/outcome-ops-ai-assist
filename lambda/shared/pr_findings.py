@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """shared.pr_findings -- structured PR-review findings for inline comments.
 
 A check handler returns, alongside its ``status`` / ``message`` / ``details``,

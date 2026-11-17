@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 OutcomeOps MCP Server - Streamable HTTP Transport
 
@@ -409,7 +411,7 @@ MCP_TOOLS = [
         "name": "find_callers",
         "description": (
             "Find every call-site of a symbol across the workspace. Answers "
-            "questions like 'Which Lambdas call report_repos_snapshot?'. Returns "
+            "questions like 'Which Lambdas call log_audit_entry?'. Returns "
             "the source files, line numbers, and caller symbol IDs."
         ),
         "inputSchema": {
@@ -419,7 +421,7 @@ MCP_TOOLS = [
                     "type": "string",
                     "description": (
                         "Canonical symbol ID of the target (e.g., "
-                        "'python:lambda.shared.outcomeops_license::report_repos_snapshot')"
+                        "'python:lambda.shared.audit::log_audit_entry')"
                     ),
                 },
                 "workspace_id": {

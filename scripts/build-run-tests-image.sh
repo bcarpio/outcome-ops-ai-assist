@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # build-run-tests-image.sh - Build and push run-tests Lambda container image
 # ============================================================================

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """GitHub API backoff wrapper (fable-scale chunk 06).
 
 At enterprise scale (thousands of repos, org-wide PR analysis) the

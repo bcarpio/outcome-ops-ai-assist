@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for shared.source_fetch — provider-aware code-map source fetcher."""
 
 from unittest.mock import MagicMock, patch

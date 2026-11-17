@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 Generate Code Lambda Handler.
 
@@ -57,16 +59,7 @@ def _github_base() -> str:
 
 
 def get_customer_id_from_cache() -> Optional[str]:
-    """Get customer ID from cached license claims for usage tracking."""
-    try:
-        from outcomeops_license.cache import get_cached_claims
-        claims = get_cached_claims()
-        if claims:
-            return claims.get("sub")
-    except ImportError:
-        pass
-    except Exception:
-        pass
+    """Customer ID lookup is a no-op in the open-source build."""
     return None
 
 
@@ -665,48 +658,6 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     Returns:
         dict: Response based on event type
     """
-    # Validate OutcomeOps license before processing any requests
-    try:
-        from outcomeops_license import validate_license
-        claims = validate_license()
-        logger.info(f"[generate-code] License validated: {claims.get('sub')} (tier: {claims.get('license', {}).get('tier')})")
-    except ImportError:
-        # License layer not attached - this is a configuration issue
-        logger.warning("[generate-code] License validator not available - layer not attached")
-    except Exception as e:
-        logger.error(f"[generate-code] License validation failed: {e}")
-        return {
-            "statusCode": 403,
-            "body": json.dumps({"error": "License validation failed", "message": str(e)})
-        }
-
-    # Check PR limit before processing (ADR-019)
-    # Only check for API Gateway/Jira events (new PR generation requests)
-    # SQS events are continuations of already-approved work
-    if is_api_gateway_event(event) or is_jira_event(event):
-        try:
-            from outcomeops_license import check_pr_limit
-            result = check_pr_limit()
-            if not result.allowed:
-                logger.warning(f"[generate-code] PR limit reached: {result.reason}")
-                return {
-                    "statusCode": 429,
-                    "body": json.dumps({
-                        "error": "PR limit reached",
-                        "message": result.reason or "Monthly PR limit exceeded",
-                        "limit": result.limit,
-                        "current": result.current,
-                        "upgrade_url": result.upgrade_url
-                    })
-                }
-            # Log any threshold alerts (soft enforcement)
-            for alert in result.threshold_alerts:
-                logger.warning(f"[generate-code] PR limit alert: {alert}")
-        except ImportError:
-            logger.debug("[generate-code] License layer not available, skipping enforcement check")
-        except Exception as e:
-            logger.warning(f"[generate-code] Enforcement check failed: {e}")
-
     # Route based on event type (log event type, not full payload to reduce CloudWatch verbosity)
     if is_sqs_event(event):
         logger.info("[generate-code] Routing to SQS handler (step execution)")

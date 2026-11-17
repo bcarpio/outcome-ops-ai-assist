@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 Audit Alert Lambda - DynamoDB Streams consumer for refusal detection.
 

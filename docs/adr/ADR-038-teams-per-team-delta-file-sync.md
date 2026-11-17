@@ -173,9 +173,6 @@ documented SharePoint recovery pattern.
   decision so a future developer doesn't reinvent the routing
   strategy from Graph docs alone (and re-discover the
   `parentReference.path` trap).
-- **ADR-019** — Per-source repo limits still gate teams-file sync.
-  Blocked channels are dropped from the team's channel list
-  before `_sync_team_files` runs, so their files also skip.
 
 ## References
 

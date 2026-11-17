@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # Database Integration Lambdas (container-image deployed)
 #
@@ -66,7 +68,6 @@ module "database_integration_lambda" {
       AUDIT_TABLE               = module.audit_logs_table.dynamodb_table_id
       AUDIT_RETENTION_DAYS      = tostring(var.audit_retention_days)
     },
-    local.outcomeops_license_env,
     local.ha_writer_env,
     local.ha_scheduler_env,
   )
@@ -122,7 +123,6 @@ module "database_integration_lambda" {
         ]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam,
     local.ha_scheduler_iam,
   )
@@ -201,13 +201,6 @@ resource "aws_sqs_queue" "database_sync_dlq" {
 
 # ============================================================================
 # Database Sync Lambda (container image)
-#
-# Note: the OutcomeOps license validator is baked into this image at build
-# time (see lambda/database-sync/Dockerfile + scripts/build-database-images.sh).
-# Container-image Lambdas can't attach Lambda layers, so the license layer's
-# content is downloaded via get-layer-version-by-arn and unpacked into the
-# image's site-packages. The handler code imports `outcomeops_license`
-# exactly as it would with a zip+layer deployment.
 # ============================================================================
 
 module "database_sync_lambda" {
@@ -246,7 +239,6 @@ module "database_sync_lambda" {
       # topic is a clean no-op (audit row still fires).
       DATABASE_DRIFT_TOPIC_ARN = length(aws_sns_topic.database_drift) > 0 ? aws_sns_topic.database_drift[0].arn : ""
     },
-    local.outcomeops_license_env,
     local.ha_writer_env,
   )
 
@@ -324,7 +316,6 @@ module "database_sync_lambda" {
         resources = length(aws_sns_topic.database_drift) > 0 ? [aws_sns_topic.database_drift[0].arn] : ["arn:aws:sns:*:*:nonexistent"]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam,
   )
 

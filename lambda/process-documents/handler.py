@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 Process Documents Lambda for OutcomeOps AI Assist.
 
@@ -44,7 +46,6 @@ from shared.model_client import resolve_profile_arn
 from shared.audit_writer import (
     ACTION_DOCUMENT_INGESTED,
     log_admin_action,
-    log_license_fail_open,
 )
 from shared.pii import MODE_STRICT, read_workspace_mode, redact
 
@@ -1050,37 +1051,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     S3-triggered handler for document processing.
 
     Triggered by ObjectCreated events on the knowledge base bucket.
-
-    ADR-019 (license-layer-rollout chunk 04):
-    - validate_license() runs once per invocation (fail-closed; raises
-      to let S3/SQS DLQ the batch on hard failures).
-    - Liveness tracking lives in the connect/disconnect handlers via
-      report_repos_snapshot (license layer v2.0.0 desired-state model);
-      check_repo_limit is intentionally NOT called here (it ran upstream
-      in file-ingestion).
     """
     logger.info(f"Process documents handler invoked")
-
-    # ADR-019 fail-closed license validation. S3/SQS-driven: raise on
-    # failure so the event is retried / DLQ'd rather than silently dropped.
-    try:
-        from outcomeops_license import validate_license
-
-        claims = validate_license()
-        logger.info(
-            f"[process-documents] License validated: {claims.get('sub')}"
-        )
-    except ImportError:
-        logger.error(
-            "[process-documents] License layer not attached - deploy bug (ADR-019)"
-        )
-        log_license_fail_open(
-            os.environ.get("AUDIT_TABLE", ""), "process-documents"
-        )
-        raise
-    except Exception as e:
-        logger.error(f"[process-documents] License validation failed: {e}")
-        raise
 
     results = []
 

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Regression pin for the chunk-02 behavior change in github-sync.
 
 Asserts that after a successful dispatch with NO consumer running,

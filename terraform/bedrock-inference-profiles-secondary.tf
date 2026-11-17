@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # Bedrock Application Inference Profiles -- secondary region (HA parity)
 # ============================================================================

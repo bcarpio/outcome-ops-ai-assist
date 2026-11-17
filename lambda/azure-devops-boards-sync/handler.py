@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 Azure DevOps Boards Sync Lambda for OutcomeOps AI Assist.
 
@@ -45,17 +47,7 @@ _BOTO_CONFIG = Config(connect_timeout=10, read_timeout=60, retries={"max_attempt
 # Make shared/ importable; deploy package bundles lambda/shared/.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared import dual_write  # noqa: E402
-from shared.audit_writer import log_license_fail_open, log_source_sync  # noqa: E402
-
-# ADR-019: license validator + enforcement come from the layer.
-try:
-    from outcomeops_license import (  # noqa: E402
-        check_repo_limit,
-        validate_license,
-    )
-except ImportError:  # pragma: no cover - deploy bug path
-    validate_license = None  # type: ignore[assignment]
-    check_repo_limit = None  # type: ignore[assignment]
+from shared.audit_writer import log_source_sync  # noqa: E402
 
 from azure_devops_work_items_api import (  # noqa: E402
     AzureDevOpsBoardsAPIError,
@@ -506,19 +498,6 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
 def lambda_handler(event: Dict, context: Any) -> Dict:
     """SQS-triggered handler. Batch size 1 per event source mapping."""
     logger.info(f"boards-sync invoked with {len(event.get('Records', []))} records")
-
-    if validate_license is None:
-        logger.error("[boards-sync] license layer not attached (deploy bug)")
-        log_license_fail_open(
-            os.environ.get("AUDIT_TABLE", ""), "azure-devops-boards-sync",
-        )
-        raise ImportError("outcomeops_license layer not attached")
-    try:
-        claims = validate_license()
-        logger.info(f"[boards-sync] license validated: {claims.get('sub')}")
-    except Exception as e:
-        logger.error(f"[boards-sync] license validation failed: {e}")
-        raise
 
     if "Records" not in event:
         return {"statusCode": 400, "body": "no SQS records"}

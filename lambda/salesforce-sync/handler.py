@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 Salesforce Sync Lambda.
 
@@ -67,10 +69,6 @@ from shared.salesforce_api import (  # noqa: E402
 )
 from shared.salesforce_render import render_record_markdown, source_for
 
-try:
-    from outcomeops_license import validate_license  # noqa: E402
-except ImportError:  # pragma: no cover
-    validate_license = None  # type: ignore[assignment]
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -634,16 +632,6 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """SQS partial-batch-failure entry."""
-    if validate_license is not None:
-        try:
-            validate_license()
-        except ImportError:
-            logger.error("License layer not attached")
-            raise
-        except Exception as e:
-            logger.error(f"License validation failed: {e}")
-            raise
-
     records = event.get("Records", []) or []
     logger.info(f"Salesforce sync invoked with {len(records)} record(s)")
 

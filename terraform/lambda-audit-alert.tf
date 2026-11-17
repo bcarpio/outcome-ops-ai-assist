@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # Audit Alert Lambda
 # Triggered by DynamoDB Streams on audit-logs table when refusals are detected.

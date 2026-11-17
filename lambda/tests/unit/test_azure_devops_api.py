@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for the Azure DevOps REST client (chunk 03).
 
 The module under test is a thin set of urllib wrappers; the tests

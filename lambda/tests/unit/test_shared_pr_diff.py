@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for shared.pr_diff — client-side unified-diff generator.
 
 The retrieval-heavy PR-check handlers depend on this producing diffs

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # Secondary-region integration handler Lambdas (HA chunk 9c-3b)
 # ----------------------------------------------------------------------------
@@ -58,7 +60,6 @@ module "github_integration_lambda_secondary" {
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
   quiet_archive_local_exec          = true
 
-  layers = [var.outcomeops_license_layer_arn_secondary]
 
   environment_variables = merge(
     {
@@ -77,7 +78,6 @@ module "github_integration_lambda_secondary" {
       AUDIT_TABLE            = module.audit_logs_table_secondary[0].dynamodb_table_id
       AUDIT_RETENTION_DAYS   = tostring(var.audit_retention_days)
     },
-    local.outcomeops_license_env,
     local.ha_writer_env_secondary,
     local.ha_scheduler_env_secondary,
   )
@@ -129,7 +129,6 @@ module "github_integration_lambda_secondary" {
         resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam_secondary,
     local.ha_scheduler_iam_secondary,
   )
@@ -198,7 +197,6 @@ module "confluence_integration_lambda_secondary" {
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
   quiet_archive_local_exec          = true
 
-  layers = [var.outcomeops_license_layer_arn_secondary]
 
   environment_variables = merge(
     {
@@ -213,7 +211,6 @@ module "confluence_integration_lambda_secondary" {
       AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
       OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
     },
-    local.outcomeops_license_env,
     local.ha_writer_env_secondary,
     local.ha_scheduler_env_secondary,
   )
@@ -255,7 +252,6 @@ module "confluence_integration_lambda_secondary" {
         resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam_secondary,
     local.ha_scheduler_iam_secondary,
   )
@@ -324,7 +320,6 @@ module "jira_integration_lambda_secondary" {
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
   quiet_archive_local_exec          = true
 
-  layers = [var.outcomeops_license_layer_arn_secondary]
 
   environment_variables = merge(
     {
@@ -339,7 +334,6 @@ module "jira_integration_lambda_secondary" {
       AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
       OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
     },
-    local.outcomeops_license_env,
     local.ha_writer_env_secondary,
     local.ha_scheduler_env_secondary,
   )
@@ -381,7 +375,6 @@ module "jira_integration_lambda_secondary" {
         resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam_secondary,
     local.ha_scheduler_iam_secondary,
   )
@@ -450,7 +443,6 @@ module "outlook_integration_lambda_secondary" {
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
   quiet_archive_local_exec          = true
 
-  layers = [var.outcomeops_license_layer_arn_secondary]
 
   environment_variables = merge(
     {
@@ -465,7 +457,6 @@ module "outlook_integration_lambda_secondary" {
       AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
       OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
     },
-    local.outcomeops_license_env,
     local.ha_writer_env_secondary,
     local.ha_scheduler_env_secondary,
   )
@@ -507,7 +498,6 @@ module "outlook_integration_lambda_secondary" {
         resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam_secondary,
     local.ha_scheduler_iam_secondary,
   )
@@ -574,7 +564,6 @@ module "teams_integration_lambda_secondary" {
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
   quiet_archive_local_exec          = true
 
-  layers = [var.outcomeops_license_layer_arn_secondary]
 
   environment_variables = merge(
     {
@@ -589,7 +578,6 @@ module "teams_integration_lambda_secondary" {
       AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
       OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
     },
-    local.outcomeops_license_env,
     local.ha_writer_env_secondary,
     local.ha_scheduler_env_secondary,
   )
@@ -631,7 +619,6 @@ module "teams_integration_lambda_secondary" {
         resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam_secondary,
     local.ha_scheduler_iam_secondary,
   )
@@ -698,7 +685,6 @@ module "sharepoint_integration_lambda_secondary" {
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
   quiet_archive_local_exec          = true
 
-  layers = [var.outcomeops_license_layer_arn_secondary]
 
   environment_variables = merge(
     {
@@ -713,7 +699,6 @@ module "sharepoint_integration_lambda_secondary" {
       AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
       OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
     },
-    local.outcomeops_license_env,
     local.ha_writer_env_secondary,
     local.ha_scheduler_env_secondary,
   )
@@ -755,7 +740,6 @@ module "sharepoint_integration_lambda_secondary" {
         resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam_secondary,
     local.ha_scheduler_iam_secondary,
   )
@@ -822,7 +806,6 @@ module "onedrive_integration_lambda_secondary" {
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
   quiet_archive_local_exec          = true
 
-  layers = [var.outcomeops_license_layer_arn_secondary]
 
   environment_variables = merge(
     {
@@ -837,7 +820,6 @@ module "onedrive_integration_lambda_secondary" {
       AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
       OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
     },
-    local.outcomeops_license_env,
     local.ha_writer_env_secondary,
     local.ha_scheduler_env_secondary,
   )
@@ -879,7 +861,6 @@ module "onedrive_integration_lambda_secondary" {
         resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam_secondary,
     local.ha_scheduler_iam_secondary,
   )
@@ -946,7 +927,6 @@ module "onenote_integration_lambda_secondary" {
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
   quiet_archive_local_exec          = true
 
-  layers = [var.outcomeops_license_layer_arn_secondary]
 
   environment_variables = merge(
     {
@@ -961,7 +941,6 @@ module "onenote_integration_lambda_secondary" {
       AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
       OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
     },
-    local.outcomeops_license_env,
     local.ha_writer_env_secondary,
     local.ha_scheduler_env_secondary,
   )
@@ -1003,7 +982,6 @@ module "onenote_integration_lambda_secondary" {
         resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam_secondary,
     local.ha_scheduler_iam_secondary,
   )
@@ -1077,9 +1055,6 @@ module "database_integration_lambda_secondary" {
   cloudwatch_logs_retention_in_days = 7
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
 
-  # Container Lambdas cannot attach external layers; license-validator
-  # logic must be baked into the image. Primary follows the same model.
-
   environment_variables = merge(
     {
       ENV                 = var.environment
@@ -1093,7 +1068,6 @@ module "database_integration_lambda_secondary" {
       AUDIT_RETENTION_DAYS      = tostring(var.audit_retention_days)
       DB_CREDENTIAL_KMS_KEY_ARN = aws_kms_replica_key.db_credentials_secondary[0].arn
     },
-    local.outcomeops_license_env,
     local.ha_writer_env_secondary,
     local.ha_scheduler_env_secondary,
   )
@@ -1125,7 +1099,6 @@ module "database_integration_lambda_secondary" {
         resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam_secondary,
     local.ha_scheduler_iam_secondary,
   )
@@ -1248,7 +1221,6 @@ module "azure_devops_integration_lambda_secondary" {
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
   quiet_archive_local_exec          = true
 
-  layers = [var.outcomeops_license_layer_arn_secondary]
 
   # Env mirrors the primary's azure_devops_integration_lambda except:
   # - WORKSPACES_TABLE points at the secondary-region table
@@ -1284,7 +1256,6 @@ module "azure_devops_integration_lambda_secondary" {
       AUDIT_TABLE            = module.audit_logs_table_secondary[0].dynamodb_table_id
       AUDIT_RETENTION_DAYS   = tostring(var.audit_retention_days)
     },
-    local.outcomeops_license_env,
     local.ha_writer_env_secondary,
     local.ha_scheduler_env_secondary,
   )
@@ -1345,7 +1316,6 @@ module "azure_devops_integration_lambda_secondary" {
         resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam_secondary,
     local.ha_scheduler_iam_secondary,
   )
@@ -1450,7 +1420,6 @@ module "gitlab_integration_lambda_secondary" {
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
   quiet_archive_local_exec          = true
 
-  layers = [var.outcomeops_license_layer_arn_secondary]
 
   # Env mirrors the primary's gitlab_integration_lambda except:
   # - WORKSPACES_TABLE / AUDIT_TABLE point at the secondary-region tables
@@ -1482,7 +1451,6 @@ module "gitlab_integration_lambda_secondary" {
       AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
       AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
     },
-    local.outcomeops_license_env,
     local.ha_writer_env_secondary,
     local.ha_scheduler_env_secondary,
   )
@@ -1538,7 +1506,6 @@ module "gitlab_integration_lambda_secondary" {
         resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam_secondary,
     local.ha_scheduler_iam_secondary,
   )
@@ -1615,7 +1582,6 @@ module "servicenow_integration_lambda_secondary" {
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
   quiet_archive_local_exec          = true
 
-  layers = [var.outcomeops_license_layer_arn_secondary]
 
   environment_variables = merge(
     {
@@ -1633,7 +1599,6 @@ module "servicenow_integration_lambda_secondary" {
       SERVICENOW_CALLBACK_URL = var.domain != "" ? "https://${local.fqdn}/api/servicenow/callback" : ""
     },
     local.servicenow_common_env,
-    local.outcomeops_license_env,
     local.ha_writer_env_secondary,
     local.ha_scheduler_env_secondary,
   )
@@ -1684,7 +1649,6 @@ module "servicenow_integration_lambda_secondary" {
         resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam_secondary,
     local.ha_scheduler_iam_secondary,
   )
@@ -1758,7 +1722,6 @@ module "salesforce_integration_lambda_secondary" {
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
   quiet_archive_local_exec          = true
 
-  layers = [var.outcomeops_license_layer_arn_secondary]
 
   environment_variables = merge(
     {
@@ -1774,7 +1737,6 @@ module "salesforce_integration_lambda_secondary" {
       SALESFORCE_CALLBACK_URL      = var.domain != "" ? "https://${local.fqdn}/api/salesforce/callback" : ""
     },
     local.salesforce_common_env,
-    local.outcomeops_license_env,
     local.ha_writer_env_secondary,
     local.ha_scheduler_env_secondary,
   )
@@ -1823,7 +1785,6 @@ module "salesforce_integration_lambda_secondary" {
         resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam_secondary,
     local.ha_scheduler_iam_secondary,
   )

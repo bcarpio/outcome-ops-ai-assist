@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for analyze-pr/pr_summary.py (the PR summary builder).
 
 Asserts the correctness properties the standards demand:

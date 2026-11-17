@@ -89,14 +89,14 @@ correct. Audit completeness is a hard gate, not aspirational.
 **Input** — paste into chat:
 
 ```
-Which Lambda functions call report_repos_snapshot? List every caller
+Which Lambda functions call log_audit_entry? List every caller
 and the file path.
 ```
 
 **Expected output**:
 
 - Direct list of the 9 `*-integration` connect/disconnect handlers
-  plus `license-heartbeat-scheduler`.
+  plus `scheduled-reporter`.
 - Each entry has the correct file path and line number.
 - Response size < 10KB (vs the 121KB pre-feature baseline).
 - Visible "Symbol facts" / graph block in the response; no fabricated
@@ -105,7 +105,7 @@ and the file path.
 **Verification command** (ground truth on the local checkout):
 
 ```bash
-grep -rn 'report_repos_snapshot' lambda/ | grep -v '__pycache__'
+grep -rn 'log_audit_entry' lambda/ | grep -v '__pycache__'
 ```
 
 The chat answer must mention every caller this command surfaces, with
@@ -245,7 +245,7 @@ grep -rn 'ingest\|document\|process' lambda/github-sync/ \
 ## Validation 6 — PR review with signature change
 
 **Setup**: Open a PR against `outcome-ops-ai-assist-private` that
-changes the signature of `report_repos_snapshot` (e.g., adds a new
+changes the signature of `log_audit_entry` (e.g., adds a new
 parameter).
 
 **Expected output from `analyze-pr`**:
@@ -270,7 +270,7 @@ caller count.
 ## Validation 7 — Codegen modify task
 
 **Setup**: File a Jira issue describing a rename of
-`report_repos_snapshot` → `submit_repo_snapshot`. Apply the
+`log_audit_entry` → `submit_repo_snapshot`. Apply the
 `approved-for-generation` label.
 
 **Expected output from `generate-code`**:
@@ -598,14 +598,14 @@ Deletes of already-gone items are 404-silent.
 
    ```
    mcp__outcomeops__find_callers(
-       symbol_id="python:lambda.database-integration.handler::report_repos_snapshot",
+       symbol_id="python:lambda.database-integration.handler::log_audit_entry",
        workspace_id="B1MgdLzM1j0YeyAqCWbyxg"
    )
    ```
 
    Expected: returns the caller at `lambda/database-integration/handler.py:111`.
 
-3. **`report_repos_snapshot` returns 10 production callers** — DDB scan:
+3. **`log_audit_entry` returns 10 production callers** — DDB scan:
 
    ```bash
    python3 -c "
@@ -614,7 +614,7 @@ Deletes of already-gone items are 404-silent.
    kwargs = {'TableName': 'prd-outcome-ops-ai-assist-symbol-graph',
              'FilterExpression': '#k = :k AND contains(target_symbol_id, :s)',
              'ExpressionAttributeNames': {'#k': 'kind'},
-             'ExpressionAttributeValues': {':k': {'S': 'calls'}, ':s': {'S': 'report_repos_snapshot'}}}
+             'ExpressionAttributeValues': {':k': {'S': 'calls'}, ':s': {'S': 'log_audit_entry'}}}
    files = set()
    while True:
        r = ddb.scan(**kwargs)
@@ -628,7 +628,7 @@ Deletes of already-gone items are 404-silent.
    for f in sorted(files): print(f'  {f}')"
    ```
 
-   Expected: 10/10 (the 9 *-integration handlers + license-heartbeat-scheduler).
+   Expected: 10/10 (the 9 *-integration handlers + scheduled-reporter).
 
 ### Rollback
 

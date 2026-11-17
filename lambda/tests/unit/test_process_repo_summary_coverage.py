@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 Unit tests to increase coverage for process-repo-summary/handler.py.
 
@@ -613,20 +615,8 @@ class TestHandlerExtended:
     """Extended handler tests for workspace mode and code units."""
 
     @pytest.fixture(autouse=True)
-    def _license_layer_mocks(self, monkeypatch):
-        """Patch ADR-019 license layer calls so existing handler tests
-        run as if the layer were attached and validation succeeded."""
-        monkeypatch.setattr(
-            rsh, "validate_license",
-            MagicMock(return_value={"sub": "test-customer"}),
-        )
-        monkeypatch.setattr(
-            rsh, "check_repo_limit",
-            MagicMock(return_value=MagicMock(allowed=True)),
-        )
-        monkeypatch.setattr(
-            rsh, "track_code_map_updated", MagicMock(return_value=True),
-        )
+    def _handler_env(self, monkeypatch):
+        """Set up handler env for the extended handler tests."""
         # The arch-summary KB upload now goes through
         # shared.dual_write.s3_put_object, which validates that bucket is
         # set (the old direct s3_client.put_object mock tolerated a None

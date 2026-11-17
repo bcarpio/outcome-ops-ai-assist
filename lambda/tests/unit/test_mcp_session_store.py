@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for the MCP session store abstraction (fable-scale chunk 02).
 
 Covers the SessionStore contract on both implementations:

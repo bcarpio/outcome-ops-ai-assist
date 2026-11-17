@@ -171,7 +171,7 @@ age of the underlying graph slices.
 #### find_callers
 
 Find every call-site of a symbol across the workspace. Answers questions like
-"Which Lambdas call `report_repos_snapshot`?"
+"Which Lambdas call `log_audit_entry`?"
 
 **Parameters:**
 - `symbol_id` (required): Canonical symbol ID of the target

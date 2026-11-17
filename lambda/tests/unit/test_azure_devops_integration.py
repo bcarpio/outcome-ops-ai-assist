@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for azure-devops-integration Lambda handler.
 
 The handler ties OAuth + REST client + DDB together. The strategy here
@@ -103,16 +105,6 @@ for _k, _v in _orig_env.items():
 # ---------------------------------------------------------------------------
 # Autouse fixtures
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def _pin_snapshot_helper():
-    """Pin ``report_repos_snapshot`` so the license-snapshot helper
-    short-circuits unless a test explicitly exercises it."""
-    saved = handler.report_repos_snapshot
-    handler.report_repos_snapshot = None
-    yield
-    handler.report_repos_snapshot = saved
 
 
 @pytest.fixture(autouse=True)
@@ -654,7 +646,7 @@ class TestDeleteRepo:
 
     @patch.object(handler, "_get_sqs")
     @patch.object(handler, "dual_write")
-    def test_queues_delete_and_drops_row_and_snapshots(
+    def test_queues_delete_and_drops_row(
         self, mock_dual, mock_sqs_fn, mock_table,
     ):
         mock_sqs = MagicMock()
@@ -668,22 +660,13 @@ class TestDeleteRepo:
             return {}
         mock_table.get_item.side_effect = gi
 
-        # Wire up a real snapshot stub so we can assert it was invoked.
-        snapshot_calls = []
-        handler.report_repos_snapshot = lambda **kw: snapshot_calls.append(kw)
-        try:
-            handler.get_active_repos_for_customer = lambda _r, _t: ["o/p/r"]
-            event = _make_event("DELETE", "/workspaces/w1/azure-devops/repos/o/p/r")
-            result = handler.lambda_handler(event, None)
-            assert result["statusCode"] == 200
-            # Delete enqueued.
-            assert mock_sqs.send_message.called
-            # DDB row dropped.
-            mock_dual.ddb_delete_item.assert_called_once()
-            # License snapshot was invoked after row drop.
-            assert len(snapshot_calls) == 1
-        finally:
-            handler.report_repos_snapshot = None
+        event = _make_event("DELETE", "/workspaces/w1/azure-devops/repos/o/p/r")
+        result = handler.lambda_handler(event, None)
+        assert result["statusCode"] == 200
+        # Delete enqueued.
+        assert mock_sqs.send_message.called
+        # DDB row dropped.
+        mock_dual.ddb_delete_item.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

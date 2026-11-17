@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 GitHub Sync Lambda for OutcomeOps AI Assist.
 
@@ -31,22 +33,7 @@ from botocore.exceptions import ClientError
 # Make shared/ importable; deploy package now bundles lambda/shared/.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared import dual_write  # noqa: E402
-from shared.audit_writer import log_license_fail_open, log_source_sync  # noqa: E402
-
-# ADR-019: license validator + enforcement + usage tracking come from the
-# outcomeops_license layer (mounted at /opt/python in Lambda). Wrap the
-# top-level import in try/except so the module still loads when the layer is
-# unattached -- lambda_handler then catches the resulting NameError /
-# ImportError and emits a LICENSE_FAIL_OPEN regression-detector audit row
-# before re-raising (SQS retries surface the failure to the DLQ).
-try:
-    from outcomeops_license import (  # noqa: E402
-        check_repo_limit,
-        validate_license,
-    )
-except ImportError:  # pragma: no cover - deploy bug path, exercised in tests
-    validate_license = None  # type: ignore[assignment]
-    check_repo_limit = None  # type: ignore[assignment]
+from shared.audit_writer import log_source_sync  # noqa: E402
 
 # Configure logging
 logger = logging.getLogger()
@@ -1276,36 +1263,6 @@ def process_sync_request(message: Dict) -> Dict:
     repo_type = repo.get("repo_type", "application")
     logger.info(f"Repo type: {repo_type}")
 
-    # ADR-019: enforce repo limit per-source. The license-server treats the
-    # repo name (owner/repo, matching log_source_sync's target=) as the
-    # tracked identifier. Already-tracked repos always return allowed=True,
-    # so re-syncs are not blocked.
-    try:
-        limit_result = check_repo_limit(repo=repo_name)
-        if not limit_result.allowed:
-            logger.warning(
-                f"[github-sync] Repo limit reached for {repo_name}: "
-                f"{limit_result.reason} "
-                f"(current={limit_result.current}/{limit_result.limit})"
-            )
-            update_sync_status(
-                workspace_id,
-                repo_name,
-                "blocked_license_limit",
-                error=limit_result.reason,
-            )
-            return {
-                "status": "blocked",
-                "reason": limit_result.reason,
-                "limit": limit_result.limit,
-                "current": limit_result.current,
-            }
-    except Exception as e:
-        # Layer's network-error fallback handles this; if we got here the
-        # call itself blew up unexpectedly. Log and continue rather than
-        # blocking sync on an instrumentation failure.
-        logger.warning(f"[github-sync] check_repo_limit failed: {e}")
-
     # Update status to in_progress
     update_sync_status(workspace_id, repo_name, "in_progress")
 
@@ -1370,8 +1327,6 @@ def process_sync_request(message: Dict) -> Dict:
                     "repo_type": repo_type,
                 },
             )
-            # ADR-019: liveness tracking now lives in connect/disconnect
-            # handlers via report_repos_snapshot (license layer v2.0.0).
             return {"status": "no_changes", "commit_sha": current_sha}
 
         # Get repo file tree
@@ -1434,8 +1389,6 @@ def process_sync_request(message: Dict) -> Dict:
                 "repo_type": repo_type,
             },
         )
-        # ADR-019: liveness tracking now lives in connect/disconnect handlers
-        # via report_repos_snapshot (license layer v2.0.0 desired-state model).
         return result
 
     except Exception as e:
@@ -1758,28 +1711,6 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 
     Processes SQS messages containing sync requests.
     """
-    # ADR-019: validate license before doing any work. SQS-driven Lambdas
-    # raise on validation failure (rather than returning 403) so the message
-    # stays visible for retry / DLQ routing.
-    try:
-        if validate_license is None:
-            raise ImportError("outcomeops_license layer not attached")
-        claims = validate_license()
-        logger.info(
-            f"[github-sync] License validated: {claims.get('sub')}"
-        )
-    except ImportError:
-        logger.error(
-            "[github-sync] License layer not attached - deploy bug (ADR-019)"
-        )
-        log_license_fail_open(
-            os.environ.get("AUDIT_TABLE", ""), "github-sync"
-        )
-        raise
-    except Exception as e:
-        logger.error(f"[github-sync] License validation failed: {e}")
-        raise
-
     logger.info(f"GitHub sync handler invoked with {len(event.get('Records', []))} records")
 
     # Chunk 02: partial-batch-failure semantics. Previously per-record

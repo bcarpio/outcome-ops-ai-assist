@@ -1,3 +1,5 @@
+// Copyright 2025-2026 OutcomeOps
+// SPDX-License-Identifier: Apache-2.0
 /**
  * Region-role client. Queries /api/region/role once at app load to learn
  * whether this UI was served by the active or the passive region.

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 Unit tests for the DLQ handler.
 
@@ -331,46 +333,6 @@ class TestHandleDlqMessage:
         # Assert
         assert result["success"] is False
         assert result["reason"] == "pr_creation_failed"
-
-    @patch("dlq_handler.add_issue_comment")
-    @patch("dlq_handler.create_pull_request")
-    @patch("dlq_handler.get_open_pr_for_branch")
-    @patch("dlq_handler.get_branch_head_sha")
-    @patch("dlq_handler.get_github_token")
-    def test_tracks_usage_when_pr_created(
-        self,
-        mock_token,
-        mock_branch_sha,
-        mock_get_pr,
-        mock_create_pr,
-        mock_comment,
-        sample_message
-    ):
-        """Test: Tracks usage metric when PR is created."""
-        # Arrange
-        mock_token.return_value = "test-token"
-        mock_branch_sha.return_value = "abc123"
-        mock_get_pr.return_value = None
-        mock_create_pr.return_value = {
-            "html_url": "https://github.com/owner/repo/pull/42",
-            "number": 42
-        }
-        mock_comment.return_value = True
-
-        mock_license_module = MagicMock()
-
-        with patch.dict('sys.modules', {'outcomeops_license': mock_license_module}):
-            # Act
-            result = handle_dlq_message(sample_message)
-
-            # Assert
-            assert result["success"] is True
-            mock_license_module.track_pr_generated.assert_called_once_with(
-                repo="owner/repo",
-                pr_number=42,
-                issue_number=123,
-                customer_id=None  # DLQ uses customer_id from message (None in fixture)
-            )
 
 
 # ============================================================================

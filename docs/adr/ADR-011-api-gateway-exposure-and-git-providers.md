@@ -133,7 +133,6 @@ Dashboard follows the same exposure pattern as API Gateway:
 
 ### Neutral
 
-- License validation still works (outbound HTTPS to license server)
 - Bedrock access via NAT Gateway or VPC endpoints (customer choice)
 
 ## Implementation

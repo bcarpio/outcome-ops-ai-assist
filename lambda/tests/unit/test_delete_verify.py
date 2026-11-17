@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for shared.delete_verify.check_repo_clean (delete-bug 04)."""
 from __future__ import annotations
 

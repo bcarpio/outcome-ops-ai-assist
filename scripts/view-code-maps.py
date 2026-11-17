@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 View code maps stored in S3 Vectors.
 

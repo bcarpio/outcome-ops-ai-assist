@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # Secondary-region scheduler Lambdas (HA chunk 9f)
 # ----------------------------------------------------------------------------
@@ -7,8 +9,7 @@
 # secondary region they fire every hour and immediately short-circuit
 # returning passive-region-skip until AppConfig is flipped to active.
 #
-# All gated on var.enable_workspaces && var.secondary_region != ""
-# except license-heartbeat which matches its primary's gating.
+# All gated on var.enable_workspaces && var.secondary_region != "".
 # ============================================================================
 
 # Common source_path pattern — bundles the scheduler + shared/ for the
@@ -809,99 +810,6 @@ resource "aws_lambda_permission" "onenote_scheduler_eventbridge_secondary" {
   function_name = module.onenote_scheduler_lambda_secondary[0].lambda_function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.onenote_hourly_sync_secondary[0].arn
-}
-
-# ----------------------------------------------------------------------------
-# License-heartbeat scheduler (secondary)
-# Load-bearing for the license-server-cost-correctness contract: only
-# one region should phone home at any moment. is_active_region() gate
-# (chunk 07) ensures secondary stays silent while passive.
-# ----------------------------------------------------------------------------
-
-module "license_heartbeat_scheduler_lambda_secondary" {
-  source  = "terraform-aws-modules/lambda/aws"
-  version = "8.1.2"
-
-  count = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
-
-  providers = {
-    aws = aws.secondary
-  }
-
-  function_name = "${var.environment}-${var.app_name}-license-heartbeat-scheduler"
-  role_name     = "${var.environment}-${var.app_name}-license-heartbeat-scheduler-secondary"
-  description   = "Hourly license-server snapshot heartbeat (secondary region)"
-  handler       = "handler.lambda_handler"
-  runtime       = "python3.12"
-  timeout       = 60
-  memory_size   = 256
-
-  source_path = [
-    { path = "${path.module}/../lambda/license-heartbeat-scheduler", pip_requirements = false, patterns = ["!tests/.*", "!__pycache__/.*", "!\\.venv/.*", "!.*\\.pyc"] },
-    { path = "${path.module}/../lambda/shared", prefix_in_zip = "shared" },
-  ]
-
-  cloudwatch_logs_retention_in_days = 7
-  cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
-  quiet_archive_local_exec          = true
-
-  layers = [var.outcomeops_license_layer_arn_secondary]
-
-  environment_variables = merge(
-    {
-      ENV              = var.environment
-      APP_NAME         = var.app_name
-      LOG_LEVEL        = "INFO"
-      WORKSPACES_TABLE = module.workspaces_table_secondary[0].dynamodb_table_id
-    },
-    local.outcomeops_license_env,
-    local.ha_scheduler_env_secondary,
-  )
-
-  attach_policy_statements = true
-  policy_statements = merge(
-    {
-      dynamodb_scan = {
-        effect    = "Allow"
-        actions   = ["dynamodb:Scan"]
-        resources = [module.workspaces_table_secondary[0].dynamodb_table_arn]
-      }
-    },
-    local.outcomeops_license_iam,
-    local.ha_scheduler_iam_secondary,
-  )
-
-  tags = { Purpose = "license-heartbeat-scheduler" }
-}
-
-resource "aws_cloudwatch_event_rule" "license_heartbeat_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
-  provider = aws.secondary
-
-  name                = "${var.environment}-${var.app_name}-license-heartbeat"
-  description         = "Trigger license heartbeat scheduler every hour (secondary region)"
-  schedule_expression = "rate(1 hour)"
-  tags                = { Purpose = "license-heartbeat-scheduler" }
-}
-
-resource "aws_cloudwatch_event_target" "license_heartbeat_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
-  provider = aws.secondary
-
-  rule      = aws_cloudwatch_event_rule.license_heartbeat_secondary[0].name
-  target_id = "license-heartbeat-scheduler"
-  arn       = module.license_heartbeat_scheduler_lambda_secondary[0].lambda_function_arn
-}
-
-resource "aws_lambda_permission" "license_heartbeat_eventbridge_secondary" {
-  count    = var.enable_workspaces && var.secondary_region != "" ? 1 : 0
-  provider = aws.secondary
-
-  statement_id  = "AllowEventBridgeInvoke"
-  action        = "lambda:InvokeFunction"
-  function_name = module.license_heartbeat_scheduler_lambda_secondary[0].lambda_function_name
-  principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.license_heartbeat_secondary[0].arn
 }
 
 # ----------------------------------------------------------------------------

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for cross-repo reference resolution (ADR-056).
 
 The workspace-wide definitions index: ``resolve_repo_facts(facts,

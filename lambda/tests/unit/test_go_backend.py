@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for the Go code-map backend (process-repo-summary)."""
 
 import importlib.util

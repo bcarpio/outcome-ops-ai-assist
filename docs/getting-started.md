@@ -42,16 +42,6 @@ WSL2 distribution, not PowerShell.
 
 These are not in the repo and will block `terraform plan`/`apply` if missing:
 
-- **OutcomeOps license key + license layer ARN** — a commercial artifact issued
-  by OutcomeOps. `outcomeops_license_layer_arn` is a required variable with no
-  default; `terraform plan` prompts for it and cannot proceed without it.
-  **If you have not already received a license, email
-  [support@outcomeops.ai](mailto:support@outcomeops.ai)** and include the **AWS
-  account number(s)** you will deploy into — OutcomeOps shares the license
-  validator Lambda layer to those specific accounts (cross-account layer grant)
-  and issues your signed JWT license key. You cannot deploy until the layer is
-  shared to your account and you have the key. See
-  [License Management](deployment-guide.md#license-management).
 - **A VPC with ≥2 subnets in different AZs** — the Chat UI **and** the MCP
   server are deployed **by default** (`deploy_ui` and `mcp_server_enabled`
   default to `true`) and both run on Fargate in your VPC, so `ui_vpc_id` and
@@ -151,9 +141,9 @@ cp terraform/backend.tf.example terraform/backend.tf
 
 ```bash
 cp terraform/prd.tfvars.example terraform/prd.tfvars
-# Edit terraform/prd.tfvars. FIVE variables have NO default -- you MUST set them:
-#   aws_region, environment, outcomeops_license_layer_arn (from OutcomeOps),
-#   ui_vpc_id, ui_private_subnet_ids (>= 2 subnets across AZs).
+# Edit terraform/prd.tfvars. FOUR variables have NO default -- you MUST set them:
+#   aws_region, environment, ui_vpc_id,
+#   ui_private_subnet_ids (>= 2 subnets across AZs).
 # The UI + MCP server + workspaces deploy BY DEFAULT (deploy_ui,
 #   mcp_server_enabled, enable_workspaces = true) -- that's why the VPC/subnets
 #   are required; set any to false to skip that surface.
@@ -187,8 +177,8 @@ ENVIRONMENT=prd make pre-deploy   # all layers + images, into the prd workspace'
 ```
 
 Rebuild via `pre-deploy` (or a specific `make build-*` target) whenever you pull
-code that changes a handler/`requirements.txt`, edit a Dockerfile, rotate a CA
-SecureString, or bump `outcomeops_license_layer_arn`.
+code that changes a handler/`requirements.txt`, edit a Dockerfile, or rotate a CA
+SecureString.
 
 ### 6. Deploy
 
@@ -219,8 +209,7 @@ just re-run the `plan -out` and `apply` again; it's expected, not an error.
 **After apply — accept Bedrock marketplace agreements** for the models you use;
 third-party models (e.g. Cohere Rerank) fail *silently* without them. See
 [Deployment Guide → Bedrock Model Access](deployment-guide.md#bedrock-model-access-and-marketplace-agreements).
-Then overwrite the SSM SecureString placeholders for your enabled integrations
-and store the license JWT.
+Then overwrite the SSM SecureString placeholders for your enabled integrations.
 
 ### 7. Verify the deploy
 
@@ -239,10 +228,6 @@ terraform output
 
 # 3. UI + auth: open the UI URL in a browser and complete Azure AD sign-in
 #    (public-ALB deploys). Internal-ALB deploys: reach it over your VPC path.
-
-# 4. License accepted -- no license errors in a gated Lambda's recent logs:
-aws logs tail /aws/lambda/prd-outcome-ops-ai-assist-chat-streaming --since 10m \
-  | grep -i licen || echo "no license errors"
 ```
 
 See [Health Check and Monitoring](deployment-guide.md#health-check-and-monitoring)

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 OneDrive Sync Lambda for OutcomeOps AI Assist.
 
@@ -29,7 +31,7 @@ import boto3
 # Make shared/ importable; deploy package now bundles lambda/shared/.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared import dual_write  # noqa: E402
-from shared.audit_writer import log_license_fail_open, log_source_sync  # noqa: E402
+from shared.audit_writer import log_source_sync  # noqa: E402
 from botocore.exceptions import ClientError
 
 from onedrive_api import (
@@ -41,17 +43,6 @@ from onedrive_api import (
 )
 from token_manager import refresh_access_token
 
-# License layer imports (ADR-019). The layer is attached at deploy time;
-# absence is a deploy bug (caught in lambda_handler and surfaces as a
-# LICENSE_FAIL_OPEN audit row + raise so SQS retries / DLQs the message).
-try:
-    from outcomeops_license import (
-        check_repo_limit,
-        validate_license,
-    )
-except ImportError:
-    validate_license = None  # type: ignore[assignment]
-    check_repo_limit = None  # type: ignore[assignment]
 
 # Configure logging
 logger = logging.getLogger()
@@ -313,24 +304,6 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
         )
         return {"status": "error", "error": "Authentication failed"}
 
-    # Per-source repo-limit enforcement (ADR-019). Use drive_id as the
-    # stable identifier; the same user's OneDrive always has the same
-    # drive_id. check_repo_limit returns allowed=True for already-tracked
-    # drives, so this is a no-op for previously-synced sources.
-    repo_project = f"onedrive:{drive_id}"
-    limit_result = check_repo_limit(repo=repo_project)
-    if not limit_result.allowed:
-        logger.warning(
-            f"[onedrive-sync] Repo limit reached for {repo_project}: "
-            f"{limit_result.reason} "
-            f"(current={limit_result.current}/{limit_result.limit})"
-        )
-        update_connection_status(
-            workspace_id, connection_id, "blocked_license_limit",
-            error=limit_result.reason or "Repo limit reached",
-        )
-        return {"status": "skipped", "reason": "license_limit"}
-
     total_files = 0
 
     try:
@@ -416,9 +389,6 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
                 )
                 total_files += 1
 
-        # ADR-019: liveness tracking now lives in connect/disconnect handlers
-        # via report_repos_snapshot (license layer v2.0.0 desired-state model).
-
         current_item_ids = sorted(known_item_ids)
         update_connection_status(
             workspace_id, connection_id, "completed",
@@ -475,24 +445,6 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
 def lambda_handler(event: Dict, context: Any) -> Dict:
     """SQS-triggered handler for OneDrive sync orchestration."""
     logger.info(f"OneDrive sync handler invoked with {len(event.get('Records', []))} records")
-
-    # License validation (ADR-019). SQS-driven entry: raise on failure so
-    # the message is retried / DLQ'd rather than silently dropped. OAuth
-    # token failures elsewhere log "Authentication error during sync"; the
-    # "[onedrive-sync] License validation failed: ..." prefix below keeps
-    # the two failure modes distinguishable in CloudWatch.
-    if validate_license is None:
-        logger.error(
-            "[onedrive-sync] License layer not attached - deploy bug (ADR-019)"
-        )
-        log_license_fail_open(os.environ.get("AUDIT_TABLE", ""), "onedrive-sync")
-        raise ImportError("outcomeops_license layer not attached")
-    try:
-        claims = validate_license()
-        logger.info(f"[onedrive-sync] License validated: {claims.get('sub')}")
-    except Exception as e:
-        logger.error(f"[onedrive-sync] License validation failed: {e}")
-        raise
 
     if "Records" not in event:
         logger.error("No SQS records in event")

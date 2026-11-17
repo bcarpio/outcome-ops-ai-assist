@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 Salesforce Integration Lambda for OutcomeOps AI Assist.
 
@@ -42,12 +44,7 @@ from shared.region_guard import (  # noqa: E402
     passive_response,
 )
 from shared.oauth import salesforce as salesforce_oauth  # noqa: E402
-from shared.license_repos import get_active_repos_for_customer  # noqa: E402
 
-try:
-    from outcomeops_license import report_repos_snapshot  # noqa: E402
-except ImportError:  # pragma: no cover
-    report_repos_snapshot = None  # type: ignore[assignment]
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -81,18 +78,6 @@ def _get_sqs():
     if _sqs is None:
         _sqs = boto3.client("sqs")
     return _sqs
-
-
-def _snapshot_active_repos() -> None:
-    """Refresh the license server's repo-set snapshot after connect/disconnect.
-    Non-blocking on failure -- the hourly heartbeat scheduler backs us up."""
-    if report_repos_snapshot is None:
-        return
-    try:
-        active = get_active_repos_for_customer(_get_dynamodb(), WORKSPACES_TABLE)
-        report_repos_snapshot(active_repos=active)
-    except Exception as e:
-        logger.warning(f"[license-snapshot] non-blocking failure: {e}")
 
 
 # ============================================================================
@@ -385,7 +370,6 @@ def handle_callback(event: Dict) -> Dict:
         },
     )
 
-    _snapshot_active_repos()
 
     log_admin_action(
         AUDIT_TABLE,
@@ -483,7 +467,6 @@ def delete_connection(user_email: str, workspace_id: str, connection_id: str) ->
         ),
     )
 
-    _snapshot_active_repos()
 
     return _response(200, {"disconnected": True})
 

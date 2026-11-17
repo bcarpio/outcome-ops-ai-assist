@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 ServiceNow Integration Lambda for OutcomeOps AI Assist.
 
@@ -46,12 +48,6 @@ from shared.servicenow_api import (  # noqa: E402
     get_current_user,
 )
 
-from shared.license_repos import get_active_repos_for_customer  # noqa: E402
-
-try:
-    from outcomeops_license import report_repos_snapshot  # noqa: E402
-except ImportError:  # pragma: no cover
-    report_repos_snapshot = None  # type: ignore[assignment]
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -76,19 +72,6 @@ def _get_dynamodb():
     if _dynamodb is None:
         _dynamodb = boto3.resource("dynamodb")
     return _dynamodb
-
-
-def _snapshot_active_repos() -> None:
-    """Refresh the license server's repo-set snapshot after any connect
-    or disconnect. Non-blocking on failure -- the hourly heartbeat
-    scheduler is the safety net."""
-    if report_repos_snapshot is None:
-        return
-    try:
-        active = get_active_repos_for_customer(_get_dynamodb(), WORKSPACES_TABLE)
-        report_repos_snapshot(active_repos=active)
-    except Exception as e:
-        logger.warning(f"[license-snapshot] non-blocking failure: {e}")
 
 
 def _get_sqs():
@@ -341,7 +324,6 @@ def handle_callback(event: Dict) -> Dict:
         },
     )
 
-    _snapshot_active_repos()
 
     log_admin_action(
         AUDIT_TABLE,
@@ -435,7 +417,6 @@ def delete_connection(user_email: str, workspace_id: str, connection_id: str) ->
         ),
     )
 
-    _snapshot_active_repos()
 
     return _response(200, {"disconnected": True})
 

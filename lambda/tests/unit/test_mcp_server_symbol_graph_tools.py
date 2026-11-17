@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for the symbol-graph MCP tools on the OutcomeOps gateway.
 
 See docs/mcp-server.md.
@@ -327,7 +329,7 @@ class TestFindCallers:
         assert payload["staleness_seconds"] is None
 
     def test_single_result(self, tables):
-        target = "python:lambda.shared.outcomeops_license::report_repos_snapshot"
+        target = "python:lambda.shared.audit::log_audit_entry"
         _put_fact(
             tables.Table(SYMBOL_GRAPH_TABLE),
             workspace_id=WORKSPACE_ID,
@@ -665,16 +667,16 @@ class TestFindDefinitions:
         assert payload["staleness_seconds"] is None
 
     def test_single_result(self, tables):
-        sym = "python:lambda.shared.outcomeops_license::report_repos_snapshot"
+        sym = "python:lambda.shared.audit::log_audit_entry"
         _put_fact(
             tables.Table(SYMBOL_GRAPH_TABLE),
             workspace_id=WORKSPACE_ID,
             repo=REPO,
             commit_sha=SHA,
             kind="defines",
-            source_symbol_id="python:lambda.shared.outcomeops_license",
+            source_symbol_id="python:lambda.shared.audit",
             target_symbol_id=sym,
-            file_path="lambda/shared/outcomeops_license.py",
+            file_path="lambda/shared/audit.py",
             line=42,
             language="python",
         )
@@ -686,7 +688,7 @@ class TestFindDefinitions:
         payload = json.loads(result["text"])
         assert len(payload["sites"]) == 1
         assert payload["sites"][0]["file_path"] == (
-            "lambda/shared/outcomeops_license.py"
+            "lambda/shared/audit.py"
         )
         assert payload["sites"][0]["line"] == 42
 
@@ -1424,12 +1426,12 @@ class TestListCompletenessEnvelope:
 
     def test_find_symbol_by_name_envelope_complete(self, tables):
         """Happy path on the find_symbol_by_name tool."""
-        bare = "report_repos_snapshot"
+        bare = "log_audit_entry"
         table = tables.Table(SYMBOL_GRAPH_TABLE)
         for i in range(2):
             canonical = (
-                f"python:lambda.shared{i}.outcomeops_license"
-                f"::report_repos_snapshot"
+                f"python:lambda.shared{i}.audit"
+                f"::log_audit_entry"
             )
             _put_fact(
                 table,
@@ -1437,9 +1439,9 @@ class TestListCompletenessEnvelope:
                 repo=REPO,
                 commit_sha=SHA,
                 kind="defines",
-                source_symbol_id=f"python:lambda.shared{i}.outcomeops_license",
+                source_symbol_id=f"python:lambda.shared{i}.audit",
                 target_symbol_id=canonical,
-                file_path=f"lambda/shared{i}/outcomeops_license.py",
+                file_path=f"lambda/shared{i}/audit.py",
                 line=42 + i,
                 language="python",
             )
@@ -1499,7 +1501,7 @@ class TestGroundingEnvelope:
         assert "structural fact" in g["rule"]
 
     def test_find_callers_carries_grounding(self, tables):
-        target = "python:lambda.shared.outcomeops_license::report_repos_snapshot"
+        target = "python:lambda.shared.audit::log_audit_entry"
         _put_fact(
             tables.Table(SYMBOL_GRAPH_TABLE),
             workspace_id=WORKSPACE_ID,
@@ -1537,14 +1539,14 @@ class TestGroundingEnvelope:
             commit_sha=SHA,
             kind="defines",
             source_symbol_id="python:lambda.x::<module>",
-            target_symbol_id="python:lambda.x::report_repos_snapshot",
+            target_symbol_id="python:lambda.x::log_audit_entry",
             file_path="lambda/x.py",
             line=10,
             language="python",
         )
         with _patch_user_workspaces([WORKSPACE_ID]):
             result = mcp_module.handle_find_symbol_by_name(
-                {"bare_name": "report_repos_snapshot", "workspace_id": WORKSPACE_ID},
+                {"bare_name": "log_audit_entry", "workspace_id": WORKSPACE_ID},
                 USER_EMAIL,
             )
         payload = json.loads(result["text"])

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Pre-PR caller-impact analysis for generate-code.
 
 This module is invoked on the **modify-path** only. Greenfield generation
@@ -224,7 +226,7 @@ def _normalize_symbol_id(
     default to ``python:`` when no language prefix is present and a
     Python-shape symbol matched, because the OutcomeOps repo is
     Python-dominant; this matches the proof case in the plan
-    (``report_repos_snapshot``). When a TS subpath matches, default to
+    (``log_audit_entry``). When a TS subpath matches, default to
     ``typescript:`` for the same reason.
     """
 
@@ -312,7 +314,7 @@ def extract_modify_targets(
     shape). We grep for both Python-style symbols (``foo.bar::baz``) and
     TS-style subpath imports (``@scope/pkg/subpath``) — covering the
     two failure cases the plan documents
-    (``report_repos_snapshot`` and ``@acme-corp/shared-utils/http2``).
+    (``log_audit_entry`` and ``@acme-corp/shared-utils/http2``).
 
     Duplicate mentions are collapsed; ``raw_mentions`` carries the
     count for logging.

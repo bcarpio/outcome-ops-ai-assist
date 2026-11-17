@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 
 # === Legacy dict -> unified Response adapter (ADR-035 chunk 11 fallout) ===
 from types import SimpleNamespace

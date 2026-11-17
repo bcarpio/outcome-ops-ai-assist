@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Round-trip integration test for the code-map batch splitting migration
 (chunks 01-06).
 

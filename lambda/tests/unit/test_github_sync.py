@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for github-sync Lambda handler."""
 
 import importlib.util
@@ -21,36 +23,10 @@ mock_ssm_client = MagicMock()
 mock_s3_client = MagicMock()
 
 
-def _make_license_module_stub():
-    """Stand-in for the outcomeops_license layer in unit tests.
-
-    The handler imports validate_license / check_repo_limit at module
-    scope. The layer is mounted at /opt/python in the Lambda runtime;
-    in unit tests we inject a MagicMock module so the imports succeed
-    and individual tests can monkeypatch behaviour.
-    """
-    stub = MagicMock()
-    stub.validate_license.return_value = {"sub": "test-customer"}
-
-    class _Result:
-        def __init__(self, allowed=True, reason=None, current=0, limit=100):
-            self.allowed = allowed
-            self.reason = reason
-            self.current = current
-            self.limit = limit
-
-    stub.check_repo_limit.side_effect = lambda **_: _Result()
-    return stub
-
-
 def _load_handler_module():
     """Load or reload the github-sync handler module."""
     if "github_sync_handler" in sys.modules:
         del sys.modules["github_sync_handler"]
-
-    # Inject a stub outcomeops_license layer so the handler's top-level
-    # `from outcomeops_license import ...` succeeds in the test environment.
-    sys.modules["outcomeops_license"] = _make_license_module_stub()
 
     # Add github-sync dir to path so handler can resolve its sibling imports
     sync_dir = os.path.join(os.path.dirname(__file__), "../../github-sync")
@@ -2045,155 +2021,4 @@ class TestGenerateJwt:
 
         with pytest.raises(ValueError, match="private key not configured"):
             handler_module.generate_jwt()
-
-
-# ============================================================================
-# License layer integration (ADR-019)
-# ============================================================================
-
-
-class _LimitResult:
-    """Lightweight stand-in for outcomeops_license.EnforcementResult."""
-
-    def __init__(self, allowed=True, reason=None, current=0, limit=100):
-        self.allowed = allowed
-        self.reason = reason
-        self.current = current
-        self.limit = limit
-
-
-class TestLicenseValidation:
-    """Test license validation in lambda_handler entry path (ADR-019)."""
-
-    def test_lambda_handler_license_valid(self, monkeypatch):
-        """Valid license claims allow processing to continue."""
-        monkeypatch.setattr(
-            handler_module,
-            "validate_license",
-            lambda: {"sub": "acme-customer", "license": {"tier": "team"}},
-        )
-        monkeypatch.setattr(
-            handler_module, "process_sync_request", lambda msg: {"status": "success"}
-        )
-
-        event = {
-            "Records": [
-                {
-                    "messageId": "msg-001",
-                    "body": json.dumps({
-                        "workspace_id": "ws_test",
-                        "repo_name": "acme/my-repo",
-                        "installation_id": "12345",
-                    }),
-                }
-            ]
-        }
-        result = handler_module.lambda_handler(event, None)
-
-        assert result == {"batchItemFailures": []}
-
-    def test_lambda_handler_license_import_error(self, monkeypatch):
-        """Missing layer (ImportError) emits LICENSE_FAIL_OPEN and re-raises."""
-
-        def raise_import(*args, **kwargs):
-            raise ImportError("No module named 'outcomeops_license'")
-
-        monkeypatch.setattr(handler_module, "validate_license", raise_import)
-        mock_log = MagicMock()
-        monkeypatch.setattr(handler_module, "log_license_fail_open", mock_log)
-
-        event = {
-            "Records": [
-                {
-                    "messageId": "msg-001",
-                    "body": json.dumps({
-                        "workspace_id": "ws_test",
-                        "repo_name": "acme/my-repo",
-                        "installation_id": "12345",
-                    }),
-                }
-            ]
-        }
-        with pytest.raises(ImportError):
-            handler_module.lambda_handler(event, None)
-
-        mock_log.assert_called_once()
-        # First positional arg is the audit table name; second is the lambda
-        # short name used for the regression-detector audit row.
-        args, _ = mock_log.call_args
-        assert args[1] == "github-sync"
-
-    def test_lambda_handler_license_invalid(self, monkeypatch):
-        """Other license errors (expired/invalid) re-raise without fail-open log."""
-
-        def raise_invalid(*args, **kwargs):
-            raise RuntimeError("license expired")
-
-        monkeypatch.setattr(handler_module, "validate_license", raise_invalid)
-        mock_log = MagicMock()
-        monkeypatch.setattr(handler_module, "log_license_fail_open", mock_log)
-
-        event = {
-            "Records": [
-                {
-                    "messageId": "msg-001",
-                    "body": json.dumps({
-                        "workspace_id": "ws_test",
-                        "repo_name": "acme/my-repo",
-                        "installation_id": "12345",
-                    }),
-                }
-            ]
-        }
-        with pytest.raises(RuntimeError, match="license expired"):
-            handler_module.lambda_handler(event, None)
-
-        # log_license_fail_open is for the import-error / unattached-layer
-        # case only; a runtime validation failure should not emit it.
-        mock_log.assert_not_called()
-
-
-class TestRepoLimitEnforcement:
-    """Test per-source check_repo_limit (ADR-019).
-
-    Liveness tracking (license layer v2.0.0 desired-state snapshot via
-    report_repos_snapshot) is owned by the github-integration connect/
-    disconnect handlers and tested in those test modules.
-    """
-
-    @patch.object(handler_module, "get_repo")
-    def test_check_repo_limit_blocked_skips_source(self, mock_get_repo, monkeypatch):
-        """When check_repo_limit returns allowed=False, sync is blocked and
-        update_sync_status is called with status='blocked_license_limit'."""
-        mock_get_repo.return_value = {
-            "repo_type": "application",
-            "include_code_maps": True,
-        }
-        monkeypatch.setattr(
-            handler_module,
-            "check_repo_limit",
-            lambda **_: _LimitResult(
-                allowed=False, reason="repo limit reached", current=10, limit=10
-            ),
-        )
-        mock_update = MagicMock()
-        monkeypatch.setattr(handler_module, "update_sync_status", mock_update)
-        # Ensure we never even attempt to fetch upstream once blocked.
-        monkeypatch.setattr(
-            handler_module,
-            "get_installation_token",
-            MagicMock(side_effect=AssertionError("must not call upstream")),
-        )
-
-        result = handler_module.process_sync_request({
-            "workspace_id": "ws_test",
-            "repo_name": "acme/my-repo",
-            "installation_id": "12345",
-        })
-
-        assert result["status"] == "blocked"
-        assert result["reason"] == "repo limit reached"
-        # Verify the blocked_license_limit status write happened.
-        statuses = [c.args[2] for c in mock_update.call_args_list]
-        assert "blocked_license_limit" in statuses
 

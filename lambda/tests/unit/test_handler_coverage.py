@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 Unit tests to increase coverage for generate-code/handler.py.
 
@@ -5,9 +7,8 @@ Covers:
 - Event type detection (SQS, API Gateway, Jira)
 - Jira event handling (valid, invalid componentKey, exceptions)
 - SQS event handling (plan generation, step execution, PR commands, unknown action)
-- Handler routing (unknown event type, license validation, PR limit)
+- Handler routing (unknown event type)
 - get_queue_url and send_plan_generation_message
-- get_customer_id_from_cache
 - extract_issue_number_from_jira_key
 """
 
@@ -140,38 +141,6 @@ class TestExtractIssueNumberFromJiraKey:
         result = extract_issue_number_from_jira_key("invalid")
         assert isinstance(result, int)
         assert 0 <= result < 100000
-
-
-# ############################################################################
-# get_customer_id_from_cache TESTS
-# ############################################################################
-
-
-class TestGetCustomerIdFromCache:
-    """Test customer ID retrieval from license cache."""
-
-    @patch.dict(sys.modules, {"outcomeops_license": MagicMock(), "outcomeops_license.cache": MagicMock()})
-    def test_returns_sub_from_claims(self):
-        """Test returns 'sub' from cached claims."""
-        mock_cache = sys.modules["outcomeops_license.cache"]
-        mock_cache.get_cached_claims.return_value = {"sub": "customer-123"}
-        result = get_customer_id_from_cache()
-        assert result == "customer-123"
-
-    @patch.dict(sys.modules, {"outcomeops_license": MagicMock(), "outcomeops_license.cache": MagicMock()})
-    def test_returns_none_when_no_claims(self):
-        """Test returns None when no cached claims."""
-        mock_cache = sys.modules["outcomeops_license.cache"]
-        mock_cache.get_cached_claims.return_value = None
-        result = get_customer_id_from_cache()
-        assert result is None
-
-    def test_returns_none_on_import_error(self):
-        """Test returns None when outcomeops_license not available."""
-        # The function catches ImportError internally
-        with patch.dict(sys.modules, {"outcomeops_license": None, "outcomeops_license.cache": None}):
-            result = get_customer_id_from_cache()
-            assert result is None
 
 
 # ############################################################################
@@ -707,15 +676,3 @@ class TestHandlerRouting:
         result = handler(event, None)
         assert result["statusCode"] == 200
         mock_jira_handler.assert_called_once()
-
-    def test_handler_license_validation_failure(self):
-        """Test handler returns 403 when license validation fails."""
-        mock_license = MagicMock()
-        mock_license.validate_license.side_effect = Exception("License expired")
-
-        with patch.dict(sys.modules, {"outcomeops_license": mock_license}):
-            event = {"requestContext": {}, "body": "{}"}
-            result = handler(event, None)
-            assert result["statusCode"] == 403
-            body = json.loads(result["body"])
-            assert "License validation failed" in body["error"]

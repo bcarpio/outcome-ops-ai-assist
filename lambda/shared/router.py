@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Query intent router (shared retrieval seam).
 
 Classifies a user's question into one of five intents so a retrieval
@@ -73,7 +75,7 @@ class RouterDecision:
     ``intent`` is one of ``VALID_INTENTS``.
 
     ``symbol_candidate`` is the user-visible symbol name pulled from
-    the question (e.g. ``report_repos_snapshot``,
+    the question (e.g. ``log_audit_entry``,
     ``@acme-corp/shared-utils/http2``). May be ``None`` for pure
     pattern / dependency / unknown classifications, or for structural
     queries where the model could not isolate a symbol — the context

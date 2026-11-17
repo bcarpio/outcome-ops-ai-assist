@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Azure AD group naming-convention matching (ADR-048 v1.1).
 
 Pure, side-effect-free. A deployment configures a list of case-insensitive glob

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Check handlers package for PR analysis."""
 
 from .adr_compliance import check_adr_compliance

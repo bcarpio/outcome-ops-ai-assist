@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 FastAPI app for SharePoint Integration Lambda.
 Entry point for uvicorn when running under Lambda Web Adapter.

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for teams-sync Lambda (handler, teams_api, token_manager)."""
 
 import importlib.util
@@ -71,24 +73,6 @@ def reset_mocks(monkeypatch):
     handler_module.WORKSPACES_TABLE = "test-workspaces"
     handler_module.FILE_INGESTION_QUEUE = "https://sqs.example.com/ingestion"
     handler_module.TEAMS_SYNC_QUEUE = "https://sqs.example.com/teams-sync"
-
-    # ADR-019: stub the license layer for default-pass behavior in
-    # existing tests. License-specific tests override these per-test.
-    monkeypatch.setattr(
-        handler_module,
-        "validate_license",
-        lambda *a, **kw: {"sub": "test-customer", "license": {"tier": "team"}},
-    )
-
-    def _allow(*a, **kw):
-        result = MagicMock()
-        result.allowed = True
-        result.reason = None
-        result.current = 0
-        result.limit = 100
-        return result
-
-    monkeypatch.setattr(handler_module, "check_repo_limit", _allow)
     yield
 
 
@@ -444,80 +428,6 @@ class TestTeamsSyncLambdaHandler:
         }
         result = handler_module.lambda_handler(event, None)
         assert result == {"batchItemFailures": [{"itemIdentifier": "m2"}]}
-
-
-# ============================================================================
-# License layer enforcement (ADR-019)
-# ============================================================================
-
-
-class TestTeamsSyncLicenseEnforcement:
-
-    def test_lambda_handler_license_valid(self, monkeypatch):
-        """Happy path: validate_license returns claims, sync proceeds."""
-        mock_validate = MagicMock(return_value={"sub": "cust-123"})
-        monkeypatch.setattr(handler_module, "validate_license", mock_validate)
-        with patch.object(handler_module, "process_sync_request") as mock_proc:
-            mock_proc.return_value = {"status": "success"}
-            event = {
-                "Records": [
-                    {"body": json.dumps({"workspace_id": "ws1", "connection_id": "c1"})}
-                ]
-            }
-            result = handler_module.lambda_handler(event, None)
-            assert result == {"batchItemFailures": []}
-            mock_validate.assert_called_once()
-
-    def test_lambda_handler_license_import_error(self, monkeypatch):
-        """Layer-not-attached: emits LICENSE_FAIL_OPEN audit row + raises."""
-        monkeypatch.setattr(handler_module, "validate_license", None)
-        mock_log = MagicMock()
-        monkeypatch.setattr(handler_module, "log_license_fail_open", mock_log)
-
-        event = {"Records": [{"body": json.dumps({"workspace_id": "ws1"})}]}
-        with pytest.raises(ImportError):
-            handler_module.lambda_handler(event, None)
-        mock_log.assert_called_once()
-        assert "teams-sync" in mock_log.call_args[0]
-
-    def test_lambda_handler_license_invalid(self, monkeypatch):
-        """validate_license raising any non-ImportError surfaces as raise."""
-        def _raise(*a, **kw):
-            raise RuntimeError("license expired")
-        monkeypatch.setattr(handler_module, "validate_license", _raise)
-
-        event = {"Records": [{"body": json.dumps({"workspace_id": "ws1"})}]}
-        with pytest.raises(RuntimeError, match="license expired"):
-            handler_module.lambda_handler(event, None)
-
-    def test_check_repo_limit_blocked_skips_source(self, monkeypatch, sample_connection):
-        """When check_repo_limit returns allowed=False, the channel is skipped."""
-        blocked = MagicMock()
-        blocked.allowed = False
-        blocked.reason = "repo_limit_reached"
-        blocked.current = 5
-        blocked.limit = 5
-        mock_check = MagicMock(return_value=blocked)
-        monkeypatch.setattr(handler_module, "check_repo_limit", mock_check)
-
-        with patch.object(handler_module, "_load_oauth_config") as mock_oauth, \
-             patch.object(handler_module, "refresh_access_token") as mock_refresh, \
-             patch.object(handler_module, "get_connection") as mock_get_conn, \
-             patch.object(handler_module, "update_connection_status"), \
-             patch.object(handler_module, "_sync_channel_full") as mock_full, \
-             patch.object(handler_module, "_sync_team_files") as mock_files:
-            mock_get_conn.return_value = sample_connection
-            mock_oauth.return_value = {"client_id": "c", "client_secret": "s"}
-            mock_refresh.return_value = "tok"
-
-            handler_module.process_sync_request({
-                "workspace_id": "ws_test", "connection_id": "conn_test"
-            })
-
-            mock_check.assert_called_once_with(repo="teams:team1/chan1")
-            # Blocked: per-channel sync work is skipped.
-            mock_full.assert_not_called()
-            mock_files.assert_not_called()
 
 
 # ============================================================================

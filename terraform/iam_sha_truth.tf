@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # Shared local for SHA-truth table ARNs (plan-git-truth chunk 01).
 #

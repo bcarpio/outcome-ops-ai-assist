@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Tests for the Azure AD group->workspace backend (chunk 11a).
 
 Covers create/delete/list group bindings + the on-login sync_memberships

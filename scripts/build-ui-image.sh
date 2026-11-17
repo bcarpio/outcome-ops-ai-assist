@@ -1,4 +1,6 @@
 #!/bin/bash
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # Build and push chat UI container image to ECR
 #
 # Usage:

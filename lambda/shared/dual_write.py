@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """shared.dual_write — local write + cross-region replication emit.
 
 Every write that needs to land in BOTH regions under HA goes through

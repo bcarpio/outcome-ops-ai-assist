@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Latency benchmark for ``shared.symbol_graph_reader``.
 
 The production target is a 1M-edge synthetic test. We scope this down

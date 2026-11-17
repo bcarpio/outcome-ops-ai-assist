@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # Chat Streaming Lambda
 # Uses Lambda Web Adapter (LWA) for response streaming
@@ -24,16 +26,14 @@ module "chat_streaming_lambda" {
   # Default -1 (== unreserved) preserves sandbox behavior.
   reserved_concurrent_executions = var.chat_reserved_concurrency
 
-  # Lambda Web Adapter layer for HTTP streaming + OutcomeOps license validator
-  # (ADR-019: license layer is required on every customer-facing Lambda).
-  # The platform-CA layer is also attached unconditionally so that under
+  # Lambda Web Adapter layer for HTTP streaming.
+  # The platform-CA layer is attached unconditionally so that under
   # BYO-internal-CA deploys (ui_acm_certificate_arn pointing at a private-PKI
   # cert), the requests calls to the MCP servers in lambda/chat/handler.py
   # actually trust the listener. Empty platform_ca_bundle_ssm_param_arns
   # ships pure certifi so this is a no-op for default-public-cert deploys.
   layers = [
     "arn:aws:lambda:${var.aws_region}:753240598075:layer:LambdaAdapterLayerX86:25",
-    var.outcomeops_license_layer_arn,
     aws_lambda_layer_version.platform_ca.arn,
   ]
 
@@ -64,9 +64,7 @@ module "chat_streaming_lambda" {
   # Suppress verbose archive output
   quiet_archive_local_exec = true
 
-  # Environment variables for LWA. Merged with the shared license-layer env
-  # block (OUTCOMEOPS_LICENSE_PARAM / SERVER_URL / USAGE_ENABLED) from
-  # local.outcomeops_license_env -- see locals.tf and ADR-019.
+  # Environment variables for LWA.
   environment_variables = merge(
     {
       ENV                                = var.environment
@@ -125,7 +123,6 @@ module "chat_streaming_lambda" {
       REQUESTS_CA_BUNDLE = "/opt/ca-bundle.pem"
       SSL_CERT_FILE      = "/opt/ca-bundle.pem"
     },
-    local.outcomeops_license_env,
     local.ha_writer_env,
     # AppConfig role-read env so shared.region_guard.guard_active() on the
     # chat mutation routes (chunk 05) actually evaluates the local
@@ -142,9 +139,7 @@ module "chat_streaming_lambda" {
     local.bedrock_chat_env,
   )
 
-  # IAM permissions. Merged with the shared license-layer IAM block
-  # (SSM read on the license SSM param + KMS decrypt for aws/ssm) from
-  # local.outcomeops_license_iam -- see locals.tf and ADR-019.
+  # IAM permissions.
   attach_policy_statements = true
   policy_statements = merge({
     # DynamoDB for conversations and messages
@@ -309,7 +304,6 @@ module "chat_streaming_lambda" {
       ]
     }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam,
     # appconfig:GetLatestConfiguration for the region-role read above.
     local.ha_scheduler_iam,

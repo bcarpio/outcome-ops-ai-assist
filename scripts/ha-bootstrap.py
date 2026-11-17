@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """HA bootstrap — back-fill secondary-region state from primary.
 
 For customers who enabled HA AFTER running single-region for a while.

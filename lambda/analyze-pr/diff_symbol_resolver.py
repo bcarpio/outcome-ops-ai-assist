@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Diff-driven symbol resolver for analyze-pr.
 
 Walks a unified diff and the post-diff file content to identify which
@@ -131,7 +133,7 @@ class MutatedSymbol:
     """One canonical symbol the PR mutates.
 
     ``symbol_id`` is the chunk-01 canonical ID (e.g.
-    ``"python:lambda.shared.outcomeops_license::report_repos_snapshot"``)
+    ``"python:lambda.shared.audit::log_audit_entry"``)
     so the chunk-04 reader will find its callers.
 
     ``change_kind`` distinguishes signature-changes (callers likely

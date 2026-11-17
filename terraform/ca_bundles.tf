@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # CA bundles - BYO trust roots for outbound connections from platform code
 # ============================================================================

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Compare Haiku vs Sonnet on the code-map generation prompt for a Lambda.
 
 Reuses the exact `handler-group` prompt template from

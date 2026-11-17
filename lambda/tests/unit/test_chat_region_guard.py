@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Region-guard tests for chat handler mutation routes.
 
 After plan/05, chat mutation routes are gated by
@@ -61,17 +63,6 @@ handle_chat_stream = handler_module.handle_chat_stream
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def stub_license_layer():
-    """ADR-019 license guard must pass for the gate to be the actual
-    test surface; otherwise the 403 comes from the license check and
-    we don't know we're hitting `region_passive`."""
-    license_mock = MagicMock()
-    license_mock.validate_license.return_value = {"sub": "test-customer"}
-    with patch.dict(sys.modules, {"outcomeops_license": license_mock}):
-        yield
 
 
 def _event(method: str, path: str, body: dict | None = None) -> dict:

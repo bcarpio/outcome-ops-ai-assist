@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # Confluence Integration Lambda
 # Handles OAuth flow and connection management for Confluence Cloud
@@ -43,14 +45,6 @@ module "confluence_integration_lambda" {
   # Suppress verbose archive output
   quiet_archive_local_exec = true
 
-  # ADR-019: attach OutcomeOps license validator layer so the
-  # ``report_repos_snapshot`` helper the handler imports is available
-  # at cold start. Without it, the handler's ImportError guard silently
-  # no-ops every connect/disconnect snapshot and the license server
-  # only catches up on the hourly heartbeat.
-  layers = [
-    var.outcomeops_license_layer_arn,
-  ]
 
   environment_variables = merge(
     {
@@ -63,7 +57,6 @@ module "confluence_integration_lambda" {
       AUDIT_TABLE           = module.audit_logs_table.dynamodb_table_id
       AUDIT_RETENTION_DAYS  = tostring(var.audit_retention_days)
     },
-    local.outcomeops_license_env,
     local.ha_writer_env,
     local.ha_scheduler_env,
   )
@@ -145,7 +138,6 @@ module "confluence_integration_lambda" {
         ]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam,
     local.ha_scheduler_iam,
   )
@@ -271,10 +263,6 @@ module "confluence_sync_lambda" {
   # Suppress verbose archive output
   quiet_archive_local_exec = true
 
-  # ADR-019: license validator layer required for every customer-facing Lambda.
-  layers = [
-    var.outcomeops_license_layer_arn,
-  ]
 
   environment_variables = merge(
     {
@@ -287,7 +275,6 @@ module "confluence_sync_lambda" {
       AUDIT_TABLE          = module.audit_logs_table.dynamodb_table_id
       AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
     },
-    local.outcomeops_license_env,
     local.ha_writer_env,
   )
 
@@ -380,7 +367,6 @@ module "confluence_sync_lambda" {
         ]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam,
   )
 

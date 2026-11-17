@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # Optional: GitHub Actions OIDC role for CI-triggered PR analysis
 #

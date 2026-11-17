@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for file-ingestion Lambda -- Teams file handler.
 
 Covers the chunk 03 etag safety net + the base process_teams_file flow.

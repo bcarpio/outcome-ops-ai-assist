@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 Lambda handler for generating RAG answers using Claude 3.5 Sonnet.
 

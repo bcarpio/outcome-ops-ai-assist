@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # Azure DevOps Integration Lambda
 #
@@ -58,11 +60,6 @@ module "azure_devops_integration_lambda" {
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs.arn
   quiet_archive_local_exec          = true
 
-  # ADR-019: attach OutcomeOps license validator layer so the snapshot
-  # helper (``_snapshot_active_repos``) has the layer's symbol available.
-  layers = [
-    var.outcomeops_license_layer_arn,
-  ]
 
   environment_variables = merge(
     {
@@ -85,7 +82,6 @@ module "azure_devops_integration_lambda" {
       AUDIT_TABLE            = module.audit_logs_table.dynamodb_table_id
       AUDIT_RETENTION_DAYS   = tostring(var.audit_retention_days)
     },
-    local.outcomeops_license_env,
     local.ha_writer_env,
     local.ha_scheduler_env,
   )
@@ -170,7 +166,6 @@ module "azure_devops_integration_lambda" {
         ]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam,
     local.ha_scheduler_iam,
   )
@@ -426,9 +421,6 @@ module "azure_devops_sync_lambda" {
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs.arn
   quiet_archive_local_exec          = true
 
-  layers = [
-    var.outcomeops_license_layer_arn,
-  ]
 
   environment_variables = merge(
     {
@@ -458,7 +450,6 @@ module "azure_devops_sync_lambda" {
       AUDIT_TABLE          = module.audit_logs_table.dynamodb_table_id
       AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
     },
-    local.outcomeops_license_env,
     local.ha_writer_env,
   )
 
@@ -530,7 +521,6 @@ module "azure_devops_sync_lambda" {
         resources = [module.audit_logs_table.dynamodb_table_arn]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam,
   )
 

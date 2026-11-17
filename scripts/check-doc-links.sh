@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # Fail if any relative markdown link points at a repo file that does not exist.
 #
 # validate-docs only checks file SIZES for embedding; nothing checked that the

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for file-ingestion Lambda -- Salesforce branches (chunk 05)."""
 
 import importlib.util
@@ -38,7 +40,6 @@ def _load_handler_module():
 handler_module = _load_handler_module()
 process_salesforce_record = handler_module.process_salesforce_record
 process_salesforce_attachment = handler_module.process_salesforce_attachment
-_build_repo_identifier = handler_module._build_repo_identifier
 
 
 @pytest.fixture(autouse=True)
@@ -96,46 +97,6 @@ class TestProcessRecord:
                 object_type_hint="Contact",
             )
         assert key == "workspaces/ws1/salesforce/conn-1/contact/003.md"
-
-
-class TestRepoIdentifier:
-    def test_salesforce_account_uses_instance_url(self):
-        ident = _build_repo_identifier(
-            source="salesforce_account",
-            workspace_id="ws1",
-            body={"instance_url": "https://acme.my.salesforce.com"},
-            file_info={"record_id": "001XXX"},
-        )
-        assert ident == "ws1:salesforce_account:https___acme.my.salesforce.com"
-
-    def test_salesforce_contact_same_ident_shape(self):
-        ident = _build_repo_identifier(
-            source="salesforce_contact",
-            workspace_id="ws1",
-            body={"instance_url": "https://acme.my.salesforce.com"},
-            file_info={"record_id": "003"},
-        )
-        assert ident.endswith(":https___acme.my.salesforce.com")
-
-    def test_salesforce_missing_instance_url_empty(self):
-        ident = _build_repo_identifier(
-            source="salesforce_opportunity",
-            workspace_id="ws1",
-            body={},
-            file_info={},
-        )
-        assert ident == "ws1:salesforce_opportunity:"
-
-    def test_salesforce_attachment_shares_org_identity(self):
-        # Attachments count against the same license entry as parent records
-        # (per ADR-019, one Salesforce org == one licensable repo).
-        ident = _build_repo_identifier(
-            source="salesforce_attachment",
-            workspace_id="ws1",
-            body={"instance_url": "https://acme.my.salesforce.com"},
-            file_info={"content_version_id": "068AAA"},
-        )
-        assert ident == "ws1:salesforce_attachment:https___acme.my.salesforce.com"
 
 
 class TestProcessAttachment:

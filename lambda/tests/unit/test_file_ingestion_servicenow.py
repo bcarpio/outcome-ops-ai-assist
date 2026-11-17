@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for file-ingestion Lambda - ServiceNow branches (chunk 05)."""
 
 import importlib.util
@@ -40,7 +42,6 @@ def _load_handler_module():
 handler_module = _load_handler_module()
 process_servicenow_article = handler_module.process_servicenow_article
 process_servicenow_attachment = handler_module.process_servicenow_attachment
-_build_repo_identifier = handler_module._build_repo_identifier
 
 # Force-load the real shared modules so the process functions' deferred
 # imports resolve to the same module objects the tests patch.
@@ -181,33 +182,3 @@ class TestProcessAttachment:
         )
         assert key is None
 
-
-class TestRepoIdentifier:
-    def test_servicenow_ident_uses_instance_url_at_body_level(self):
-        # `:` and `/` are scrubbed by _build_repo_identifier so the
-        # composite stays parseable downstream.
-        ident = _build_repo_identifier(
-            source="servicenow_article",
-            workspace_id="ws1",
-            body={"instance_url": "https://acme.service-now.com"},
-            file_info={"article_sys_id": "a"},
-        )
-        assert ident == "ws1:servicenow_article:https___acme.service-now.com"
-
-    def test_servicenow_attachment_same_ident_shape(self):
-        ident = _build_repo_identifier(
-            source="servicenow_attachment",
-            workspace_id="ws1",
-            body={"instance_url": "https://acme.service-now.com"},
-            file_info={"attachment_sys_id": "a"},
-        )
-        assert ident.endswith(":https___acme.service-now.com")
-
-    def test_servicenow_missing_instance_url_empty(self):
-        ident = _build_repo_identifier(
-            source="servicenow_article",
-            workspace_id="ws1",
-            body={},
-            file_info={},
-        )
-        assert ident == "ws1:servicenow_article:"

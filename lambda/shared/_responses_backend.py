@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """shared._responses_backend — Bedrock Mantle Responses API backend.
 
 Uses the official `openai` Python SDK pointed at the Bedrock Mantle

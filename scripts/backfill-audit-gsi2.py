@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Backfill GSI2PK/GSI2SK on audit rows that pre-date the GSI2 commit.
 
 The audit table got a new GSI2 (CAT#<category> partition) so the dashboard

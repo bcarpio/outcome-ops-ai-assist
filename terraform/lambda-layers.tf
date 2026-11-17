@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # Lambda Layers
 # - runtime-tools: Git, Make, and build tools for generate-code Lambda

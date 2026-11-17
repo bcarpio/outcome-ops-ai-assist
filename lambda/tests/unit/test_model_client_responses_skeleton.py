@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for shared._responses_backend (chunk 03 skeleton).
 
 Mock the openai SDK; no real network. Mock boto3.ssm for the API key load.

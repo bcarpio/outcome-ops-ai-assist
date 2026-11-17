@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for fable-scale chunk 05 retry semantics in _converse_backend.
 
 Covers:

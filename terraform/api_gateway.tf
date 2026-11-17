@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # API Gateway v2 (HTTP API) - Conditional on enable_github_issue_integration
 # ============================================================================

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # RAG Query Lambda Functions
 # - ask-claude: Generate RAG answers using Claude

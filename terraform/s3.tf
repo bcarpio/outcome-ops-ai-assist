@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # trivy:ignore:AVD-AWS-0132 -- CMK encryption is optional via enable_cmk_encryption toggle
 module "knowledge_base_bucket" {
   source  = "terraform-aws-modules/s3-bucket/aws"

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 Thin wrapper around the schema introspection engine.
 
@@ -31,8 +33,8 @@ class IntrospectionEngineUnavailable(RuntimeError):
     """Raised when the schema introspection engine is called but its
     package isn't importable in the runtime container.
 
-    Catch-and-audit per ADR-019 — the sync Lambda should emit a
-    LICENSE_FAIL_OPEN-style "deploy bug" audit row when it sees this.
+    Catch-and-audit: the sync Lambda should emit a "deploy bug"
+    audit row when it sees this.
     """
 
 

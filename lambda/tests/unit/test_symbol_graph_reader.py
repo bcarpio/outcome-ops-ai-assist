@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for ``shared.symbol_graph_reader``.
 
 Covers the four query shapes (``callers``, ``importers``,
@@ -5,7 +7,7 @@ Covers the four query shapes (``callers``, ``importers``,
 (``QueryResult(sites=[], ...)`` is the answer, not ``None`` and not an
 exception), truncation, prefix vs exact ``importers``, workspace
 scoping, staleness reporting, retry/exhaustion, and the
-``report_repos_snapshot`` integration that anchors the OutcomeOps
+``log_audit_entry`` integration that anchors the OutcomeOps
 proof case. See docs/symbol-graph-validation.md.
 
 Test isolation mirrors ``test_symbol_graph_writer.py`` /
@@ -304,7 +306,7 @@ def test_callers_single_result(tables):
     """One caller -> one CallSite in the result."""
     from shared.symbol_graph_reader import callers  # type: ignore
 
-    target = "python:lambda.shared.outcomeops_license::report_repos_snapshot"
+    target = "python:lambda.shared.audit::log_audit_entry"
     _put_fact(
         tables.Table(SYMBOL_GRAPH_TABLE),
         workspace_id=WORKSPACE_ID,
@@ -341,16 +343,16 @@ def test_definitions_single_repo_returns_single_element_list(tables):
     """Normal case: symbol defined exactly once -> 1-element list."""
     from shared.symbol_graph_reader import definitions  # type: ignore
 
-    sym = "python:lambda.shared.outcomeops_license::report_repos_snapshot"
+    sym = "python:lambda.shared.audit::log_audit_entry"
     _put_fact(
         tables.Table(SYMBOL_GRAPH_TABLE),
         workspace_id=WORKSPACE_ID,
         repo=REPO,
         commit_sha=SHA,
         kind="defines",
-        source_symbol_id="python:lambda.shared.outcomeops_license",
+        source_symbol_id="python:lambda.shared.audit",
         target_symbol_id=sym,
-        file_path="lambda/shared/outcomeops_license.py",
+        file_path="lambda/shared/audit.py",
         line=42,
         language="python",
     )
@@ -362,7 +364,7 @@ def test_definitions_single_repo_returns_single_element_list(tables):
         code_maps_table_name=CODE_MAPS_TABLE,
     )
     assert len(result.sites) == 1
-    assert result.sites[0].file_path == "lambda/shared/outcomeops_license.py"
+    assert result.sites[0].file_path == "lambda/shared/audit.py"
     assert result.sites[0].line == 42
     assert result.complete is True
     assert result.total_known == 1
@@ -412,7 +414,7 @@ def test_callers_truncated_when_result_exceeds_limit(tables):
     """
     from shared.symbol_graph_reader import callers  # type: ignore
 
-    target = "python:lambda.shared.outcomeops_license::report_repos_snapshot"
+    target = "python:lambda.shared.audit::log_audit_entry"
     table = tables.Table(SYMBOL_GRAPH_TABLE)
     limit = 10
     for i in range(limit + 5):
@@ -607,7 +609,7 @@ def test_workspace_scoping_isolates_facts(tables):
     """Facts in workspace A don't bleed into workspace B's query."""
     from shared.symbol_graph_reader import callers  # type: ignore
 
-    target = "python:lambda.shared.outcomeops_license::report_repos_snapshot"
+    target = "python:lambda.shared.audit::log_audit_entry"
     table = tables.Table(SYMBOL_GRAPH_TABLE)
 
     # 3 facts in WORKSPACE_ID
@@ -952,23 +954,23 @@ def test_callers_table_name_from_env(tables, monkeypatch):
 
 
 # ===========================================================================
-# report_repos_snapshot integration
+# log_audit_entry integration
 # ===========================================================================
 
 
-def test_callers_report_repos_snapshot_resolves_nine_known_callers(tables):
-    """callers(workspace_id, "...report_repos_snapshot") returns exactly
+def test_callers_log_audit_entry_resolves_nine_known_callers(tables):
+    """callers(workspace_id, "...log_audit_entry") returns exactly
     the 9 known callers (the integration handlers wired in license-layer
     v2.0.0). Validates the OutcomeOps proof case end-to-end against the
     reader's public surface. See docs/symbol-graph-validation.md.
     """
     from shared.symbol_graph_reader import callers  # type: ignore
 
-    target = "python:lambda.shared.outcomeops_license::report_repos_snapshot"
+    target = "python:lambda.shared.audit::log_audit_entry"
 
     # The 9 callers wired in license-layer v2.0.0 (per the project
     # memory: 9 *-integration connect/disconnect handlers + the hourly
-    # heartbeat). Order doesn't matter — the reader doesn't promise
+    # scheduler). Order doesn't matter — the reader doesn't promise
     # an order, just the set.
     known_callers = [
         ("github-integration", "lambda/github-integration/handler.py", 137),
@@ -979,7 +981,7 @@ def test_callers_report_repos_snapshot_resolves_nine_known_callers(tables):
         ("jira-sync", "lambda/jira-sync/handler.py", 452),
         ("confluence-sync", "lambda/confluence-sync/handler.py", 476),
         ("file-ingestion", "lambda/file-ingestion/handler.py", 1456),
-        ("heartbeat", "lambda/license-heartbeat/handler.py", 42),
+        ("scheduler", "lambda/scheduled-reporter/handler.py", 42),
     ]
 
     table = tables.Table(SYMBOL_GRAPH_TABLE)
@@ -1027,7 +1029,7 @@ def test_fuzzy_resolve_returns_single_canonical_for_unique_bare_name(tables):
     from shared.symbol_graph_reader import fuzzy_resolve_by_name  # type: ignore
 
     table = tables.Table(SYMBOL_GRAPH_TABLE)
-    canonical = "python:lambda.shared.outcomeops_license::report_repos_snapshot"
+    canonical = "python:lambda.shared.audit::log_audit_entry"
     # One defines + several calls all pointing at the same target.
     _put_fact(
         table,
@@ -1035,9 +1037,9 @@ def test_fuzzy_resolve_returns_single_canonical_for_unique_bare_name(tables):
         repo=REPO,
         commit_sha="abc",
         kind="defines",
-        source_symbol_id="python:lambda.shared.outcomeops_license::<module>",
+        source_symbol_id="python:lambda.shared.audit::<module>",
         target_symbol_id=canonical,
-        file_path="lambda/shared/outcomeops_license.py",
+        file_path="lambda/shared/audit.py",
         line=42,
         language="python",
     )
@@ -1057,7 +1059,7 @@ def test_fuzzy_resolve_returns_single_canonical_for_unique_bare_name(tables):
 
     result = fuzzy_resolve_by_name(
         WORKSPACE_ID,
-        "report_repos_snapshot",
+        "log_audit_entry",
         symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
     )
     assert result.canonicals == [canonical]
@@ -1681,12 +1683,12 @@ class TestListCompletenessContract:
         total_known is the deterministic count."""
         from shared.symbol_graph_reader import fuzzy_resolve_by_name  # type: ignore
 
-        bare = "report_repos_snapshot"
+        bare = "log_audit_entry"
         table = tables.Table(SYMBOL_GRAPH_TABLE)
         for i in range(2):
             canonical = (
-                f"python:lambda.shared{i}.outcomeops_license"
-                f"::report_repos_snapshot"
+                f"python:lambda.shared{i}.audit"
+                f"::log_audit_entry"
             )
             _put_fact(
                 table,
@@ -1694,9 +1696,9 @@ class TestListCompletenessContract:
                 repo=REPO,
                 commit_sha=SHA,
                 kind="defines",
-                source_symbol_id=f"python:lambda.shared{i}.outcomeops_license",
+                source_symbol_id=f"python:lambda.shared{i}.audit",
                 target_symbol_id=canonical,
-                file_path=f"lambda/shared{i}/outcomeops_license.py",
+                file_path=f"lambda/shared{i}/audit.py",
                 line=42 + i,
                 language="python",
             )

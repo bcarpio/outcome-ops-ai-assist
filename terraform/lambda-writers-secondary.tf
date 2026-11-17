@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # Secondary-region writer Lambdas (HA chunk 9e)
 # ----------------------------------------------------------------------------
@@ -45,7 +47,6 @@ module "file_ingestion_lambda_secondary" {
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
   quiet_archive_local_exec          = true
 
-  layers = [var.outcomeops_license_layer_arn_secondary]
 
   environment_variables = merge(
     {
@@ -66,7 +67,6 @@ module "file_ingestion_lambda_secondary" {
     # both until 2026-07-08 attachment-parity work surfaced it.
     local.servicenow_common_env,
     local.salesforce_common_env,
-    local.outcomeops_license_env,
     local.ha_writer_env_secondary,
   )
 
@@ -117,7 +117,6 @@ module "file_ingestion_lambda_secondary" {
         resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam_secondary,
   )
 
@@ -175,7 +174,6 @@ module "process_documents_lambda_secondary" {
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
   quiet_archive_local_exec          = true
 
-  layers = [var.outcomeops_license_layer_arn_secondary]
 
   environment_variables = merge(
     {
@@ -194,7 +192,6 @@ module "process_documents_lambda_secondary" {
       PENDING_WORK_TABLE                = module.code_map_pending_work_table_secondary[0].dynamodb_table_id
       FAILED_FILES_TABLE                = module.code_map_failed_files_table_secondary[0].dynamodb_table_id
     },
-    local.outcomeops_license_env,
     local.ha_writer_env_secondary,
     # ADR-016 v1.2 -- chat workload (embed), secondary parity.
     local.bedrock_chat_env_secondary,
@@ -261,7 +258,6 @@ module "process_documents_lambda_secondary" {
         resources = ["*"]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam_secondary,
   )
 
@@ -655,7 +651,6 @@ module "process_repo_summary_lambda_secondary" {
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
   quiet_archive_local_exec          = true
 
-  layers = [var.outcomeops_license_layer_arn_secondary]
 
   environment_variables = merge(
     {
@@ -691,7 +686,6 @@ module "process_repo_summary_lambda_secondary" {
       # /env/app/s3/knowledge-base-bucket) -- these envs had no consumer
       # and existed only on the secondary. Primary side never had them.
     },
-    local.outcomeops_license_env,
     local.ha_writer_env_secondary,
     # ADR-016 v1.2 -- code-maps workload (repo summaries), secondary parity.
     local.bedrock_code_maps_env_secondary,
@@ -792,7 +786,6 @@ module "process_repo_summary_lambda_secondary" {
         resources = ["*"]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam_secondary,
   )
 

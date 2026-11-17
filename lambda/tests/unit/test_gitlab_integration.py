@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for gitlab-integration Lambda handler.
 
 Mirrors test_azure_devops_integration.py, adapted for GitLab's design
@@ -94,16 +96,6 @@ for _k, _v in _orig_env.items():
 # ---------------------------------------------------------------------------
 # Autouse fixtures
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def _pin_snapshot_helper():
-    """Pin ``report_repos_snapshot`` so the license-snapshot helper
-    short-circuits unless a test explicitly exercises it."""
-    saved = handler.report_repos_snapshot
-    handler.report_repos_snapshot = None
-    yield
-    handler.report_repos_snapshot = saved
 
 
 @pytest.fixture(autouse=True)
@@ -645,7 +637,7 @@ class TestUpdateRepo:
 class TestDeleteRepo:
 
     @patch.object(handler, "dual_write")
-    def test_drops_row_and_snapshots(self, mock_dual, mock_table):
+    def test_drops_row(self, mock_dual, mock_table):
         def gi(Key, **_):
             if Key["SK"].startswith("WS_MEMBER#"):
                 return {"Item": {"role": "workspace_admin"}}
@@ -654,17 +646,10 @@ class TestDeleteRepo:
             return {}
         mock_table.get_item.side_effect = gi
 
-        snapshot_calls = []
-        handler.report_repos_snapshot = lambda **kw: snapshot_calls.append(kw)
-        try:
-            handler.get_active_repos_for_customer = lambda _r, _t: ["acme/svc"]
-            event = _make_event("DELETE", "/workspaces/w1/gitlab/repos/acme/svc")
-            result = handler.lambda_handler(event, None)
-            assert result["statusCode"] == 200
-            mock_dual.ddb_delete_item.assert_called_once()
-            assert len(snapshot_calls) == 1
-        finally:
-            handler.report_repos_snapshot = None
+        event = _make_event("DELETE", "/workspaces/w1/gitlab/repos/acme/svc")
+        result = handler.lambda_handler(event, None)
+        assert result["statusCode"] == 200
+        mock_dual.ddb_delete_item.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

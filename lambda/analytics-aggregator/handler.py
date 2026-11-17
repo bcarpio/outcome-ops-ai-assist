@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 Analytics Aggregator Lambda - DynamoDB Streams consumer for audit-logs.
 
@@ -277,8 +279,6 @@ _KNOWN_ADMIN_ACTIONS = frozenset(
         "DOCUMENT_DOWNLOADED",
         "MCP_TOOL_INVOKED",
         "TESTS_RAN",
-        # ADR-019 license-layer regression detector
-        "LICENSE_FAIL_OPEN",
     }
 )
 

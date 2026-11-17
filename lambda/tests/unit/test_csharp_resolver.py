@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for the C# cross-module reference resolver (ADR-055).
 
 Black-box over the C# extractor + the language-agnostic resolution pass: extract

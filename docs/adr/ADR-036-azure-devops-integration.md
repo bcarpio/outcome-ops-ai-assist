@@ -117,9 +117,9 @@ the ADO equivalent extends that to three segments.
 - Matches Git URL convention (`org/project/repo`) — the slug shape a
   user copy-pastes from a browser address bar IS the slug the
   platform stores
-- Single namespace prefix (`AZDO_REPO#`) lets the license layer
-  count ADO repos with one additional allow-list entry per
-  `project_license_layer_v2`
+- Single namespace prefix (`AZDO_REPO#`) keeps every ADO repo
+  enumerable under one scan prefix rather than fragmenting across
+  per-org prefixes
 - Connection and repo rows carry explicit `org`, `project`, `repo`,
   `provider` attributes so consumers can query without parsing the
   SK
@@ -132,8 +132,7 @@ the ADO equivalent extends that to three segments.
   consistency-with-prefix-style is dominated by the loss in
   consistency-with-the-URL-the-user-typed.
 - **Per-org separate prefix (`AZDO_REPO_ORG_{org}#`).** Fragments the
-  scan; license-layer counting needs N allow-list entries instead of
-  one; workspace-cross-org views break.
+  scan; workspace-cross-org views break.
 
 ### Decision 3: Sync model — pull-based, mirroring GitHub
 

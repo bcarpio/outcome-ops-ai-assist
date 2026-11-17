@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # Analytics Cost Alert Lambda
 # Scheduled daily; reads the analytics aggregates table to compute MTD spend

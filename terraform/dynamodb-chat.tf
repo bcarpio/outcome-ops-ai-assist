@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # DynamoDB Table for Chat Conversations
 # Single-tenant design - no org/workspace isolation needed

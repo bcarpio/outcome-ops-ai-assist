@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 ABAP symbol/edge extractor — hybrid Tree-sitter + regex (ADR-020).
 

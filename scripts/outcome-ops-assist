@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 
 # outcome-ops-assist - CLI for OutcomeOps AI (knowledge base queries & PR analysis)
 # Usage:
@@ -62,7 +64,7 @@ EXAMPLES:
     outcome-ops-assist analyze-pr 456 myorg/myrepo --env prd
 
   PR Analysis (Azure DevOps):
-    outcome-ops-assist analyze-pr-ado 42 bcarpio/OutcomeOps/ooai-license-server \\
+    outcome-ops-assist analyze-pr-ado 42 my-org/my-project/my-repo \\
       --connection-id conn-xyz --env prd
 
 ENVIRONMENT VARIABLES:

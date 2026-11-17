@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 SharePoint Sync Lambda for OutcomeOps AI Assist.
 
@@ -24,7 +26,7 @@ import boto3
 # Make shared/ importable; deploy package now bundles lambda/shared/.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared import dual_write  # noqa: E402
-from shared.audit_writer import log_license_fail_open, log_source_sync  # noqa: E402
+from shared.audit_writer import log_source_sync  # noqa: E402
 from botocore.exceptions import ClientError
 
 from sharepoint_api import (
@@ -37,19 +39,6 @@ from sharepoint_api import (
 )
 from token_manager import refresh_access_token
 
-# License layer imports (ADR-019). The layer is attached at deploy time;
-# absence is a deploy bug (caught in lambda_handler and surfaces as a
-# LICENSE_FAIL_OPEN audit row + raise so SQS retries / DLQs the message).
-try:
-    from outcomeops_license import (
-        check_repo_limit,
-        validate_license,
-    )
-except ImportError:
-    # Module symbols left None intentionally - lambda_handler detects this
-    # and emits the LICENSE_FAIL_OPEN audit row before raising.
-    validate_license = None  # type: ignore[assignment]
-    check_repo_limit = None  # type: ignore[assignment]
 
 # Configure logging
 logger = logging.getLogger()
@@ -309,21 +298,6 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
             if not site_id:
                 continue
 
-            # Per-source repo-limit enforcement (ADR-019). Use site_id
-            # (Microsoft Graph stable identifier) rather than the display
-            # name, which can change. check_repo_limit returns
-            # allowed=True for already-tracked sites, so this is a no-op
-            # for previously-synced sources.
-            repo_project = f"sharepoint:{site_id}"
-            limit_result = check_repo_limit(repo=repo_project)
-            if not limit_result.allowed:
-                logger.warning(
-                    f"[sharepoint-sync] Repo limit reached for {repo_project}: "
-                    f"{limit_result.reason} "
-                    f"(current={limit_result.current}/{limit_result.limit})"
-                )
-                continue
-
             # Sync files from each drive
             for drive_info in drives:
                 drive_id = drive_info.get("id")
@@ -422,9 +396,6 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
                 except SharePointAPIError as e:
                     logger.warning(f"Failed to sync pages for site {site_name}: {e}")
 
-            # ADR-019: liveness tracking now lives in connect/disconnect
-            # handlers via report_repos_snapshot (license layer v2.0.0).
-
         update_connection_status(
             workspace_id, connection_id, "completed",
             file_count=total_files,
@@ -472,24 +443,6 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
 def lambda_handler(event: Dict, context: Any) -> Dict:
     """SQS-triggered handler for SharePoint sync orchestration."""
     logger.info(f"SharePoint sync handler invoked with {len(event.get('Records', []))} records")
-
-    # License validation (ADR-019). SQS-driven entry: raise on failure so
-    # the message is retried / DLQ'd rather than silently dropped. OAuth
-    # token failures elsewhere log "Authentication error during sync"; the
-    # "[sharepoint-sync] License validation failed: ..." prefix below
-    # keeps the two failure modes distinguishable in CloudWatch.
-    if validate_license is None:
-        logger.error(
-            "[sharepoint-sync] License layer not attached - deploy bug (ADR-019)"
-        )
-        log_license_fail_open(os.environ.get("AUDIT_TABLE", ""), "sharepoint-sync")
-        raise ImportError("outcomeops_license layer not attached")
-    try:
-        claims = validate_license()
-        logger.info(f"[sharepoint-sync] License validated: {claims.get('sub')}")
-    except Exception as e:
-        logger.error(f"[sharepoint-sync] License validation failed: {e}")
-        raise
 
     if "Records" not in event:
         logger.error("No SQS records in event")

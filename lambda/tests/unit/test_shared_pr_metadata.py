@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for shared.pr_metadata — provider-agnostic PR-metadata retrieval.
 
 Covers both GitHub and Azure DevOps branches. Mocks ``urlopen`` at the

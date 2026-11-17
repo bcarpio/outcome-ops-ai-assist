@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for shared._responses_backend translation paths (chunks 04, 05, 06).
 
 Covers:

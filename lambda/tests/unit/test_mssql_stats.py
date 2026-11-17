@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for lambda/shared/mssql_stats.py.
 
 Covers the type-categorization helpers, SQL-generation helpers, result

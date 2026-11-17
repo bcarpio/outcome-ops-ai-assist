@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for ``shared.symbol_graph_writer`` (v2 schema).
 
 Covers the v2 write path (SK-keyed upsert into a single (workspace, repo)
@@ -205,7 +207,7 @@ def tables():
 # ---------------------------------------------------------------------------
 
 
-def _calls_fact(i: int, target: str = "python:lambda.shared.outcomeops_license::report_repos_snapshot") -> FactShim:
+def _calls_fact(i: int, target: str = "python:lambda.shared.audit::log_audit_entry") -> FactShim:
     return FactShim(
         kind="calls",
         source_symbol_id=f"python:lambda.caller{i}.handler::lambda_handler",
@@ -366,7 +368,7 @@ def test_callers_query_via_gsi1(tables):
     """target-kind-index resolves callers(X) by (workspace, target)."""
     from shared.symbol_graph_writer import write_facts  # type: ignore
 
-    target = "python:lambda.shared.outcomeops_license::report_repos_snapshot"
+    target = "python:lambda.shared.audit::log_audit_entry"
     facts = [_calls_fact(i, target=target) for i in range(9)]
 
     write_facts(
@@ -462,7 +464,7 @@ def test_write_facts_large_round_trip(tables):
     from shared.symbol_graph_writer import write_facts  # type: ignore
 
     facts: list = []
-    target_callee = "python:lambda.shared.outcomeops_license::report_repos_snapshot"
+    target_callee = "python:lambda.shared.audit::log_audit_entry"
     facts.extend(_calls_fact(i, target=target_callee) for i in range(30))
 
     import_target = "typescript:@acme-corp/shared-utils/http2::*"
@@ -926,7 +928,7 @@ def test_facts_from_two_extractions_coexist_in_one_partition(tables):
         return FactWithPath(
             kind="calls",
             source_symbol_id=f"python:caller_{path}::lambda_handler",
-            target_symbol_id=f"python:target_{path}::report_repos_snapshot",
+            target_symbol_id=f"python:target_{path}::log_audit_entry",
             file_path=path,
             line=10 + i,
             language="python",
@@ -1390,8 +1392,8 @@ class TestResolutionStoragePrimitives:
             scan_repo_facts,
         )
 
-        raw = "python:lambda.caller0.handler::report_repos_snapshot"
-        resolved = "python:lambda.shared.outcomeops_license::report_repos_snapshot"
+        raw = "python:lambda.caller0.handler::log_audit_entry"
+        resolved = "python:lambda.shared.audit::log_audit_entry"
         orig, old_sk = self._seed_one_raw_call(raw)
 
         new_fact = FactShim(
@@ -1429,8 +1431,8 @@ class TestResolutionStoragePrimitives:
             rewrite_resolved_targets,
         )
 
-        raw = "python:lambda.caller0.handler::report_repos_snapshot"
-        resolved = "python:lambda.shared.outcomeops_license::report_repos_snapshot"
+        raw = "python:lambda.caller0.handler::log_audit_entry"
+        resolved = "python:lambda.shared.audit::log_audit_entry"
         orig, old_sk = self._seed_one_raw_call(raw)
         new_fact = FactShim(
             kind="calls",

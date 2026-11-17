@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Backfill source_ip (and optionally user_agent) on existing audit rows.
 
 Used when audit rows were written before the IP-capture fix landed and the

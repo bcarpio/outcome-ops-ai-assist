@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for outlook-integration and outlook-sync token_manager.py files."""
 
 import base64

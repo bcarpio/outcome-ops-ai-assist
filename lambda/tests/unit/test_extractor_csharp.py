@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for the C# extractor (ADR-017 regex strategy)."""
 
 from __future__ import annotations

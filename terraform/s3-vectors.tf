@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # S3 Vectors for Knowledge Base Vector Storage
 # Replaces DynamoDB for vector storage with native similarity search

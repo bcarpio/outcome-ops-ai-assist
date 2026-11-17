@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for outlook-sync Lambda handler."""
 
 import importlib.util
@@ -69,24 +71,6 @@ def reset_mocks(monkeypatch):
     mock_sqs_client.reset_mock()
     mock_ssm_client.reset_mock()
     handler_module._oauth_config = None
-
-    # ADR-019: stub the license layer for default-pass behavior in
-    # existing tests. License-specific tests override these per-test.
-    monkeypatch.setattr(
-        handler_module,
-        "validate_license",
-        lambda *a, **kw: {"sub": "test-customer", "license": {"tier": "team"}},
-    )
-
-    def _allow(*a, **kw):
-        result = MagicMock()
-        result.allowed = True
-        result.reason = None
-        result.current = 0
-        result.limit = 100
-        return result
-
-    monkeypatch.setattr(handler_module, "check_repo_limit", _allow)
     yield
 
 
@@ -502,85 +486,3 @@ class TestLambdaHandler:
         result = lambda_handler(event, None)
         assert result == {"batchItemFailures": [{"itemIdentifier": "m2"}]}
 
-
-# ============================================================================
-# License layer enforcement (ADR-019)
-# ============================================================================
-
-
-class TestOutlookSyncLicenseEnforcement:
-    """ADR-019 license-layer integration tests."""
-
-    def test_lambda_handler_license_valid(self, monkeypatch):
-        """Happy path: validate_license returns claims, sync proceeds."""
-        mock_validate = MagicMock(return_value={"sub": "cust-123"})
-        monkeypatch.setattr(handler_module, "validate_license", mock_validate)
-        with patch.object(handler_module, "process_sync_request") as mock_proc:
-            mock_proc.return_value = {"status": "success"}
-            event = {
-                "Records": [
-                    {"body": json.dumps({"workspace_id": "ws1", "connection_id": "c1"})}
-                ]
-            }
-            result = lambda_handler(event, None)
-            assert result == {"batchItemFailures": []}
-            mock_validate.assert_called_once()
-
-    def test_lambda_handler_license_import_error(self, monkeypatch):
-        """Layer-not-attached: emits LICENSE_FAIL_OPEN audit row + raises."""
-        monkeypatch.setattr(handler_module, "validate_license", None)
-        mock_log = MagicMock()
-        monkeypatch.setattr(handler_module, "log_license_fail_open", mock_log)
-
-        event = {"Records": [{"body": json.dumps({"workspace_id": "ws1"})}]}
-        with pytest.raises(ImportError):
-            lambda_handler(event, None)
-        mock_log.assert_called_once()
-        assert "outlook-sync" in mock_log.call_args[0]
-
-    def test_lambda_handler_license_invalid(self, monkeypatch):
-        """validate_license raising any non-ImportError surfaces as raise."""
-        def _raise(*a, **kw):
-            raise RuntimeError("license expired")
-        monkeypatch.setattr(handler_module, "validate_license", _raise)
-
-        event = {"Records": [{"body": json.dumps({"workspace_id": "ws1"})}]}
-        with pytest.raises(RuntimeError, match="license expired"):
-            lambda_handler(event, None)
-
-    def test_check_repo_limit_blocked_skips_source(self, monkeypatch):
-        """When check_repo_limit returns allowed=False, the mailbox is skipped."""
-        blocked = MagicMock()
-        blocked.allowed = False
-        blocked.reason = "repo_limit_reached"
-        blocked.current = 5
-        blocked.limit = 5
-        mock_check = MagicMock(return_value=blocked)
-        monkeypatch.setattr(handler_module, "check_repo_limit", mock_check)
-
-        with patch.object(handler_module, "_load_oauth_config") as mock_oauth, \
-             patch.object(handler_module, "refresh_access_token") as mock_refresh, \
-             patch.object(handler_module, "get_connection") as mock_get_conn, \
-             patch.object(handler_module, "update_connection_status") as mock_update, \
-             patch.object(handler_module, "_process_folder_page") as mock_proc_folder:
-            mock_get_conn.return_value = {
-                "selected_folders": [{"id": "f1", "displayName": "Inbox"}],
-                "delta_links": {},
-            }
-            mock_oauth.return_value = {"client_id": "c", "client_secret": "s"}
-            mock_refresh.return_value = "tok"
-
-            result = process_sync_request({
-                "workspace_id": "ws_test", "connection_id": "conn_test"
-            })
-
-            assert result["status"] == "skipped"
-            assert result["reason"] == "repo_limit"
-            mock_check.assert_called_once_with(repo="outlook:conn_test")
-            # Folder processing is skipped.
-            mock_proc_folder.assert_not_called()
-            # Status should be marked blocked_license_limit for visibility.
-            mock_update.assert_any_call(
-                "ws_test", "conn_test", "blocked_license_limit",
-                error="repo_limit_reached",
-            )

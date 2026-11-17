@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for shared.gitlab_instances — the multi-instance registry.
 
 The invariant that protects every existing deploy: with GITLAB_INSTANCES

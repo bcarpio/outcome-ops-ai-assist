@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Backfill analytics aggregates from existing audit-log rows.
 
 The analytics-aggregator Lambda only sees audit records written after it is

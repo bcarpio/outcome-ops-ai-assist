@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 Azure DevOps Integration Lambda for OutcomeOps AI Assist.
 
@@ -58,21 +60,12 @@ from shared.audit_writer import (  # noqa: E402
     ACTION_OAUTH_CONNECTION_ESTABLISHED,
     log_admin_action,
 )
-from shared.license_repos import get_active_repos_for_customer  # noqa: E402
 from shared.region_guard import (  # noqa: E402
     RegionPassiveError,
     guard_active,
     passive_response,
 )
 
-# ADR-019: license layer is the source of truth for repo limits. Wrap
-# the import in try/except so the module still loads when the layer is
-# unattached -- the snapshot helper below treats that as a no-op (the
-# heartbeat scheduler is the safety net).
-try:
-    from outcomeops_license import report_repos_snapshot  # noqa: E402
-except ImportError:  # pragma: no cover - deploy bug path
-    report_repos_snapshot = None  # type: ignore[assignment]
 
 from shared.azure_devops_api import (  # noqa: E402
     AzureDevOpsAPIError,
@@ -183,20 +176,6 @@ def _get_client_secret() -> str:
     )
     _client_secret = response["Parameter"]["Value"]
     return _client_secret
-
-
-def _snapshot_active_repos() -> None:
-    """Refresh the license server's active-repo snapshot after any
-    connect, disconnect, add-repos, or remove-repo. Non-blocking on
-    failure -- the hourly heartbeat scheduler is the safety net.
-    """
-    if report_repos_snapshot is None:
-        return
-    try:
-        active = get_active_repos_for_customer(_get_dynamodb(), WORKSPACES_TABLE)
-        report_repos_snapshot(active_repos=active)
-    except Exception as e:
-        logger.warning(f"[license-snapshot] non-blocking failure: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -439,7 +418,6 @@ def handle_callback(event: Dict) -> Dict:
     except Exception as e:
         logger.warning(f"Failed to emit OAUTH_CONNECTION_ESTABLISHED audit: {e}")
 
-    _snapshot_active_repos()
 
     return _redirect(
         f"/workspaces/{workspace_id}/settings?tab=integrations"
@@ -833,9 +811,6 @@ def handle_add_repos(event: Dict) -> Dict:
         if include_code_maps:
             _queue_sync_job(workspace_id, slug, connection_id)
 
-    if added:
-        _snapshot_active_repos()
-
     return _response(201, {
         "added": len(added),
         "skipped": skipped,
@@ -1018,7 +993,6 @@ def handle_delete_repo(event: Dict) -> Dict:
         WORKSPACES_TABLE,
         {"PK": f"WS#{workspace_id}", "SK": f"AZDO_REPO#{slug}"},
     )
-    _snapshot_active_repos()
     return _response(200, {"message": "Repo removed"})
 
 
@@ -1095,7 +1069,6 @@ def handle_disconnect(event: Dict) -> Dict:
         {"PK": f"WS#{workspace_id}", "SK": f"AZDO_CONNECTION#{connection_id}"},
     )
     delete_tokens(connection_id)
-    _snapshot_active_repos()
 
     return _response(200, {"message": "Disconnected"})
 

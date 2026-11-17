@@ -1,9 +1,11 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """End-to-end test of ``chat.handler._augment_context_with_symbol_graph``
 against a moto-backed symbol-graph table.
 
 This is the chat-augmentation "Definition of done" gate:
 
-> ``report_repos_snapshot`` and ``@acme-corp/shared-utils/http2`` queries
+> ``log_audit_entry`` and ``@acme-corp/shared-utils/http2`` queries
 > return correct caller / importer lists (verified end-to-end on dev
 > workspace after backfill).
 
@@ -298,13 +300,13 @@ def _import_augment():
 
 
 # ===========================================================================
-# report_repos_snapshot integration -- 9 known callers
+# log_audit_entry integration -- 9 known callers
 # ===========================================================================
 
 
-def test_augment_returns_nine_callers_for_report_repos_snapshot(_inject_clients):
+def test_augment_returns_nine_callers_for_log_audit_entry(_inject_clients):
     """Plan-gkg/05 DoD: end-to-end question -> structural block with
-    9 callers of report_repos_snapshot.
+    9 callers of log_audit_entry.
 
     Seeds the 9 license-layer v2.0.0 caller sites (project memory
     project_license_layer_v2.md), stubs the router to return
@@ -316,10 +318,10 @@ def test_augment_returns_nine_callers_for_report_repos_snapshot(_inject_clients)
 
     bedrock_stub = _inject_clients
     bedrock_stub.converse.return_value = _bedrock_response(
-        "structural", "report_repos_snapshot"
+        "structural", "log_audit_entry"
     )
 
-    target = "python:lambda.shared.outcomeops_license::report_repos_snapshot"
+    target = "python:lambda.shared.audit::log_audit_entry"
 
     # Definition site so the block carries a "Defined at" line.
     _put_fact(
@@ -327,16 +329,16 @@ def test_augment_returns_nine_callers_for_report_repos_snapshot(_inject_clients)
         repo=REPO,
         commit_sha=SHA,
         kind="defines",
-        source_symbol_id="python:lambda.shared.outcomeops_license",
+        source_symbol_id="python:lambda.shared.audit",
         target_symbol_id=target,
-        file_path="lambda/shared/outcomeops_license.py",
+        file_path="lambda/shared/audit.py",
         line=142,
     )
 
     # The 9 callers wired in license-layer v2.0.0 (per the project
     # memory: 9 *-integration connect/disconnect handlers + the
-    # hourly heartbeat scheduler). Same fixtures as
-    # test_symbol_graph_reader.test_callers_report_repos_snapshot_*.
+    # scheduled reporter). Same fixtures as
+    # test_symbol_graph_reader.test_callers_log_audit_entry_*.
     known_callers = [
         ("github-integration", "lambda/github-integration/handler.py", 137),
         ("jira-integration", "lambda/jira-integration/handler.py", 114),
@@ -346,7 +348,7 @@ def test_augment_returns_nine_callers_for_report_repos_snapshot(_inject_clients)
         ("jira-sync", "lambda/jira-sync/handler.py", 452),
         ("confluence-sync", "lambda/confluence-sync/handler.py", 476),
         ("file-ingestion", "lambda/file-ingestion/handler.py", 1456),
-        ("heartbeat", "lambda/license-heartbeat/handler.py", 42),
+        ("scheduler", "lambda/scheduled-reporter/handler.py", 42),
     ]
 
     for name, file_path, line in known_callers:
@@ -364,7 +366,7 @@ def test_augment_returns_nine_callers_for_report_repos_snapshot(_inject_clients)
     handler = _import_augment()
 
     out = handler._augment_context_with_symbol_graph(
-        question="Which Lambda functions call `report_repos_snapshot`?",
+        question="Which Lambda functions call `log_audit_entry`?",
         workspace_ids=[WORKSPACE_ID],
         user_id="user@x.com",
     )
@@ -373,7 +375,7 @@ def test_augment_returns_nine_callers_for_report_repos_snapshot(_inject_clients)
 
     assert decision is not None
     assert decision.intent == "structural"
-    assert decision.symbol_candidate == "report_repos_snapshot"
+    assert decision.symbol_candidate == "log_audit_entry"
 
     # The block must contain a non-empty caller list with every
     # known file path. Order doesn't matter -- the renderer sorts.
@@ -383,7 +385,7 @@ def test_augment_returns_nine_callers_for_report_repos_snapshot(_inject_clients)
             f"missing {file_path}:{line} from block: {graph_block!r}"
         )
     # Definition anchor came through too.
-    assert "Defined at: lambda/shared/outcomeops_license.py:142" in graph_block
+    assert "Defined at: lambda/shared/audit.py:142" in graph_block
     # Graph fired — no skip reason.
     assert out["graph_skip_reason"] is None
 
@@ -459,7 +461,7 @@ def test_augment_kill_switch_disables_augmentation(monkeypatch, _inject_clients)
     handler = _import_augment()
 
     out = handler._augment_context_with_symbol_graph(
-        question="Who calls report_repos_snapshot?",
+        question="Who calls log_audit_entry?",
         workspace_ids=[WORKSPACE_ID],
         user_id="user@x.com",
     )
@@ -481,7 +483,7 @@ def test_augment_kill_switch_legacy_var_still_honored(
     handler = _import_augment()
 
     out = handler._augment_context_with_symbol_graph(
-        question="Who calls report_repos_snapshot?",
+        question="Who calls log_audit_entry?",
         workspace_ids=[WORKSPACE_ID],
         user_id="user@x.com",
     )
@@ -827,20 +829,20 @@ def test_augment_fuzzy_resolver_uses_explicit_limit_not_default(
 
     bedrock_stub = _inject_clients
     bedrock_stub.converse.return_value = _bedrock_response(
-        "structural", "report_repos_snapshot"
+        "structural", "log_audit_entry"
     )
 
     canonical = (
-        "python:lambda.shared.outcomeops_license::report_repos_snapshot"
+        "python:lambda.shared.audit::log_audit_entry"
     )
     _put_fact(
         workspace_id=WORKSPACE_ID,
         repo=REPO,
         commit_sha=SHA,
         kind="defines",
-        source_symbol_id="python:lambda.shared.outcomeops_license::<module>",
+        source_symbol_id="python:lambda.shared.audit::<module>",
         target_symbol_id=canonical,
-        file_path="lambda/shared/outcomeops_license.py",
+        file_path="lambda/shared/audit.py",
         line=142,
     )
 
@@ -864,7 +866,7 @@ def test_augment_fuzzy_resolver_uses_explicit_limit_not_default(
     )
 
     out = handler._augment_context_with_symbol_graph(
-        question="Which Lambdas call `report_repos_snapshot`?",
+        question="Which Lambdas call `log_audit_entry`?",
         workspace_ids=[WORKSPACE_ID],
         user_id="user@x.com",
     )

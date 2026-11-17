@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for onenote-sync Lambda (handler + license-layer integration)."""
 
 import importlib.util
@@ -69,23 +71,6 @@ def reset_mocks(monkeypatch):
     handler_module.FILE_INGESTION_QUEUE = "https://sqs.example.com/ingestion"
     handler_module.ONENOTE_SYNC_QUEUE = "https://sqs.example.com/on-sync"
     handler_module.DELETE_QUEUE = "https://sqs.example.com/delete"
-
-    # ADR-019: stub the license layer for default-pass behavior.
-    monkeypatch.setattr(
-        handler_module,
-        "validate_license",
-        lambda *a, **kw: {"sub": "test-customer", "license": {"tier": "team"}},
-    )
-
-    def _allow(*a, **kw):
-        result = MagicMock()
-        result.allowed = True
-        result.reason = None
-        result.current = 0
-        result.limit = 100
-        return result
-
-    monkeypatch.setattr(handler_module, "check_repo_limit", _allow)
     yield
 
 
@@ -280,36 +265,6 @@ class TestProcessSyncRequest:
         })
         assert result["status"] == "error"
         assert "Authentication failed" in result["error"]
-
-    @patch.object(handler_module, "_load_oauth_config")
-    @patch.object(handler_module, "refresh_access_token", return_value="access")
-    def test_repo_limit_block_uses_user_id_repo(
-        self, _refresh, _load, mock_table, sample_connection, monkeypatch
-    ):
-        """Repo identity for OneNote is `onenote:{user_id}` — one user = one
-        licensable repo regardless of how many notebooks they pick."""
-        mock_table.get_item.return_value = {"Item": sample_connection}
-
-        seen_repos = []
-
-        def _block(*a, **kw):
-            seen_repos.append(kw.get("repo"))
-            r = MagicMock()
-            r.allowed = False
-            r.reason = "tier limit"
-            r.current = 100
-            r.limit = 100
-            return r
-
-        monkeypatch.setattr(handler_module, "check_repo_limit", _block)
-
-        result = handler_module.process_sync_request({
-            "workspace_id": "ws_test", "connection_id": "conn_test"
-        })
-        assert result["status"] == "skipped"
-        assert result["reason"] == "license_limit"
-        # Repo identity uses user_id from Graph /me, not notebook id
-        assert seen_repos == ["onenote:user-graph-1"]
 
     @patch.object(handler_module, "queue_orphan_cleanup")
     @patch.object(handler_module, "queue_page_ingestion")
@@ -527,40 +482,16 @@ class TestQueueOrphanCleanup:
 
 
 # ============================================================================
-# lambda_handler - SQS dispatch + license-layer regression detection
+# lambda_handler - SQS dispatch
 # ============================================================================
-
-
-class TestLambdaHandlerLicenseLayer:
-
-    def test_license_layer_absent_emits_audit_and_raises(self, monkeypatch):
-        """validate_license=None means the license layer wasn't attached at
-        deploy. Per ADR-019, emit LICENSE_FAIL_OPEN audit + raise so SQS
-        retries / DLQs the message rather than silently dropping it."""
-        monkeypatch.setattr(handler_module, "validate_license", None)
-
-        with patch.object(handler_module, "log_license_fail_open") as mock_log:
-            with pytest.raises(ImportError):
-                handler_module.lambda_handler({"Records": []}, None)
-        mock_log.assert_called_once()
-        assert mock_log.call_args[0][1] == "onenote-sync"
-
-    def test_license_validation_failure_raises(self, monkeypatch):
-        """validate_license() raising = expired/revoked/etc. Re-raise."""
-        def _raise(*a, **kw):
-            raise Exception("license expired")
-        monkeypatch.setattr(handler_module, "validate_license", _raise)
-
-        with pytest.raises(Exception, match="license expired"):
-            handler_module.lambda_handler({"Records": []}, None)
-
-    def test_no_records_returns_400(self):
-        result = handler_module.lambda_handler({}, None)
-        assert result["statusCode"] == 400
 
 
 class TestLambdaHandlerDispatch:
     """Chunk 02: SQS partial-batch-failure contract."""
+
+    def test_no_records_returns_400(self):
+        result = handler_module.lambda_handler({}, None)
+        assert result["statusCode"] == 400
 
     @patch.object(handler_module, "process_sync_request")
     def test_processes_sqs_records(self, mock_process):

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 resource "aws_cloudwatch_event_bus" "automation" {
   name = "${var.environment}-${var.app_name}-bus"
 

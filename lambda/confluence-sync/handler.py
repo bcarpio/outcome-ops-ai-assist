@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 Confluence Sync Lambda for OutcomeOps AI Assist.
 
@@ -26,21 +28,7 @@ from botocore.exceptions import ClientError
 # at zip root via terraform source_path (see lambda-confluence.tf).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared import dual_write  # noqa: E402
-from shared.audit_writer import log_license_fail_open, log_source_sync  # noqa: E402
-
-# ADR-019: license validator + enforcement + usage tracking come from the
-# outcomeops_license layer (mounted at /opt/python in Lambda). Wrap the
-# top-level import in try/except so the module still loads when the layer is
-# unattached -- lambda_handler then catches the missing-symbol case and emits
-# a LICENSE_FAIL_OPEN regression-detector audit row before re-raising.
-try:
-    from outcomeops_license import (  # noqa: E402
-        check_repo_limit,
-        validate_license,
-    )
-except ImportError:  # pragma: no cover - deploy bug path, exercised in tests
-    validate_license = None  # type: ignore[assignment]
-    check_repo_limit = None  # type: ignore[assignment]
+from shared.audit_writer import log_source_sync  # noqa: E402
 
 from confluence_api import (
     ConfluenceAPIError,
@@ -323,29 +311,6 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
             space_key = space.get("key", "")
             space_name = space.get("name", space_key)
 
-            # ADR-019: per-space repo limit. Use a stable, namespaced
-            # identifier (`confluence:{space_key}`) so the license-server's
-            # string-equality dedupe never collides with GitHub repo names.
-            # Already-tracked spaces always return allowed=True.
-            source_id = f"confluence:{space_key}"
-            try:
-                limit_result = check_repo_limit(repo=source_id)
-                if not limit_result.allowed:
-                    logger.warning(
-                        f"[confluence-sync] Repo limit reached for {source_id}: "
-                        f"{limit_result.reason} "
-                        f"(current={limit_result.current}/{limit_result.limit})"
-                    )
-                    spaces_blocked.append(space_name)
-                    continue
-            except Exception as e:
-                # Layer's network-error fallback handles this; if we got here
-                # the call itself blew up unexpectedly. Log and continue.
-                logger.warning(
-                    f"[confluence-sync] check_repo_limit failed for "
-                    f"{source_id}: {e}"
-                )
-
             logger.info(f"[{sync_type}] Listing pages in space: {space_name} ({space_key})")
 
             try:
@@ -478,9 +443,6 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
                 "attachments_queued": attachment_count,
             },
         )
-        # ADR-019: liveness tracking now lives in the connect/disconnect
-        # handlers via report_repos_snapshot (license layer v2.0.0 desired-
-        # state model).
         if spaces_blocked:
             result["spaces_blocked"] = spaces_blocked
         return result
@@ -507,27 +469,6 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 
     Receives high-level sync requests and queues individual pages.
     """
-    # ADR-019: validate license before doing any work. SQS-driven, so we
-    # raise on validation failure rather than returning a status code.
-    try:
-        if validate_license is None:
-            raise ImportError("outcomeops_license layer not attached")
-        claims = validate_license()
-        logger.info(
-            f"[confluence-sync] License validated: {claims.get('sub')}"
-        )
-    except ImportError:
-        logger.error(
-            "[confluence-sync] License layer not attached - deploy bug (ADR-019)"
-        )
-        log_license_fail_open(
-            os.environ.get("AUDIT_TABLE", ""), "confluence-sync"
-        )
-        raise
-    except Exception as e:
-        logger.error(f"[confluence-sync] License validation failed: {e}")
-        raise
-
     logger.info(f"Confluence sync handler invoked with {len(event.get('Records', []))} records")
 
     if "Records" not in event:

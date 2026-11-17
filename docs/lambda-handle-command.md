@@ -1,15 +1,13 @@
 # Lambda: Handle Command
 
-Processes commands issued via PR comments (e.g., `outcomeops: fix readme`) with license validation and usage tracking.
+Processes commands issued via PR comments (e.g., `outcomeops: fix readme`).
 
 ## Purpose
 
 The handle-command Lambda function processes bot commands from PR comments. It:
 
-- **Validates license** before processing commands
 - **Parses commands** from PR comment text
 - **Dispatches to handlers** for specific command types
-- **Tracks usage** for analytics (commands are unlimited, no limits enforced)
 - **Posts results** as PR comments
 
 ## Trigger
@@ -47,26 +45,6 @@ The handle-command Lambda is invoked via GitHub Actions workflow on `issue_comme
 | `outcomeops: regenerate` | Regenerate the entire PR (code, tests, docs) |
 
 Commands are case-insensitive and support variations (e.g., `fix-readme`, `fixreadme`).
-
-## License Integration
-
-### Validation Flow
-
-1. **License validation**: Verifies customer has valid OutcomeOps license
-2. **Command execution**: Process the command
-3. **Usage tracking**: Report command execution for analytics
-
-> **Note:** Commands are unlimited - licensing is based on repos and PRs only. Commands are tracked for analytics but not subject to limits.
-
-### Error Responses
-
-**License validation failed (403):**
-```json
-{
-  "error": "License validation failed",
-  "message": "License expired or invalid"
-}
-```
 
 ## GitHub Integration
 
@@ -286,7 +264,6 @@ jobs:
 ## Error Handling
 
 - **Invalid input**: Returns 400 with validation details
-- **License errors**: Returns 403 with license message
 - **GitHub API errors**: Logs error, raises exception
 - **SSM parameter missing**: Logs error, raises exception
 
@@ -298,9 +275,7 @@ All logs written to: `/aws/lambda/{environment}-{app_name}-handle-command`
 
 ```
 INFO - Handle command invoked: {"command": "outcomeops: help", ...}
-INFO - [handle-command] License validated: customer-123 (tier: team)
 INFO - Parsed command: type=help, action=help
-INFO - [usage-tracker] Tracking command executed: help in owner/repo
 INFO - Posted comment to PR #123 in owner/repo
 ```
 
@@ -309,7 +284,6 @@ INFO - Posted comment to PR #123 in owner/repo
 - **boto3**: AWS SDK for SSM operations
 - **requests**: GitHub API HTTP client
 - **pydantic**: Request/response validation
-- **outcomeops_license**: License validation and usage tracking (via Lambda layer)
 
 See `lambda/handle-command/requirements.txt` for full dependency list.
 
@@ -335,6 +309,5 @@ make test-unit
 
 - [Architecture Overview](architecture.md)
 - [Lambda: Analyze PR](lambda-analyze-pr.md) - Similar workflow setup pattern
-- [License Server](../ooai-license-server/docs/) - License validation details
 
 <!-- Confluence sync -->

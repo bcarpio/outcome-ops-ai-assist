@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """GitLab OAuth 2.0 token manager (ADR-050, Model A delegated OAuth).
 
 GitLab is authorized per-user (authorization-code + refresh). The deployment has

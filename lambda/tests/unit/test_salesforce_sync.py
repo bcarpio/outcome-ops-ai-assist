@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for salesforce-sync Lambda."""
 
 import importlib.util
@@ -44,7 +46,6 @@ lambda_handler = handler_module.lambda_handler
 def reset_globals():
     handler_module._dynamodb = None
     handler_module._sqs = None
-    handler_module.validate_license = None
     yield
 
 

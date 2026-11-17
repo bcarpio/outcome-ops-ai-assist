@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for servicenow-sync Lambda (chunk 03)."""
 
 import importlib.util
@@ -42,7 +44,6 @@ def reset_globals():
     handler_module._dynamodb = None
     handler_module._sqs = None
     handler_module._s3 = None
-    handler_module.validate_license = None
     yield
 
 
@@ -273,28 +274,6 @@ class TestUpdateSyncStatusExceptionSwallowed:
         mock_table.update_item.side_effect = RuntimeError("throttled")
         # Best-effort: exception is caught + logged, not re-raised.
         handler_module._update_sync_status("ws1", "c1", status="success")
-
-
-class TestLambdaHandlerLicenseValidation:
-    """Covers the validate_license branch of the SQS envelope.
-    validate_license is None by default in tests (via reset_globals);
-    setting it to a mock lets us hit the try/except lines."""
-
-    def test_license_ok_dispatches_records(self, mock_table, mock_sqs, mock_s3):
-        handler_module.validate_license = MagicMock()
-        with patch.object(handler_module, "process_sync_message", return_value={"status": "success"}):
-            resp = lambda_handler({
-                "Records": [{"messageId": "m1", "body": json.dumps({"workspace_id": "w", "connection_id": "c"})}]
-            }, None)
-        assert resp == {"batchItemFailures": []}
-        handler_module.validate_license.assert_called_once()
-
-    def test_license_exception_raises(self, mock_table, mock_sqs, mock_s3):
-        handler_module.validate_license = MagicMock(side_effect=RuntimeError("no license"))
-        with pytest.raises(RuntimeError):
-            lambda_handler({
-                "Records": [{"messageId": "m1", "body": json.dumps({"workspace_id": "w", "connection_id": "c"})}]
-            }, None)
 
 
 class TestUpdateSyncStatusRegression:

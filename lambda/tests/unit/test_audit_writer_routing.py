@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for ``shared.audit_writer.log_routing_decision``.
 
 Covers:
@@ -116,7 +118,7 @@ def mock_table():
 
 class TestHashQuestion:
     def test_hash_returns_hex_sha256_of_input(self):
-        text = "Which Lambda functions call report_repos_snapshot?"
+        text = "Which Lambda functions call log_audit_entry?"
         digest = _hash_question(text)
         expected = hashlib.sha256(text.encode("utf-8")).hexdigest()
         assert digest == expected
@@ -124,7 +126,7 @@ class TestHashQuestion:
         assert len(digest) == 64
         # The plaintext question must not be a substring of the hash.
         assert text not in digest
-        assert "report_repos_snapshot" not in digest
+        assert "log_audit_entry" not in digest
 
     def test_hash_empty_string_is_deterministic(self):
         # Empty input still produces a well-formed hash so the audit
@@ -148,7 +150,7 @@ class TestHashQuestion:
 
 class TestLogRoutingDecisionHappyPath:
     def test_full_payload_lands_in_ddb_item(self, mock_table):
-        question = "Which Lambda functions call report_repos_snapshot?"
+        question = "Which Lambda functions call log_audit_entry?"
         digest = _hash_question(question)
 
         log_routing_decision(

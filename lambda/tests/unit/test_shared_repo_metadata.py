@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for shared.repo_metadata — provider-agnostic repo shape retrieval.
 
 Covers both GitHub and Azure DevOps branches. Mocks ``urlopen`` and

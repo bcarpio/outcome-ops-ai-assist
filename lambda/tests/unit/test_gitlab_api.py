@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for shared.gitlab_api (ADR-050 GitLab API v4 raw-urllib client)."""
 
 from __future__ import annotations

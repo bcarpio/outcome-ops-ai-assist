@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Seed the audit table with a realistic enterprise-scale demo workload.
 
 Generates ~4,000 bedrock queries, ~15 refusals, and ~80 admin actions

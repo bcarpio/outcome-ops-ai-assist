@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 
 # === Legacy dict -> unified Response adapter ===
 # Tests written before chunk 09 mocked the boto3 Converse-shaped dict

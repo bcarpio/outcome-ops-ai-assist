@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # MCP Server Catalog
 # Deploys MCP server containers (Fargate Spot) with ALB routing.

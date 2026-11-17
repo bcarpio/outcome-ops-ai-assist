@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 locals {
   workspace_is_dev = terraform.workspace == "dev"
   workspace_is_prd = terraform.workspace == "prd"
@@ -13,43 +15,6 @@ locals {
     ? "${var.ui_subdomain}-${var.environment}.${var.domain}"
     : "${var.ui_subdomain}.${var.domain}"
   ) : ""
-
-  # License SSM path: honor an explicit override, else derive the canonical
-  # /<env>/<app>/license/key (var default is "" so terraform-create, the
-  # Lambda read, and the docs never disagree by env prefix).
-  outcomeops_license_ssm_param = var.outcomeops_license_ssm_param != "" ? var.outcomeops_license_ssm_param : "/${var.environment}/${var.app_name}/license/key"
-
-  # ADR-019: shared license layer attach values for every gated Lambda.
-  outcomeops_license_env = {
-    OUTCOMEOPS_LICENSE_PARAM      = local.outcomeops_license_ssm_param
-    OUTCOMEOPS_LICENSE_SERVER_URL = var.outcomeops_license_server_url
-    OUTCOMEOPS_USAGE_ENABLED      = "true"
-  }
-
-  # When HA is on, the license SSM param lives in BOTH regions so
-  # secondary-region Lambdas can read it locally (cross-region SSM reads
-  # would couple secondary availability to primary). Grant access to
-  # both region ARNs in the same statement; without this, secondary
-  # Lambdas attaching this policy get only the primary-region ARN and
-  # fail license validation with AccessDeniedException.
-  outcomeops_license_iam = {
-    outcomeops_license_ssm_read = {
-      effect  = "Allow"
-      actions = ["ssm:GetParameter"]
-      resources = compact([
-        "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${local.outcomeops_license_ssm_param}",
-        var.secondary_region != "" ? "arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter${local.outcomeops_license_ssm_param}" : "",
-      ])
-    }
-    outcomeops_license_kms_decrypt = {
-      effect  = "Allow"
-      actions = ["kms:Decrypt"]
-      resources = compact([
-        "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm",
-        var.secondary_region != "" ? "arn:aws:kms:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm" : "",
-      ])
-    }
-  }
 }
 
 # Hard-fail if workspace does not match environment variable.

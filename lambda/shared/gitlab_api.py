@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """GitLab API v4 client (ADR-050) -- raw ``urllib``, no SDK.
 
 Every call takes a user-scoped access token (Model A delegated OAuth), so results

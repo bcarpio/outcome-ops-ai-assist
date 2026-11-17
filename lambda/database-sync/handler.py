@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 Database Sync Lambda for OutcomeOps AI Assist.
 
@@ -6,18 +8,14 @@ customer database connection, strips top_values from the produced
 artifact, and queues per-table chunks to file-ingestion.
 
 Flow per SQS record:
-  1. License-validate (ADR-019). Raise on failure -> SQS retry / DLQ.
-  2. Fetch DATABASE_CONNECTION#{conn_id} from DDB.
-  3. Decrypt the DB credential, emit DB_CREDENTIAL_USED audit row.
-  4. check_repo_limit("database:{engine}:{host_hash}") - repo identity
-     uses engine+host_hash so the same physical DB across many
-     workspace connections counts once.
-  5. Call the engine's introspector.introspect_database() directly
+  1. Fetch DATABASE_CONNECTION#{conn_id} from DDB.
+  2. Decrypt the DB credential, emit DB_CREDENTIAL_USED audit row.
+  3. Call the engine's introspector.introspect_database() directly
      (bypassing build_context to avoid the upstream's Ollama runtime
      install on Lambda).
-  6. For each in-scope table: serialize to dict, strip top_values,
+  4. For each in-scope table: serialize to dict, strip top_values,
      wrap in the per-table YAML envelope, queue to FILE_INGESTION_QUEUE.
-  7. Update connection status to completed, write known_table_ids.
+  5. Update connection status to completed, write known_table_ids.
   8. Queue orphan_cleanup to delete-worker.
   9. Emit DATABASE_SYNCED audit row.
 
@@ -44,21 +42,11 @@ from shared import dual_write  # noqa: E402
 from shared.audit_writer import (  # noqa: E402
     ACTION_DB_CREDENTIAL_USED,
     log_admin_action,
-    log_license_fail_open,
     log_source_sync,
 )
 
 from credential_manager import get_credential
 
-# License layer imports (ADR-019)
-try:
-    from outcomeops_license import (
-        check_repo_limit,
-        validate_license,
-    )
-except ImportError:
-    validate_license = None  # type: ignore[assignment]
-    check_repo_limit = None  # type: ignore[assignment]
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -974,23 +962,6 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
         database_name=database_name,
     )
 
-    # Per-source repo-limit enforcement (ADR-019). Use engine+host_hash
-    # as the stable identifier — same physical DB across workspaces
-    # counts once.
-    repo_project = f"database:{engine}:{host_hash}"
-    limit_result = check_repo_limit(repo=repo_project)
-    if not limit_result.allowed:
-        logger.warning(
-            f"[database-sync] Repo limit reached for {repo_project}: "
-            f"{limit_result.reason} "
-            f"(current={limit_result.current}/{limit_result.limit})"
-        )
-        update_connection_status(
-            workspace_id, connection_id, "blocked_license_limit",
-            error=limit_result.reason or "Repo limit reached",
-        )
-        return {"status": "skipped", "reason": "license_limit"}
-
     try:
         build_result = _run_schema_introspection(connection, credential)
     except Exception as e:
@@ -1071,9 +1042,6 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
     schemas_removed = sorted(set(prior_available) - set(available_schemas))
     schema_count_delta = len(schemas_added) - len(schemas_removed)
 
-    # ADR-019: liveness tracking now lives in connect/disconnect handlers
-    # via report_repos_snapshot (license layer v2.0.0 desired-state model).
-
     update_connection_status(
         workspace_id, connection_id, "completed",
         tables_count=len(current_table_ids),
@@ -1149,19 +1117,6 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     """SQS-triggered handler for database sync orchestration."""
     logger.info(f"Database sync handler invoked with {len(event.get('Records', []))} records")
 
-    # License validation (ADR-019). SQS-driven: raise on failure -> retry / DLQ.
-    if validate_license is None:
-        logger.error(
-            "[database-sync] License layer not attached - deploy bug (ADR-019)"
-        )
-        log_license_fail_open(os.environ.get("AUDIT_TABLE", ""), "database-sync")
-        raise ImportError("outcomeops_license layer not attached")
-    try:
-        claims = validate_license()
-        logger.info(f"[database-sync] License validated: {claims.get('sub')}")
-    except Exception as e:
-        logger.error(f"[database-sync] License validation failed: {e}")
-        raise
 
     if "Records" not in event:
         logger.error("No SQS records in event")

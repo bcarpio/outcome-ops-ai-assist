@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for the analytics endpoints in workspace-management Lambda.
 
 The handlers read pre-aggregated daily rollups from the analytics table:

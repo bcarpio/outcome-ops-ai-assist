@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 Shared audit writer for admin-action and auth audit rows.
 
@@ -80,11 +82,6 @@ ACTION_DOCUMENT_INGESTED = "DOCUMENT_INGESTED"
 ACTION_LOGIN_SUCCEEDED = "LOGIN_SUCCEEDED"
 ACTION_API_KEY_USED = "API_KEY_USED"
 ACTION_MCP_JWT_VALIDATED = "MCP_JWT_VALIDATED"
-
-## License layer regression detector (ADR-019 Decision 4). Steady-state
-# count is zero - any occurrence means a Lambda was deployed without
-# the outcomeops_license layer attached, which is a deploy bug.
-ACTION_LICENSE_FAIL_OPEN = "LICENSE_FAIL_OPEN"
 
 # HA passive-mode block (chunk 9c). Steady-state count is zero in
 # active region; non-zero in passive region during a failover drill
@@ -170,7 +167,6 @@ ADMIN_ACTIONS = frozenset(
         ACTION_LOGIN_SUCCEEDED,
         ACTION_API_KEY_USED,
         ACTION_MCP_JWT_VALIDATED,
-        ACTION_LICENSE_FAIL_OPEN,
         ACTION_ADMIN_MUTATION_BLOCKED_PASSIVE,
         ACTION_REPO_SYNCED,
         ACTION_CONFLUENCE_SYNCED,
@@ -595,39 +591,4 @@ def log_routing_decision(
         user_agent=user_agent,
         details=details,
         category=CATEGORY_ADMIN,
-    )
-
-
-def log_license_fail_open(
-    audit_table_name: str,
-    lambda_name: str,
-    reason: str = "import_error",
-    workspace_id: str = "",
-) -> None:
-    """Emit a LICENSE_FAIL_OPEN audit row when a Lambda cannot validate
-    its license because the outcomeops_license layer is unattached.
-
-    Per ADR-019 v2.0, this is a regression detector. Steady-state count
-    is zero. A non-zero count means a Lambda was deployed without the
-    layer attached, which is a deploy bug. Dashboard alerts on any
-    occurrence.
-
-    Non-fatal: catches all exceptions, never raises.
-
-    Args:
-        audit_table_name: DynamoDB table name (typically AUDIT_TABLE env).
-        lambda_name: Short name of the Lambda that hit the fail-open path
-            (e.g., "chat", "process-repo-summary").
-        reason: What was caught. Defaults to "import_error" since the
-            layer being unattached produces ImportError on the validate
-            call. Other values: "ssm_param_missing", "validate_exception".
-        workspace_id: Workspace context if available; "" for system-level.
-    """
-    log_admin_action(
-        audit_table_name,
-        ACTION_LICENSE_FAIL_OPEN,
-        workspace_id=workspace_id,
-        user_email="",  # System-level event, no human caller.
-        details={"lambda": lambda_name, "reason": reason},
-        category=CATEGORY_AUTH,
     )

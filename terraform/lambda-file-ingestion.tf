@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # File Ingestion Pipeline
 # Central pipeline for processing documents from all sources
@@ -134,12 +136,6 @@ module "file_ingestion_lambda" {
   # Suppress verbose archive output
   quiet_archive_local_exec = true
 
-  # ADR-019: outcomeops_license layer for fail-closed license validation
-  # plus per-source repo-limit enforcement at the upstream ingest boundary.
-  layers = [
-    var.outcomeops_license_layer_arn,
-  ]
-
   environment_variables = merge(
     {
       ENV               = var.environment
@@ -147,7 +143,7 @@ module "file_ingestion_lambda" {
       WORKSPACES_TABLE  = module.workspaces_table[0].dynamodb_table_id
       KB_BUCKET         = module.knowledge_base_bucket.s3_bucket_id
       OAUTH_KMS_KEY_ARN = aws_kms_key.oauth_tokens[0].arn
-      # AUDIT_TABLE for log_license_fail_open() regression detector (ADR-019)
+      # AUDIT_TABLE for audit logging
       AUDIT_TABLE          = module.audit_logs_table.dynamodb_table_id
       AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
       # plan-git-truth chunk 01: SHA-truth ledger tables. Wired but not
@@ -166,7 +162,6 @@ module "file_ingestion_lambda" {
     # module init on every import. Thread the vars through so a future
     # switch to fetch-back-per-record doesn't crash on missing config.
     local.salesforce_common_env,
-    local.outcomeops_license_env,
     local.ha_writer_env,
   )
 
@@ -259,7 +254,7 @@ module "file_ingestion_lambda" {
         ]
       }
 
-      # DynamoDB audit logging for LICENSE_FAIL_OPEN regression-detector rows
+      # DynamoDB audit logging
       dynamodb_audit = {
         effect = "Allow"
         actions = [
@@ -270,7 +265,6 @@ module "file_ingestion_lambda" {
         ]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam,
   )
 
@@ -344,12 +338,6 @@ module "process_documents_lambda" {
   # Suppress verbose archive output
   quiet_archive_local_exec = true
 
-  # ADR-019: outcomeops_license layer for fail-closed license validation
-  # plus track_repo_active() at the completion (vector-write) boundary.
-  layers = [
-    var.outcomeops_license_layer_arn,
-  ]
-
   environment_variables = merge(
     {
       ENV                               = var.environment
@@ -369,7 +357,6 @@ module "process_documents_lambda" {
       PENDING_WORK_TABLE = module.code_map_pending_work_table.dynamodb_table_id
       FAILED_FILES_TABLE = module.code_map_failed_files_table.dynamodb_table_id
     },
-    local.outcomeops_license_env,
     local.ha_writer_env,
     # ADR-016 v1.2 -- process-documents (called via file-ingestion) embeds
     # every ingested doc via Titan. Attribute under chat workload since
@@ -500,7 +487,6 @@ module "process_documents_lambda" {
       resources = ["*"]
     }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam,
   )
 

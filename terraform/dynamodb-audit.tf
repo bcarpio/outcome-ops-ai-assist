@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # DynamoDB Audit Logs Table
 # Stores full plaintext audit records for ALL Bedrock invocations and

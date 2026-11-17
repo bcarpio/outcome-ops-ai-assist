@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for database-sync Lambda (handler + license-layer integration)."""
 
 import importlib.util
@@ -63,23 +65,6 @@ def reset_mocks(monkeypatch):
     handler_module.FILE_INGESTION_QUEUE = "https://sqs.example.com/ingestion"
     handler_module.DATABASE_SYNC_QUEUE = "https://sqs.example.com/db-sync"
     handler_module.DELETE_QUEUE = "https://sqs.example.com/delete"
-
-    # ADR-019: stub the license layer for default-pass behavior.
-    monkeypatch.setattr(
-        handler_module,
-        "validate_license",
-        lambda *a, **kw: {"sub": "test-customer", "license": {"tier": "team"}},
-    )
-
-    def _allow(*a, **kw):
-        result = MagicMock()
-        result.allowed = True
-        result.reason = None
-        result.current = 0
-        result.limit = 100
-        return result
-
-    monkeypatch.setattr(handler_module, "check_repo_limit", _allow)
     yield
 
 
@@ -724,39 +709,6 @@ class TestProcessSyncRequest:
         assert details["engine"] == "postgres"
         assert details["host_hash"] == "deadbeefcafebabe"
 
-    @patch.object(handler_module, "_run_schema_introspection")
-    @patch.object(handler_module, "get_credential")
-    def test_repo_limit_block_uses_engine_host_hash_identity(
-        self, mock_get_cred, mock_build,
-        mock_table, sample_connection, mock_credential, monkeypatch,
-    ):
-        """Repo identity is `database:{engine}:{host_hash}` so the same
-        physical DB across many workspace connections counts once."""
-        mock_table.get_item.return_value = {"Item": sample_connection}
-        mock_get_cred.return_value = mock_credential
-
-        seen_repos = []
-
-        def _block(*a, **kw):
-            seen_repos.append(kw.get("repo"))
-            r = MagicMock()
-            r.allowed = False
-            r.reason = "tier limit"
-            r.current = 100
-            r.limit = 100
-            return r
-
-        monkeypatch.setattr(handler_module, "check_repo_limit", _block)
-
-        result = handler_module.process_sync_request({
-            "workspace_id": "ws_test", "connection_id": "conn_test",
-        })
-        assert result["status"] == "skipped"
-        assert result["reason"] == "license_limit"
-        assert seen_repos == ["database:postgres:deadbeefcafebabe"]
-        # Engine not called when limit hit
-        mock_build.assert_not_called()
-
     @patch.object(handler_module, "queue_orphan_cleanup")
     @patch.object(handler_module, "queue_table_ingestion")
     @patch.object(handler_module, "log_source_sync")
@@ -968,40 +920,16 @@ class TestQueueOrphanCleanup:
 
 
 # ============================================================================
-# lambda_handler - SQS dispatch + license-layer regression detection
+# lambda_handler - SQS dispatch
 # ============================================================================
-
-
-class TestLambdaHandlerLicenseLayer:
-
-    def test_license_layer_absent_emits_audit_and_raises(self, monkeypatch):
-        """validate_license=None means the license layer wasn't attached
-        at deploy. Per ADR-019, emit LICENSE_FAIL_OPEN audit + raise so
-        SQS retries / DLQs the message rather than silently dropping it."""
-        monkeypatch.setattr(handler_module, "validate_license", None)
-
-        with patch.object(handler_module, "log_license_fail_open") as mock_log:
-            with pytest.raises(ImportError):
-                handler_module.lambda_handler({"Records": []}, None)
-        mock_log.assert_called_once()
-        # Lambda name passed as positional arg
-        assert mock_log.call_args[0][1] == "database-sync"
-
-    def test_license_validation_failure_raises(self, monkeypatch):
-        def _raise(*a, **kw):
-            raise Exception("license expired")
-        monkeypatch.setattr(handler_module, "validate_license", _raise)
-
-        with pytest.raises(Exception, match="license expired"):
-            handler_module.lambda_handler({"Records": []}, None)
-
-    def test_no_records_returns_400(self):
-        result = handler_module.lambda_handler({}, None)
-        assert result["statusCode"] == 400
 
 
 class TestLambdaHandlerDispatch:
     """Chunk 02: SQS partial-batch-failure contract."""
+
+    def test_no_records_returns_400(self):
+        result = handler_module.lambda_handler({}, None)
+        assert result["statusCode"] == 400
 
     @patch.object(handler_module, "process_sync_request")
     def test_processes_sqs_records(self, mock_process):

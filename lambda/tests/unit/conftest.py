@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit-test-scoped fixtures.
 
 Routes ``shared.dual_write`` through the handler-under-test's

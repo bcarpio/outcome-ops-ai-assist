@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 Lambda handler for processing PR comment commands.
 
@@ -710,23 +712,6 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     logger.info("Handle command invoked: %s", json.dumps(event))
 
-    # Validate OutcomeOps license before processing
-    try:
-        from outcomeops_license import validate_license
-        claims = validate_license()
-        logger.info(
-            f"[handle-command] License validated: {claims.get('sub')} "
-            f"(tier: {claims.get('license', {}).get('tier')})"
-        )
-    except ImportError:
-        logger.warning("[handle-command] License validator not available - layer not attached")
-    except Exception as e:
-        logger.error(f"[handle-command] License validation failed: {e}")
-        return {
-            "statusCode": 403,
-            "body": json.dumps({"error": "License validation failed", "message": str(e)})
-        }
-
     # Parse and validate request
     try:
         request = HandleCommandRequest(**event)
@@ -750,19 +735,6 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     # Parse command
     command_type, action = parse_command(request.command)
     logger.info(f"Parsed command: type={command_type}, action={action}")
-
-    # Track command execution for analytics (commands are unlimited, no limit check)
-    try:
-        from outcomeops_license import track_command_executed
-        track_command_executed(
-            repo=request.repo,
-            command=action,
-            pr_number=request.pr_number
-        )
-    except ImportError:
-        logger.warning("[handle-command] Usage tracking not available")
-    except Exception as e:
-        logger.warning(f"[handle-command] Failed to track command: {e}")
 
     # Dispatch to command handler
     if command_type == CommandType.HELP:

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 Microsoft Graph API client for SharePoint (sync copy).
 Shared module - identical to sharepoint-integration/sharepoint_api.py

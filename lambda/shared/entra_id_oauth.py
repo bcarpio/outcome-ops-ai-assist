@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """shared.entra_id_oauth — single source of truth for Entra ID OAuth.
 
 Replaces the drifted per-integration ``token_manager.py`` copies that

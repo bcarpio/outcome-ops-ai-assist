@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # Secondary-region chat + workspace-management Lambdas (HA chunk 9d)
 # ----------------------------------------------------------------------------
@@ -52,10 +54,9 @@ module "chat_streaming_lambda_secondary" {
 
   # LWA layer: AWS publishes the same layer in every region under account
   # 753240598075. ARN format swaps region; same layer version.
-  # Plus license + platform-CA layers in secondary.
+  # Plus the platform-CA layer in secondary.
   layers = [
     "arn:aws:lambda:${var.secondary_region}:753240598075:layer:LambdaAdapterLayerX86:25",
-    var.outcomeops_license_layer_arn_secondary,
     aws_lambda_layer_version.platform_ca_secondary[0].arn,
   ]
 
@@ -117,7 +118,6 @@ module "chat_streaming_lambda_secondary" {
       REQUESTS_CA_BUNDLE                 = "/opt/ca-bundle.pem"
       SSL_CERT_FILE                      = "/opt/ca-bundle.pem"
     },
-    local.outcomeops_license_env,
     local.ha_writer_env_secondary,
     # AppConfig role-read env so region_guard.guard_active() on the chat
     # mutation routes evaluates THIS region's role. Without it,
@@ -229,7 +229,6 @@ module "chat_streaming_lambda_secondary" {
       ]
     }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam_secondary,
     # appconfig:GetLatestConfiguration for the region-role read above.
     local.ha_scheduler_iam_secondary,
@@ -291,7 +290,6 @@ module "workspace_management_lambda_secondary" {
   timeout       = 30
   memory_size   = 512
 
-  # NO license layer for workspace-management (matches primary).
   layers = [
     "arn:aws:lambda:${var.secondary_region}:753240598075:layer:LambdaAdapterLayerX86:25",
     aws_lambda_layer_version.platform_ca_secondary[0].arn,

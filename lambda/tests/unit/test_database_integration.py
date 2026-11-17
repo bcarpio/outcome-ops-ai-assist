@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for database-integration Lambda (handler, credential_manager,
 introspection_helpers stubs)."""
 
@@ -518,24 +520,14 @@ class TestIntrospectionHelpers:
 
 @pytest.fixture(autouse=True)
 def _reset_handler_state(monkeypatch):
-    """Reset cached module globals between tests.
-
-    Also pins `report_repos_snapshot` to None so the license-snapshot
-    helper short-circuits during tests that don't explicitly exercise it.
-    Other test modules inject a MagicMock outcomeops_license into
-    sys.modules at import time, which would otherwise drive the helper
-    into a real DDB scan against a generic MagicMock (infinite-loop risk).
-    """
+    """Reset cached module globals between tests."""
     handler_module._dynamodb = None
     handler_module._sqs = None
     handler_module.WORKSPACES_TABLE = "test-workspaces"
     handler_module.DATABASE_SYNC_QUEUE = "https://sqs.example.com/db-sync"
     handler_module.DELETE_QUEUE = "https://sqs.example.com/delete"
     monkeypatch.setenv("AUDIT_TABLE", "test-audit")
-    saved_snapshot = handler_module.report_repos_snapshot
-    handler_module.report_repos_snapshot = None
     yield
-    handler_module.report_repos_snapshot = saved_snapshot
 
 
 class TestParsePathAndAuth:
@@ -1065,113 +1057,3 @@ class TestLambdaHandlerRouting:
         result = handler_module.lambda_handler(event, None)
         assert result["statusCode"] == 401
 
-
-# ============================================================================
-# License snapshot wiring (chunk 03 of license-layer-v2 migration)
-# ============================================================================
-
-class TestDatabaseLicenseSnapshotWiring:
-    """The connect (create_connection) and disconnect (delete_connection)
-    paths must fire report_repos_snapshot with the full active-repo set
-    so the license server's view tracks DDB truth. DB connections are
-    deduped across workspaces by host_hash.
-    """
-
-    @patch.object(handler_module, "log_admin_action")
-    @patch.object(handler_module, "save_credential")
-    @patch.object(handler_module, "validate_db_connection")
-    @patch.object(handler_module, "report_repos_snapshot")
-    @patch.object(handler_module, "get_active_repos_for_customer")
-    @patch.object(handler_module, "_get_dynamodb")
-    def test_create_connection_publishes_snapshot(
-        self, mock_db_fn, mock_get_active, mock_snapshot,
-        mock_validate, mock_save, mock_audit,
-    ):
-        mock_table = MagicMock()
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        mock_db = MagicMock()
-        mock_db.Table.return_value = mock_table
-        mock_db_fn.return_value = mock_db
-
-        mock_validate.return_value = helpers_module.ValidationResult(
-            valid=True, server_version="15.4"
-        )
-        mock_get_active.return_value = ["database:postgres:abc123def4567890"]
-
-        body = {
-            "workspace_id": "ws1",
-            "engine": "postgres",
-            "host": "db.example.com",
-            "port": 5432,
-            "database_name": "analytics",
-            "credential": {"engine": "postgres", "username": "u", "password": "p"},
-        }
-        result = handler_module.create_connection("u@x.com", body)
-        assert result["statusCode"] == 201
-        mock_snapshot.assert_called_once_with(
-            active_repos=["database:postgres:abc123def4567890"]
-        )
-
-    @patch.object(handler_module, "log_admin_action")
-    @patch.object(handler_module, "save_credential")
-    @patch.object(handler_module, "validate_db_connection")
-    @patch.object(handler_module, "report_repos_snapshot")
-    @patch.object(handler_module, "get_active_repos_for_customer",
-                  side_effect=RuntimeError("ddb boom"))
-    @patch.object(handler_module, "_get_dynamodb")
-    def test_create_connection_swallows_snapshot_failure(
-        self, mock_db_fn, mock_get_active, mock_snapshot,
-        mock_validate, mock_save, mock_audit,
-    ):
-        mock_table = MagicMock()
-        mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
-        mock_db = MagicMock()
-        mock_db.Table.return_value = mock_table
-        mock_db_fn.return_value = mock_db
-
-        mock_validate.return_value = helpers_module.ValidationResult(
-            valid=True, server_version="15.4"
-        )
-
-        body = {
-            "workspace_id": "ws1",
-            "engine": "postgres",
-            "host": "db.example.com",
-            "port": 5432,
-            "database_name": "analytics",
-            "credential": {"engine": "postgres", "username": "u", "password": "p"},
-        }
-        result = handler_module.create_connection("u@x.com", body)
-        # Connection still created, snapshot failure is non-blocking.
-        assert result["statusCode"] == 201
-        mock_snapshot.assert_not_called()
-
-    @patch.object(handler_module, "log_admin_action")
-    @patch.object(handler_module, "delete_credential")
-    @patch.object(handler_module, "_get_sqs")
-    @patch.object(handler_module, "get_connection")
-    @patch.object(handler_module, "report_repos_snapshot")
-    @patch.object(handler_module, "get_active_repos_for_customer")
-    @patch.object(handler_module, "_get_dynamodb")
-    def test_delete_connection_publishes_snapshot(
-        self, mock_db_fn, mock_get_active, mock_snapshot,
-        mock_get_conn, mock_sqs_fn, _del_cred, mock_audit,
-    ):
-        mock_table = MagicMock()
-        mock_table.get_item.side_effect = [
-            {"Item": {"role": "workspace_admin"}},
-            {"Item": {"role": "workspace_admin"}},
-        ]
-        mock_db = MagicMock()
-        mock_db.Table.return_value = mock_table
-        mock_db_fn.return_value = mock_db
-        mock_get_conn.return_value = {
-            "connection_id": "c1", "engine": "postgres", "host_hash": "h",
-        }
-        mock_sqs = MagicMock()
-        mock_sqs_fn.return_value = mock_sqs
-        mock_get_active.return_value = []
-
-        result = handler_module.delete_connection("u@x.com", "ws1", "c1")
-        assert result["statusCode"] == 200
-        mock_snapshot.assert_called_once_with(active_repos=[])

@@ -1,13 +1,15 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Symbol-graph DynamoDB query API.
 
 Reads the structural Fact stream persisted by ``symbol_graph_writer``.
 The public surface is intentionally narrow — four query shapes that
 cover the proven structural failure cases:
 
-- ``callers(X)``        : "Which Lambdas call ``report_repos_snapshot``?"
+- ``callers(X)``        : "Which Lambdas call ``log_audit_entry``?"
 - ``importers(X)``      : "Which apps use ``@acme-corp/shared-utils/http2``?"
 - ``implementers(I)``   : "What classes implement ``IBookingClient``?"
-- ``definitions(X)``    : "Where is ``report_repos_snapshot`` defined?"
+- ``definitions(X)``    : "Where is ``log_audit_entry`` defined?"
 
 Multi-hop, transitive closure, and ``callees(X)`` are deliberately
 deferred to a later chunk if traffic justifies them.

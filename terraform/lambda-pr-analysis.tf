@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # PR Analysis Lambda Functions
 # - analyze-pr: Analyze GitHub PRs and queue architecture check jobs

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for file-ingestion Lambda - OneDrive file handler."""
 
 import importlib.util
@@ -59,27 +61,6 @@ def reset_mocks():
     yield
 
 
-@pytest.fixture(autouse=True)
-def stub_outcomeops_license():
-    """ADR-019: the handler imports validate_license / check_repo_limit
-    INSIDE lambda_handler, so the layer module must exist in sys.modules
-    before each invocation. Mirrors the stub in
-    test_file_ingestion_outlook.py."""
-    stub = MagicMock()
-    stub.validate_license.return_value = {"sub": "test-customer"}
-    allowed = MagicMock()
-    allowed.allowed = True
-    allowed.reason = None
-    allowed.current = 0
-    allowed.limit = 100
-    stub.check_repo_limit.return_value = allowed
-    saved = sys.modules.get("outcomeops_license")
-    sys.modules["outcomeops_license"] = stub
-    yield stub
-    if saved is not None:
-        sys.modules["outcomeops_license"] = saved
-    else:
-        sys.modules.pop("outcomeops_license", None)
 
 
 def _make_urlopen_response(content_bytes):

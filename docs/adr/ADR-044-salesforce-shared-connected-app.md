@@ -75,13 +75,6 @@ user to the secondary Lambda. Documented as the general
 [[project_ha_toggle_orphans_kms_tokens]] pattern -- Salesforce inherits
 it for free.
 
-**License counting.** One Salesforce connection = one licensable repo
-per ADR-019. Identifier is `salesforce:{connection_id}` (registered in
-`shared/license_repos.py`). Instance URL isn't part of the identifier
-because two workspaces connecting the SAME Salesforce org still count
-separately (they consume separate quota against the deploy's Bedrock
-budget).
-
 ## Alternatives considered
 
 **(A) Per-workspace Connected App registration (mimic ServiceNow's
@@ -108,7 +101,6 @@ about who sees what.
 
 ## References
 
-- ADR-019 for the license-layer + repo-limit context.
 - `../app.retrieveit.ai/lambda/salesforce-integration/` for the
   shape reference the port derived from. Note: RetrieveIT is SaaS but
   used the same shared-Connected-App pattern for the same reasons --

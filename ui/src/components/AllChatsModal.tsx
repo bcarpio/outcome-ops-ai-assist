@@ -1,3 +1,5 @@
+// Copyright 2025-2026 OutcomeOps
+// SPDX-License-Identifier: Apache-2.0
 import { useState, useEffect, useMemo } from 'react'
 import { Search, X, MessageSquare, Trash2, Loader2 } from 'lucide-react'
 import { listConversations, deleteConversation, type Conversation } from '../lib/api'

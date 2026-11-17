@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for Outlook API client (outlook_api.py).
 
 Tests both copies of the module:

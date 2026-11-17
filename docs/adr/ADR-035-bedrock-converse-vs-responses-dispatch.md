@@ -208,8 +208,7 @@ deploy must:
 
 - Provision the API key as a per-env SSM SecureString
   (`/<env>/outcome-ops-ai-assist/bedrock/mantle-api-key`) with terraform
-  `lifecycle { ignore_changes = [value] }` after first apply (same
-  pattern as the license key).
+  `lifecycle { ignore_changes = [value] }` after first apply.
 - Ship a customer-visible runbook (`docs/runbooks/bedrock-mantle-api-key.md`)
   covering generation, installation, rotation, and the
   compliance-disclosure language for SecOps sign-off.

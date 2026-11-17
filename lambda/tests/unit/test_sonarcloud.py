@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for the native SonarQube Cloud MCP tools (containers/mcp-sonarqube/sonarcloud.py)."""
 
 from __future__ import annotations

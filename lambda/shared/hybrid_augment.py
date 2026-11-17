@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Hybrid retrieval: symbol-graph augmentation on top of RAG (ADR-033).
 
 Extracted from the chat handler into the shared retrieval seam (ADR-023) so

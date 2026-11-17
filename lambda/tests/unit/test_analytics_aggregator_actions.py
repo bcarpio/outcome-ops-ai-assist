@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for the admin-action rollup branch of analytics-aggregator.
 
 Covers the new DA / DC / DCU shapes and the category-based dispatch added in

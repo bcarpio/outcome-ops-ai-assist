@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Backfill cost_usd on historical Cohere Rerank audit rows.
 
 Before commit 4eee0f4, log_audit_entry had no pricing entry for

@@ -15,7 +15,6 @@ This guide covers deployment, operations, and maintenance for OutcomeOps AI Assi
 - [Initial Deployment](#initial-deployment)
 - [Billable Services](#billable-services)
 - [Cost Estimation](#cost-estimation)
-- [License Management](#license-management)
 - [Health Check and Monitoring](#health-check-and-monitoring)
 - [Backup and Recovery](#backup-and-recovery)
 - [Credential Rotation](#credential-rotation)
@@ -311,9 +310,9 @@ Why the order is strict (each has burned a first deploy):
 
 ```bash
 cp terraform/prd.tfvars.example terraform/prd.tfvars
-# Edit terraform/prd.tfvars. FIVE variables have NO default -- you MUST set them:
-#   aws_region, environment, outcomeops_license_layer_arn (from OutcomeOps),
-#   ui_vpc_id, ui_private_subnet_ids (>= 2 subnets in different AZs).
+# Edit terraform/prd.tfvars. FOUR variables have NO default -- you MUST set them:
+#   aws_region, environment, ui_vpc_id,
+#   ui_private_subnet_ids (>= 2 subnets in different AZs).
 # WHY the VPC/subnets: the chat UI, the MCP server, AND workspaces deploy BY
 #   DEFAULT (deploy_ui, mcp_server_enabled, enable_workspaces all default true);
 #   the UI + MCP run on Fargate in that VPC. Set any of the three to false to
@@ -413,7 +412,6 @@ Then complete the one-time setup covered elsewhere in this guide:
 - Accept the **Bedrock marketplace agreements** for the models you use
   (see [Bedrock Model Access](#bedrock-model-access-and-marketplace-agreements)
   above) — chat/codegen fail until the agreement is active.
-- Store the **license JWT** (see [License Management](#license-management)).
 - Register each integration's OAuth app + callback URL as needed.
 
 **Redeploys** after code changes: rebuild only the affected artifact
@@ -530,87 +528,6 @@ Estimated monthly costs for typical deployments. Actual costs depend on usage pa
 | **Subtotal (with Chat UI)** | **$3,140 - $10,455** |
 
 **Note:** Bedrock is by far the largest cost driver. Token usage scales with chat volume, code generation frequency, document ingestion volume, and PR analysis activity. With 500 daily active users, Bedrock costs can reach $10,000+/month. Consider Bedrock Provisioned Throughput for predictable high-volume workloads.
-
-### Licensing
-
-OutcomeOps AI Assist requires a license. See [License Management](#license-management) below.
-
----
-
-## License Management
-
-OutcomeOps AI Assist uses JWT-based licensing with tiered plans (Pilot, Team, Division, Enterprise). Licenses are issued by OutcomeOps and enforced via a Lambda layer deployed to the customer's AWS account.
-
-### How It Works
-
-1. **OutcomeOps issues a JWT license key** signed with RS256 for your organization
-2. **You store the key** in SSM Parameter Store in your AWS account
-3. **OutcomeOps publishes a Lambda layer** to your account with the license validator module
-4. **Your Lambda functions** include the layer, which validates the license locally (JWT signature) and phones home to `license.example.com` for limit enforcement and usage tracking
-
-### License Tiers
-
-| Tier | Repos | PRs/Month | Duration | Enforcement |
-|------|-------|-----------|----------|-------------|
-| **Dev** | 2 | 10 | 30 days | Hard |
-| **PoC** | 20 | Unlimited | 14 days | Hard |
-| **Pilot** | 10 | 100 | 90 days | Hard |
-| **Team** | 50 | 300 | 1 year | Soft |
-| **Division** | 150 | 1,000 | 1 year | Soft |
-| **Enterprise** | Unlimited | Unlimited | 1 year | Soft |
-
-**Hard enforcement:** Operations are blocked when limits are reached. Fails closed on network errors. **Soft enforcement:** Operations are allowed but alerts are sent at 80% and 100% thresholds. Fails open on network errors.
-
-**Enterprise air-gap option:** Enterprise customers with contractual agreements can run without phone-home connectivity for deployments in isolated VPCs with no outbound internet access. OutcomeOps configures the air-gap option during onboarding. License validation still works offline via the embedded RSA public key in the Lambda layer (JWT signature and expiration verified locally).
-
-### Customer Setup
-
-**Requesting a license.** If you have not already received one, email
-[support@outcomeops.ai](mailto:support@outcomeops.ai) with the **AWS account
-number(s)** you will deploy into. OutcomeOps shares the license-validator Lambda
-layer to those specific accounts (a cross-account layer grant, so the
-`outcomeops_license_layer_arn` resolves from your account) and issues your
-signed JWT license key. Deployment cannot proceed until both are in place.
-
-The license key and Lambda layer ARN are provided by OutcomeOps during onboarding:
-
-```bash
-# Store the JWT license key in SSM
-aws ssm put-parameter \
-  --name "/${ENV}/outcome-ops-ai-assist/license/key" \
-  --value "${JWT_LICENSE_KEY}" \
-  --type SecureString \
-  --overwrite
-```
-
-The layer ARN is configured in Terraform via the `outcomeops_license_layer_arn` variable:
-
-```hcl
-outcomeops_license_layer_arn  = "arn:aws:lambda:us-west-2:123456789012:layer:prd-outcomeops-license-validator-v1-5-0:1"
-outcomeops_license_ssm_param  = "/prd/outcome-ops-ai-assist/license/key"
-outcomeops_license_server_url = "https://license.example.com"
-```
-
-### License Renewal
-
-License renewals are handled by OutcomeOps. When a new license is issued:
-
-1. OutcomeOps provides a new JWT license key
-2. Update the SSM parameter:
-   ```bash
-   aws ssm put-parameter \
-     --name "/${ENV}/outcome-ops-ai-assist/license/key" \
-     --value "${NEW_JWT_LICENSE_KEY}" \
-     --type SecureString \
-     --overwrite
-   ```
-3. If a new layer version is required, update the `outcomeops_license_layer_arn` in your tfvars and redeploy
-
-License validation results are cached for 1 hour in Lambda memory, so the new key takes effect within an hour or on the next cold start.
-
-### Expiration Alerts
-
-OutcomeOps monitors license expiration and sends alerts at 30, 14, 7, and 1 day before expiration. Contact your OutcomeOps account representative to renew before expiration.
 
 ---
 
@@ -913,18 +830,13 @@ ENVIRONMENT=prd make build-database-images
 
 The build script:
 1. Creates the two ECR repos via targeted Terraform apply
-2. Downloads the OutcomeOps license validator layer content (via
-   `aws lambda get-layer-version-by-arn`) and stages it for the sync
-   image — container-image Lambdas can't attach Lambda layers, so the
-   license code is baked into the image at build time
-3. Builds + pushes both images
-4. Writes image tags to SSM so the main `terraform apply` picks them up
+2. Builds + pushes both images
+3. Writes image tags to SSM so the main `terraform apply` picks them up
 
 **Rebuild when:**
 - `lambda/db-introspection-requirements.txt` changes
 - Either Lambda's Dockerfile changes
 - The handler Python code changes
-- The `outcomeops_license_layer_arn` in your tfvars bumps to a new layer version (the new license layer content needs to be re-baked into the sync image)
 - A customer trust root rotates (`customer_ca_bundle_ssm_param_arns` parameter contents change) — the build script fetches the SecureString at build time and bakes it into the image
 
 **Customer CA bundles (non-RDS DBs):** When
@@ -1133,7 +1045,7 @@ To rebuild the entire environment from scratch:
 
 #### Standard Support
 
-- **Included with:** All licenses
+- **Available for:** All deployments
 - **Hours:** Business hours (9 AM - 6 PM ET, Monday - Friday)
 - **Response Times:**
   - Severity 1 (Production down): 4 business hours
@@ -1143,7 +1055,7 @@ To rebuild the entire environment from scratch:
 
 #### Premium Support
 
-- **Included with:** Enterprise licenses
+- **Available for:** Enterprise support agreement
 - **Hours:** 24/7 for Severity 1, business hours for others
 - **Response Times:**
   - Severity 1 (Production down): 1 hour
@@ -1174,4 +1086,3 @@ To rebuild the entire environment from scratch:
 - Provide Terraform module updates and patches
 - Investigate and resolve product defects
 - Publish release notes and upgrade guides
-- Maintain license management portal

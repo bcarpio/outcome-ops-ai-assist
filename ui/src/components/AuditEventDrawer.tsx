@@ -1,3 +1,5 @@
+// Copyright 2025-2026 OutcomeOps
+// SPDX-License-Identifier: Apache-2.0
 import { useEffect } from 'react'
 import { X, History } from 'lucide-react'
 import type { AuditEvent } from '../lib/api'

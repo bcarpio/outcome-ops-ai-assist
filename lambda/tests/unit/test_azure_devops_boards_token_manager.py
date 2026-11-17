@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for the Azure DevOps Boards token_manager wrapper.
 
 The wrapper itself owns very little -- ADO constants, per-customer

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for gitlab-sync worker (ADR-050, chunk-03).
 
 Mirrors test_azure_devops_sync.py. The worker writes each indexable

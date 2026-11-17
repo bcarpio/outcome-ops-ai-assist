@@ -172,7 +172,7 @@ but the **name itself** still misleads.
 errors on the old name once the variable is renamed, so it must be changed in
 lockstep with the maintainer's live `prd`/`dev`/`openai` tfvars on the next
 apply. It is a clean breaking change with a small blast radius **while there are
-no production customers** (ADR-019), so it is cheapest to do soon.
+no production customers**, so it is cheapest to do soon.
 
 **Suggested fix:** rename to `ui_subnet_ids` (+ `ui_subnet_ids_secondary`),
 update all terraform references + example + docs, and update the maintainer's

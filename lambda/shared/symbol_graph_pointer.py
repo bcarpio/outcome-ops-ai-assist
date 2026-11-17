@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Symbol-graph atomic-swap pointer.
 
 Owns the begin -> commit / abandon protocol that advances the

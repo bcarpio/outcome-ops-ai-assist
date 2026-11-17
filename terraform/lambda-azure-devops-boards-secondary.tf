@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # Azure DevOps Boards integration -- secondary region (HA mode)
 #
@@ -79,7 +81,6 @@ module "azure_devops_boards_integration_lambda_secondary" {
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
   quiet_archive_local_exec          = true
 
-  layers = [var.outcomeops_license_layer_arn_secondary]
 
   environment_variables = merge(
     {
@@ -102,7 +103,6 @@ module "azure_devops_boards_integration_lambda_secondary" {
       AUDIT_TABLE                    = module.audit_logs_table_secondary[0].dynamodb_table_id
       AUDIT_RETENTION_DAYS           = tostring(var.audit_retention_days)
     },
-    local.outcomeops_license_env,
     local.ha_writer_env_secondary,
     local.ha_scheduler_env_secondary,
   )
@@ -151,7 +151,6 @@ module "azure_devops_boards_integration_lambda_secondary" {
         resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam_secondary,
     local.ha_scheduler_iam_secondary,
   )
@@ -220,7 +219,6 @@ module "azure_devops_boards_sync_lambda_secondary" {
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs_secondary[0].arn
   quiet_archive_local_exec          = true
 
-  layers = [var.outcomeops_license_layer_arn_secondary]
 
   environment_variables = merge(
     {
@@ -237,7 +235,6 @@ module "azure_devops_boards_sync_lambda_secondary" {
       AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
       AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
     },
-    local.outcomeops_license_env,
     local.ha_writer_env_secondary,
     local.ha_scheduler_env_secondary,
   )
@@ -287,7 +284,6 @@ module "azure_devops_boards_sync_lambda_secondary" {
         resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam_secondary,
     # chunk 08 (HA parity): the env-merge above already includes
     # local.ha_scheduler_env_secondary (APPCONFIG_APP_ID / etc.), but the

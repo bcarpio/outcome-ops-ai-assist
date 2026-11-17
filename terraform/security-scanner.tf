@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # Security Scanner Auth Endpoint
 # Provides password-based authentication for AWS Security Agent (headless).

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # SonarQube Cloud MCP Server (OutcomeOps-owned container)
 # Replaces the third-party mcp/sonarqube image (fatal I/O-reactor bug under

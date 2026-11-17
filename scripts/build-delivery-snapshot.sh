@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # Build a HISTORY-FREE delivery snapshot of the platform for a customer.
 #
 # WHY: customer names are scrubbed from the working tree, but they survive in

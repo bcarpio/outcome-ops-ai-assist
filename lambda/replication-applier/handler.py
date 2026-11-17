@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Replicator-applier — consume cross-region replication events and
 apply them against local DDB / S3 / S3 Vectors.
 

@@ -432,23 +432,6 @@ ui_private_subnet_ids = ["subnet-REPLACE_ME_A", "subnet-REPLACE_ME_B"]   # REQUI
 # security_scanner_email   = "security-scanner@outcomeops.local"
 
 # ============================================================================
-# License Telemetry
-# ============================================================================
-
-# OutcomeOps license validator Lambda layer ARN. REQUIRED -- no default, and
-# terraform plan BLOCKS without it (length > 0 validation). Obtain it from
-# OutcomeOps: email support@outcomeops.ai with the AWS account number(s) you
-# deploy into; they cross-account-share the layer and issue your JWT key.
-# outcomeops_license_layer_arn = "arn:aws:lambda:<region>:<acct>:layer:prd-outcomeops-license-validator-vX-Y-Z:N"
-
-# License server URL (defaulted; override only for testing against a
-# non-production license server).
-# outcomeops_license_server_url = "https://license.example.com"
-
-# SSM parameter path for the license key.
-# outcomeops_license_ssm_param = "/prd/outcome-ops-ai-assist/license/key"  # OPTIONAL -- defaults to /<env>/<app>/license/key
-
-# ============================================================================
 # Encryption (CMK)
 # ============================================================================
 

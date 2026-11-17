@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for cross-module reference resolution (ADR-055).
 
 Black-box over the extractor + the language-agnostic resolution pass:

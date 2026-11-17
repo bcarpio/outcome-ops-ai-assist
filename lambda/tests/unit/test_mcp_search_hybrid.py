@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for the fused ``search_hybrid`` MCP tool.
 
 ``search_hybrid`` runs dual-channel RAG AND symbol-graph augmentation in one

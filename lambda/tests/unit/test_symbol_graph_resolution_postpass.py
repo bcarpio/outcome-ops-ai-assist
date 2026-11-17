@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Integration test for the ADR-055 whole-repo resolution post-pass.
 
 ``process-batch-summary``'s ``_resolve_repo_symbol_graph`` is the glue that

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 ServiceNow sync worker.
 
@@ -46,10 +48,6 @@ from shared.servicenow_api import (  # noqa: E402
     list_attachments_for_article,
 )
 
-try:
-    from outcomeops_license import validate_license  # noqa: E402
-except ImportError:  # pragma: no cover
-    validate_license = None  # type: ignore[assignment]
 
 
 logger = logging.getLogger()
@@ -441,16 +439,6 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """SQS partial-batch-failure entry (chunk 02 remediation contract)."""
-    if validate_license is not None:
-        try:
-            validate_license()
-        except ImportError:
-            logger.error("License layer not attached")
-            raise
-        except Exception as e:
-            logger.error(f"License validation failed: {e}")
-            raise
-
     records = event.get("Records", []) or []
     logger.info(f"ServiceNow sync invoked with {len(records)} record(s)")
 

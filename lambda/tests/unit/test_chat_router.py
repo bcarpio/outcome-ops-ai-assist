@@ -1,10 +1,12 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for ``shared.router``.
 
 Covers:
 
 - Lighthouse demo classifications (Q1-Q7) -- the router's "Definition of
   done" requires every fixture in this file to classify correctly.
-- The two proof-case structural questions (``report_repos_snapshot``
+- The two proof-case structural questions (``log_audit_entry``
   and ``@acme-corp/shared-utils/http2``).
 - The PII / ISO 27018 hybrid example.
 - Symbol-candidate extraction from the structured Haiku response.
@@ -213,11 +215,11 @@ def test_classify_strict_json_pattern(stub_bedrock):
 def test_classify_strict_json_structural_with_symbol(stub_bedrock):
     decision = _classify_with_response(
         stub_bedrock,
-        '{"intent": "structural", "symbol": "report_repos_snapshot"}',
-        "Which Lambda functions call report_repos_snapshot?",
+        '{"intent": "structural", "symbol": "log_audit_entry"}',
+        "Which Lambda functions call log_audit_entry?",
     )
     assert decision.intent == "structural"
-    assert decision.symbol_candidate == "report_repos_snapshot"
+    assert decision.symbol_candidate == "log_audit_entry"
 
 
 def test_classify_strict_json_dependency(stub_bedrock):
@@ -432,9 +434,9 @@ LIGHTHOUSE_DEMO_FIXTURES = [
     ("What are our testing standards", "pattern", None),
     # Proof cases ("Two proofs from live testing")
     (
-        "Which Lambda functions call `report_repos_snapshot`?",
+        "Which Lambda functions call `log_audit_entry`?",
         "structural",
-        "report_repos_snapshot",
+        "log_audit_entry",
     ),
     (
         "Which applications use `@acme-corp/shared-utils/http2`?",

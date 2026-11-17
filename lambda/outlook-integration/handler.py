@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 Outlook Integration Lambda for OutcomeOps AI Assist.
 
@@ -34,21 +36,12 @@ from shared.audit_writer import (  # noqa: E402
     ACTION_OAUTH_CONNECTION_ESTABLISHED,
     log_admin_action,
 )
-from shared.license_repos import get_active_repos_for_customer  # noqa: E402
 from shared.region_guard import (  # noqa: E402
     RegionPassiveError,
     guard_active,
     passive_response,
 )
 
-# ADR-019: license layer is the source of truth for repo limits. Wrap
-# the import in try/except so the module still loads when the layer is
-# unattached -- the snapshot helper below treats that as a no-op (the
-# heartbeat scheduler is the safety net).
-try:
-    from outcomeops_license import report_repos_snapshot  # noqa: E402
-except ImportError:  # pragma: no cover - deploy bug path, exercised in tests
-    report_repos_snapshot = None  # type: ignore[assignment]
 
 from outlook_api import (
     OutlookAPIError,
@@ -115,24 +108,6 @@ def _get_sqs():
     if _sqs is None:
         _sqs = boto3.client("sqs")
     return _sqs
-
-
-def _snapshot_active_repos() -> None:
-    """Refresh the license server's repo-set snapshot after any connect
-    or disconnect. Non-blocking on failure -- the hourly heartbeat
-    scheduler (license-heartbeat-scheduler) is the safety net for any
-    missed snapshot.
-    """
-    if report_repos_snapshot is None:
-        # Layer not attached (deploy-bug path). The validate_license
-        # check upstream will have caught this; treat the snapshot
-        # call as a no-op here.
-        return
-    try:
-        active = get_active_repos_for_customer(_get_dynamodb(), WORKSPACES_TABLE)
-        report_repos_snapshot(active_repos=active)
-    except Exception as e:
-        logger.warning(f"[license-snapshot] non-blocking failure: {e}")
 
 
 def _load_oauth_config() -> Dict[str, str]:
@@ -399,9 +374,6 @@ def handle_callback(event: Dict, body: Dict = None) -> Dict:
         except Exception as e:
             logger.warning(f"Failed to emit OAUTH_CONNECTION_ESTABLISHED: {e}")
 
-        # Refresh the license server's active-repo snapshot (license layer
-        # v2.0.0 desired-state model).
-        _snapshot_active_repos()
 
         return _response(200, {"redirect": f"/workspaces/{workspace_id}/settings?tab=integrations&configure_outlook={connection_id}"})
 
@@ -644,9 +616,6 @@ def delete_connection(user_email: str, workspace_id: str, connection_id: str) ->
 
         logger.info(f"Deleted Outlook connection {connection_id}")
 
-        # Refresh the license server's active-repo snapshot (license layer
-        # v2.0.0 desired-state model).
-        _snapshot_active_repos()
 
         return _response(200, {"message": "Connection deleted"})
     except ClientError as e:

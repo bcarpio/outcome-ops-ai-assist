@@ -1,3 +1,5 @@
+// Copyright 2025-2026 OutcomeOps
+// SPDX-License-Identifier: Apache-2.0
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router'
 import {

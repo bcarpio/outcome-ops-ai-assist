@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 OneNote Sync Lambda for OutcomeOps AI Assist.
 
@@ -35,7 +37,7 @@ import boto3
 # Make shared/ importable; deploy package now bundles lambda/shared/.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared import dual_write  # noqa: E402
-from shared.audit_writer import log_license_fail_open, log_source_sync  # noqa: E402
+from shared.audit_writer import log_source_sync  # noqa: E402
 from botocore.exceptions import ClientError
 
 from onenote_api import (
@@ -47,15 +49,6 @@ from onenote_api import (
 )
 from token_manager import refresh_access_token
 
-# License layer imports (ADR-019)
-try:
-    from outcomeops_license import (
-        check_repo_limit,
-        validate_license,
-    )
-except ImportError:
-    validate_license = None  # type: ignore[assignment]
-    check_repo_limit = None  # type: ignore[assignment]
 
 # Configure logging
 logger = logging.getLogger()
@@ -323,23 +316,6 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
         )
         return {"status": "error", "error": "Authentication failed"}
 
-    # Per-source repo-limit enforcement (ADR-019). Use the Graph user_id
-    # as the stable identifier; OneNote scope is at /me, so one user =
-    # one licensable "repo" regardless of which notebooks they pick.
-    repo_project = f"onenote:{user_id}"
-    limit_result = check_repo_limit(repo=repo_project)
-    if not limit_result.allowed:
-        logger.warning(
-            f"[onenote-sync] Repo limit reached for {repo_project}: "
-            f"{limit_result.reason} "
-            f"(current={limit_result.current}/{limit_result.limit})"
-        )
-        update_connection_status(
-            workspace_id, connection_id, "blocked_license_limit",
-            error=limit_result.reason or "Repo limit reached",
-        )
-        return {"status": "skipped", "reason": "license_limit"}
-
     pages_queued = 0
     pages_unchanged = 0
     current_page_ids: List[str] = []
@@ -429,9 +405,6 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
                     )
                     pages_queued += 1
 
-        # ADR-019: liveness tracking now lives in connect/disconnect handlers
-        # via report_repos_snapshot (license layer v2.0.0 desired-state model).
-
         update_connection_status(
             workspace_id, connection_id, "completed",
             page_count=len(current_page_ids),
@@ -487,20 +460,6 @@ def process_sync_request(message: Dict) -> Dict[str, Any]:
 def lambda_handler(event: Dict, context: Any) -> Dict:
     """SQS-triggered handler for OneNote sync orchestration."""
     logger.info(f"OneNote sync handler invoked with {len(event.get('Records', []))} records")
-
-    # License validation (ADR-019). SQS-driven: raise on failure -> retry / DLQ.
-    if validate_license is None:
-        logger.error(
-            "[onenote-sync] License layer not attached - deploy bug (ADR-019)"
-        )
-        log_license_fail_open(os.environ.get("AUDIT_TABLE", ""), "onenote-sync")
-        raise ImportError("outcomeops_license layer not attached")
-    try:
-        claims = validate_license()
-        logger.info(f"[onenote-sync] License validated: {claims.get('sub')}")
-    except Exception as e:
-        logger.error(f"[onenote-sync] License validation failed: {e}")
-        raise
 
     if "Records" not in event:
         logger.error("No SQS records in event")

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """shared.model_client_types — unified request/response/streaming types.
 
 These types are the public surface of shared.model_client. They are

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for ``shared.dual_write``.
 
 Covers the local-write-and-emit path for all six write surfaces, the

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for GitHub App authentication utilities (github_app.py)."""
 
 import importlib.util

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Shared knowledge-base retrieval: vector query + rerank.
 
 One implementation behind BOTH retrieval surfaces:

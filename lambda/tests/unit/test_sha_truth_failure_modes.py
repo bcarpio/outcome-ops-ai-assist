@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Failure-mode tests for plan-git-truth chunk 03.
 
 Seven tests, one per failure mode documented in

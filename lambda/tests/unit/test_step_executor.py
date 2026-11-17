@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 Unit tests for step_executor module.
 
@@ -747,64 +749,6 @@ class TestFinalizeAndPublishEvent:
         assert call_kwargs["pr_url"] is None
         assert call_kwargs["pr_number"] is None
         assert "123-add-user-authentication-plan.md" in call_kwargs["plan_file_path"]
-
-    @patch('step_executor.publish_code_generation_completed_event')
-    @patch('step_executor.get_branch_head_sha')
-    @patch('step_executor.generate_branch_name')
-    def test_tracks_pr_generation(
-        self,
-        mock_branch_name,
-        mock_get_sha,
-        mock_publish,
-        basic_plan,
-        step_message
-    ):
-        """Test: Tracks PR generation for license usage."""
-        # Arrange
-        mock_branch_name.return_value = "123-add-user-authentication"
-        mock_get_sha.return_value = "abc123"
-
-        # Mock the entire outcomeops_license module since it's imported dynamically
-        mock_license_module = MagicMock()
-        with patch.dict('sys.modules', {'outcomeops_license': mock_license_module}):
-            # Act
-            finalize_and_publish_event(
-                plan=basic_plan,
-                step_message=step_message,
-                github_token="ghp_test"
-            )
-
-            # Assert - the module was imported and track_pr_generated was called
-            mock_license_module.track_pr_generated.assert_called_once_with(
-                repo="owner/repo",
-                issue_number=123
-            )
-
-    @patch('step_executor.publish_code_generation_completed_event')
-    @patch('step_executor.get_branch_head_sha')
-    @patch('step_executor.generate_branch_name')
-    def test_handles_missing_license_layer(
-        self,
-        mock_branch_name,
-        mock_get_sha,
-        mock_publish,
-        basic_plan,
-        step_message
-    ):
-        """Test: Handles missing license layer gracefully."""
-        # Arrange
-        mock_branch_name.return_value = "123-add-user-authentication"
-        mock_get_sha.return_value = "abc123"
-
-        # Act - should not raise even without license layer
-        finalize_and_publish_event(
-            plan=basic_plan,
-            step_message=step_message,
-            github_token="ghp_test"
-        )
-
-        # Assert
-        mock_publish.assert_called_once()
 
 
 # ============================================================================

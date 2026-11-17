@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for the Python extractor."""
 
 from __future__ import annotations
@@ -83,18 +85,18 @@ class TestReportReposSnapshot:
     """The load-bearing v1 success-case fixture.
 
     The plan's DoD says the extractor must surface 10 distinct callers
-    of ``report_repos_snapshot``. Chunk 08 reuses this fixture as the
+    of ``log_audit_entry``. Chunk 08 reuses this fixture as the
     live-data signal so the test name and assertion are stable.
     """
 
     @pytest.fixture
     def facts(self):
-        return _load("report_repos_snapshot_callers.py")
+        return _load("log_audit_entry_callers.py")
 
     def test_one_import_of_symbol(self, facts):
         imports = _by_kind(facts, "imports")
         snap_imports = [
-            f for f in imports if f.target_symbol_id.endswith("::report_repos_snapshot")
+            f for f in imports if f.target_symbol_id.endswith("::log_audit_entry")
         ]
         assert len(snap_imports) == 1
 
@@ -103,7 +105,7 @@ class TestReportReposSnapshot:
         snap_calls = [
             f
             for f in calls
-            if f.target_symbol_id.endswith("::report_repos_snapshot")
+            if f.target_symbol_id.endswith("::log_audit_entry")
         ]
         callers = {f.source_symbol_id for f in snap_calls}
         assert len(callers) == 10, sorted(callers)

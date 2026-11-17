@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for shared._converse_backend (chunk 02).
 
 Mock boto3's bedrock-runtime client; no real AWS calls.

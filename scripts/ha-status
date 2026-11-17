@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """HA status CLI for OutcomeOps deployments.
 
 Compares per-(workspace, repo) SHA state across primary and secondary

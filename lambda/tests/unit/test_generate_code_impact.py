@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for ``generate_code.impact_analysis``.
 
 Covers:
@@ -11,7 +13,7 @@ Covers:
 - ``build_impact_prompt_section``: format parity with the documented
   example
 - Definition-of-done: a synthetic modify-task changing the signature
-  of ``report_repos_snapshot`` produces a plan that lists all 9 caller
+  of ``log_audit_entry`` produces a plan that lists all 9 caller
   updates
 - Greenfield-path no-op: no graph queries fire, no impact section
   produced
@@ -73,7 +75,7 @@ WORKSPACE_ID = "ws-impact"
 # 9-caller fixture mirrors the real license-layer v2.0.0 migration —
 # the chunk-07 Definition of Done's named example.
 REPORT_REPOS_SYMBOL = (
-    "python:lambda.shared.outcomeops_license::report_repos_snapshot"
+    "python:lambda.shared.audit::log_audit_entry"
 )
 REPORT_REPOS_CALLERS = [
     (
@@ -287,7 +289,7 @@ def _put_fact(
     table.put_item(Item=item)
 
 
-def _seed_report_repos_snapshot_callers(tables_resource):
+def _seed_log_audit_entry_callers(tables_resource):
     """Seed the 9 known callers from the license-layer v2.0.0 migration."""
     table = tables_resource.Table(SYMBOL_GRAPH_TABLE)
     for source_id, repo, file_path, line in REPORT_REPOS_CALLERS:
@@ -315,7 +317,7 @@ class TestClassifyTaskType:
         from impact_analysis import classify_task_type  # type: ignore
 
         c = classify_task_type(
-            issue_title="Rename report_repos_snapshot to capture metadata",
+            issue_title="Rename log_audit_entry to capture metadata",
             issue_description=None,
         )
         assert c.task_type == "modify"
@@ -377,21 +379,21 @@ class TestExtractModifyTargets:
 
         plan = (
             "Step 1: Rename "
-            "python:lambda.shared.outcomeops_license::report_repos_snapshot "
+            "python:lambda.shared.audit::log_audit_entry "
             "and update the parameter list."
         )
         targets = extract_modify_targets(plan)
         assert len(targets) == 1
         assert (
             targets[0].symbol_id
-            == "python:lambda.shared.outcomeops_license::report_repos_snapshot"
+            == "python:lambda.shared.audit::log_audit_entry"
         )
         assert targets[0].signature_change is True  # 'parameter' keyword
 
     def test_python_symbol_without_prefix_defaults_to_python(self):
         from impact_analysis import extract_modify_targets  # type: ignore
 
-        plan = "Update lambda.shared.outcomeops_license::report_repos_snapshot to v2."
+        plan = "Update lambda.shared.audit::log_audit_entry to v2."
         targets = extract_modify_targets(plan)
         assert len(targets) == 1
         assert targets[0].symbol_id.startswith("python:")
@@ -446,14 +448,14 @@ class TestExtractModifyTargets:
 
         targets = extract_modify_targets(
             plan_text="Step 1: Make the change described in the issue.",
-            issue_title="Update report_repos_snapshot",
+            issue_title="Update log_audit_entry",
             issue_description=(
-                "Rename python:lambda.shared.outcomeops_license::report_repos_snapshot."
+                "Rename python:lambda.shared.audit::log_audit_entry."
             ),
         )
         sids = [t.symbol_id for t in targets]
         assert (
-            "python:lambda.shared.outcomeops_license::report_repos_snapshot"
+            "python:lambda.shared.audit::log_audit_entry"
             in sids
         )
 
@@ -490,7 +492,7 @@ class TestAnalyzeCallerImpact:
             analyze_caller_impact,
         )
 
-        _seed_report_repos_snapshot_callers(tables)
+        _seed_log_audit_entry_callers(tables)
         target = ModifyTarget(
             symbol_id=REPORT_REPOS_SYMBOL,
             signature_change=True,
@@ -555,7 +557,7 @@ class TestAnalyzeCallerImpact:
             analyze_caller_impact,
         )
 
-        _seed_report_repos_snapshot_callers(tables)
+        _seed_log_audit_entry_callers(tables)
 
         targets = [
             ModifyTarget(
@@ -732,10 +734,10 @@ class TestRunImpactAnalysis:
         from impact_analysis import run_impact_analysis  # type: ignore
 
         result = run_impact_analysis(
-            issue_title="Rename report_repos_snapshot",
+            issue_title="Rename log_audit_entry",
             issue_description=(
-                "Rename python:lambda.shared.outcomeops_license::"
-                "report_repos_snapshot."
+                "Rename python:lambda.shared.audit::"
+                "log_audit_entry."
             ),
             plan_text="Step 1: rename it.",
             workspace_id="",
@@ -761,13 +763,13 @@ class TestRunImpactAnalysis:
         assert result.skipped is True
         assert "no symbols resolved" in result.reason
 
-    def test_report_repos_snapshot_signature_change_lists_all_9_callers(
+    def test_log_audit_entry_signature_change_lists_all_9_callers(
         self, tables
     ):
         """**Chunk-07 Definition of Done.**
 
         A synthetic modify-task that changes the signature of
-        ``report_repos_snapshot`` produces a plan that lists all 9
+        ``log_audit_entry`` produces a plan that lists all 9
         caller updates.
 
         Mirrors the license-layer v2.0.0 migration the plan calls out as
@@ -775,19 +777,19 @@ class TestRunImpactAnalysis:
         """
         from impact_analysis import run_impact_analysis  # type: ignore
 
-        _seed_report_repos_snapshot_callers(tables)
+        _seed_log_audit_entry_callers(tables)
 
         result = run_impact_analysis(
-            issue_title="Refactor report_repos_snapshot to accept repo_metadata",
+            issue_title="Refactor log_audit_entry to accept repo_metadata",
             issue_description=(
                 "Add a new repo_metadata parameter to "
-                "python:lambda.shared.outcomeops_license::report_repos_snapshot "
+                "python:lambda.shared.audit::log_audit_entry "
                 "so each call can attach per-repo context. This is a "
                 "signature change; callers need to be updated."
             ),
             plan_text=(
-                "Step 1: Update python:lambda.shared.outcomeops_license::"
-                "report_repos_snapshot to accept the new parameter."
+                "Step 1: Update python:lambda.shared.audit::"
+                "log_audit_entry to accept the new parameter."
             ),
             workspace_id=WORKSPACE_ID,
             symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
@@ -818,7 +820,7 @@ class TestRunImpactAnalysis:
         from impact_analysis import run_impact_analysis  # type: ignore
         import shared.symbol_graph_reader as reader  # type: ignore
 
-        _seed_report_repos_snapshot_callers(tables)
+        _seed_log_audit_entry_callers(tables)
 
         with patch.object(
             reader,
@@ -826,10 +828,10 @@ class TestRunImpactAnalysis:
             side_effect=reader.SymbolGraphUnavailable("simulated"),
         ):
             result = run_impact_analysis(
-                issue_title="Refactor report_repos_snapshot",
+                issue_title="Refactor log_audit_entry",
                 issue_description=(
-                    "Rename python:lambda.shared.outcomeops_license::"
-                    "report_repos_snapshot."
+                    "Rename python:lambda.shared.audit::"
+                    "log_audit_entry."
                 ),
                 plan_text="Step 1: rename the symbol.",
                 workspace_id=WORKSPACE_ID,

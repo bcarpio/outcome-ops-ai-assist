@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 FastAPI app for Lambda Web Adapter streaming.
 Entry point for uvicorn when running under LWA.

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # OutcomeOps MCP Server
 # Exposes the knowledge base to external MCP clients (Claude Code, VS Code, etc.)

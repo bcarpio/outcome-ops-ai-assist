@@ -22,6 +22,27 @@ We need automated license compliance checking to:
 
 ## Decision
 
+### This Repository's Own License and Header Policy
+
+This ADR serves two purposes. It defines the **customer-facing license-compliance
+scanning feature** (the Phases below), and it is the **single source of truth for this
+repository's own copyright and licensing policy**. The two are kept in one ADR because
+the policy this repo holds itself to is the same policy the feature enforces for
+customers.
+
+**This repository is licensed under the Apache License, Version 2.0.** The full license
+text is in the top-level `LICENSE` file and third-party attributions are in `NOTICE`.
+
+**Every first-party source file MUST carry the canonical short SPDX header** defined in
+"Canonical Per-File Copyright Header" below. This is a MANDATORY policy, not optional:
+the top-level `LICENSE`/`NOTICE` establish the project license, and the per-file header
+makes each file's license unambiguous when a file is copied or vendored out of the repo
+in isolation (the exact IP-provenance risk the scanning feature exists to catch).
+
+The headers are applied **repo-wide as a later mechanical sweep** during the open-source
+relicensing. Defining the canonical text here does NOT mean the headers are present on
+every file yet; the sweep is a separate step.
+
 ### Phase 1: Source File License Scanning
 
 Implement automated license compliance checking that scans all source code files in PRs for:
@@ -48,33 +69,46 @@ Implement automated license compliance checking that scans all source code files
 - Unknown license text
 - Missing license information
 
-### Copyright Header Requirements
+### Canonical Per-File Copyright Header
 
-All new source code files MUST include a copyright header in this format:
+This section is the **single source of truth** for the exact per-file header text. Every
+first-party source file MUST begin with these two lines, comment-prefixed for the file's
+language. The copyright year span is `2025-2026` and the holder is `OutcomeOps`. Do not
+paraphrase, reorder, or change the year/holder — tooling and the compliance scanner match
+this text exactly.
 
-**Python:**
+**Python, Terraform (`.tf`), shell, YAML, and other `#`-comment languages:**
 ```python
-# Copyright 2024-2025 [Company Name]
+# Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
 ```
 
-**JavaScript/TypeScript:**
+**JavaScript / TypeScript (`.js`, `.jsx`, `.ts`, `.tsx`) and other `//`-comment languages:**
 ```javascript
-// Copyright 2024-2025 [Company Name]
+// Copyright 2025-2026 OutcomeOps
 // SPDX-License-Identifier: Apache-2.0
+```
+
+**CSS (and other languages that support only block comments):**
+```css
+/* Copyright 2025-2026 OutcomeOps */
+/* SPDX-License-Identifier: Apache-2.0 */
 ```
 
 **Go:**
 ```go
-// Copyright 2024-2025 [Company Name]
+// Copyright 2025-2026 OutcomeOps
 // SPDX-License-Identifier: Apache-2.0
 ```
 
 **Java:**
 ```java
-// Copyright 2024-2025 [Company Name]
+// Copyright 2025-2026 OutcomeOps
 // SPDX-License-Identifier: Apache-2.0
 ```
+
+These headers are applied repo-wide by the OSS relicensing sweep (a separate, mechanical
+step); defining them here does not imply they are present on every file yet.
 
 ### Scope of Scanning
 
@@ -249,5 +283,6 @@ Version History:
 - v1.0 (2025-11-24): Initial decision - Phase 1 source file scanning
 - v1.1 (2025-11-24): Roadmap update - Reprioritized Phase 2 to focus on AI code similarity detection based on customer requirements (Acme use case)
 - v1.2 (2025-11-24): Phase 2 implementation complete - Tiered code similarity detection (quick pattern matching + Claude semantic analysis) for AI-generated code. Addresses highest-value risk: structural similarity to copyrighted OSS.
+- v1.3 (2026-11-17): Open-source relicensing reconciliation. Declared this repository Apache-2.0 (top-level LICENSE/NOTICE) and made the canonical per-file SPDX header MANDATORY for all first-party source files. Fixed the canonical header text as `Copyright 2025-2026 OutcomeOps` + `SPDX-License-Identifier: Apache-2.0` (was a `2024-2025 [Company Name]` placeholder) and made this ADR its single source of truth. Headers are applied repo-wide by a later mechanical sweep, not in this change.
 
 <!-- Confluence sync -->

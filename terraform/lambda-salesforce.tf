@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # Salesforce CRM Integration Lambda
 # Handles OAuth flow (env-level SSM credentials, one shared Connected App per
@@ -51,10 +53,6 @@ module "salesforce_integration_lambda" {
 
   quiet_archive_local_exec = true
 
-  # ADR-019: license validator layer required for every customer-facing Lambda.
-  layers = [
-    var.outcomeops_license_layer_arn,
-  ]
 
   environment_variables = merge(
     {
@@ -74,7 +72,6 @@ module "salesforce_integration_lambda" {
       SALESFORCE_CALLBACK_URL = var.domain != "" ? "https://${local.fqdn}/api/salesforce/callback" : ""
     },
     local.salesforce_common_env,
-    local.outcomeops_license_env,
     local.ha_writer_env,
     local.ha_scheduler_env,
   )
@@ -136,7 +133,6 @@ module "salesforce_integration_lambda" {
         ]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam,
     local.ha_scheduler_iam,
   )
@@ -257,9 +253,6 @@ module "salesforce_sync_lambda" {
 
   quiet_archive_local_exec = true
 
-  layers = [
-    var.outcomeops_license_layer_arn,
-  ]
 
   environment_variables = merge(
     {
@@ -277,7 +270,6 @@ module "salesforce_sync_lambda" {
       AUDIT_RETENTION_DAYS  = tostring(var.audit_retention_days)
     },
     local.salesforce_common_env,
-    local.outcomeops_license_env,
     local.ha_writer_env,
   )
 
@@ -343,7 +335,6 @@ module "salesforce_sync_lambda" {
         resources = [module.audit_logs_table.dynamodb_table_arn]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam,
   )
 

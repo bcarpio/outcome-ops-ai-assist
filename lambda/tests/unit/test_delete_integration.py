@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Full-delete integration test across stores + regions (delete-bug 05).
 
 Ties the pieces together end-to-end against moto-backed stores:

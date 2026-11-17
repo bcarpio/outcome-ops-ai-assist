@@ -1,3 +1,5 @@
+// Copyright 2025-2026 OutcomeOps
+// SPDX-License-Identifier: Apache-2.0
 import { useState } from 'react'
 import { Bot, ShieldCheck } from 'lucide-react'
 

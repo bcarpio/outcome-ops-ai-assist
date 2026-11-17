@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for shared.model_client dispatch (chunk 01).
 
 These tests do not exercise real boto3 / HTTPS. Backends are stubs.

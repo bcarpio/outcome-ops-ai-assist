@@ -225,5 +225,4 @@ The sync Lambdas pick up the new secret automatically — they re-read SSM at mo
 ## Related
 
 - ALB OIDC login app setup: [`azure-ad-setup.md`](./azure-ad-setup.md)
-- ADR-019 (license layer) — the M365 sync Lambdas are all license-gated
 - ADR-018 (audit logging) — every successful sync emits a `{SOURCE}_SYNCED` audit row

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for servicenow-integration Lambda handler (env-SSM OAuth)."""
 
 import importlib.util
@@ -45,10 +47,7 @@ lambda_handler = handler_module.lambda_handler
 def reset_globals():
     handler_module._dynamodb = None
     handler_module._sqs = None
-    saved = handler_module.report_repos_snapshot
-    handler_module.report_repos_snapshot = None
     yield
-    handler_module.report_repos_snapshot = saved
 
 
 @pytest.fixture

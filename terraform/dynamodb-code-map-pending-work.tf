@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # DynamoDB Table for Per-Pipeline Pending-Work Ledger (plan-git-truth chunk 01)
 #

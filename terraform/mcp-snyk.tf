@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # Snyk MCP Server
 # Wraps the Snyk CLI MCP server (stdio) via supergateway for HTTP transport.

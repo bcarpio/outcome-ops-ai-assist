@@ -15,14 +15,12 @@ path used by GitHub. Boards ingests through the same document-retrieval
 path used by Jira. The two surfaces have different content shapes
 (structured code vs. structured narrative), different customer
 consent conversations ("give the platform read on our code" vs.
-"give it read on our work-tracking system"), and different license-
-cost intuitions ("per repo" vs. "per project").
+"give it read on our work-tracking system").
 
 The question at the design stage was whether to bundle Boards into
 the existing ADO Repos integration (one connection, one workspace-
-settings tab, one license bucket) or ship it as a sibling of Repos
-(two connections, two tabs, two license buckets). This ADR captures
-the decision to ship as a sibling.
+settings tab) or ship it as a sibling of Repos (two connections, two
+tabs). This ADR captures the decision to ship as a sibling.
 
 ## Decision
 
@@ -31,8 +29,7 @@ customer-facing (same Entra ID app registration, same tenant/client
 config, same Function URL infrastructure, same shared
 `entra_id_oauth` helper) but presents itself as a separate connection
 type end-to-end: its own OAuth consent, its own workspace-settings
-section, its own license-counted identifier prefix, its own DDB
-row family, its own Lambda functions.
+section, its own DDB row family, its own Lambda functions.
 
 ### Concretely
 
@@ -46,13 +43,6 @@ row family, its own Lambda functions.
   are distinct from Repos's `AZDO_CONNECTION#`, `AZDO_REPO#`,
   `AZDO_TOKEN#` families. A workspace admin can disconnect one
   integration without touching the other.
-- **Separate license-counted identifier.** Repos projects (repos)
-  count as `azure_devops:{org}/{project}/{repo}` per source. Boards
-  projects count as `azure_devops_boards:{org}/{project}` — a
-  distinct namespace. A customer with the same org/project connected
-  for both consents counts twice (each is a separately-consented
-  ingest surface with independent knowledge shape). See
-  `lambda/shared/license_repos.py`.
 - **Separate Lambda triple.** `azure-devops-boards-integration`,
   `azure-devops-boards-sync`, `azure-devops-boards-scheduler` each
   ship as their own zip, own Function URL / event-source, own IAM.
@@ -137,15 +127,6 @@ row family, its own Lambda functions.
   screen twice — once per integration — but their tenant admin only
   registers ONE Entra ID app. The runbook (`docs/runbooks/azure-devops-setup.md`
   §12) explains this trade-off.
-- **License-cost implication.** A customer with `contoso/widgets`
-  consented for both Repos (one or more repos) and Boards (the
-  project) counts:
-  - One `azure_devops_boards:contoso/widgets` unit
-  - One `azure_devops:contoso/widgets/repo-name` unit per Repos repo
-  Both count against the customer's source limit. This is the
-  intended pricing model per ADR-019 -- Repos and Boards are
-  separately-consented knowledge surfaces with independent risk
-  profiles for the customer's compliance review.
 - **Runbook complexity.** Customer onboarding is one more section
   (`docs/runbooks/azure-devops-setup.md` §12), but reuses the app-
   registration steps (§3-§5) rather than duplicating them.
@@ -156,10 +137,6 @@ row family, its own Lambda functions.
   design choice (sibling-not-child) that would otherwise need to be
   re-derived every time a future contributor asked "should we bundle
   another ADO surface into Repos?".
-- **ADR-019** — License layer + per-source counting. The
-  `azure_devops_boards:` namespace registration in
-  `lambda/shared/license_repos.py` is how this ADR intersects with
-  ADR-019's counting model.
 - **ADR-030 v1.1 / commit 389c1e7** — Both-MRK-ARN KMS grant
   pattern. Boards' IAM policies use the same pattern for
   future-proof HA.
@@ -183,8 +160,6 @@ row family, its own Lambda functions.
 - `lambda/file-ingestion/handler.py::process_azure_devops_boards_work_item` —
   HTML document serialization + S3 write under
   `workspaces/{ws}/azure_devops_boards/{org}/{project}/WI-{id}.html`.
-- `lambda/shared/license_repos.py::_azure_devops_boards_project_ids` —
-  license-snapshot identifier builder.
 - `terraform/lambda-azure-devops-boards.tf` — primary Lambda triple +
   SQS + EventBridge.
 - `terraform/lambda-azure-devops-boards-secondary.tf` — secondary

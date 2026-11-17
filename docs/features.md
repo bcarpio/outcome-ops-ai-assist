@@ -685,10 +685,6 @@ Three tiers, each with a deliberate lifetime:
   pattern; code-gen Lambdas use ECR-hosted runtime containers
   (`lambda/runtime-layer`, `lambda/terraform-layer`) because they
   need git / make / dotnet at runtime.
-- **License usage telemetry** —
-  `prs-generated`, `repos-active` reported to
-  `https://license.example.com`; tracked at work-completed
-  not PR-created (`docs/license-usage-tracking.md`).
 - **Standard AWS managed services** — DynamoDB, S3, S3 Vectors,
   SQS, SNS, EventBridge, KMS, SSM, ALB, Cognito-free OIDC. No EC2,
   no Kubernetes, no ECS for the data plane (only the UI runs on
@@ -718,15 +714,6 @@ Three tiers, each with a deliberate lifetime:
   15-minute Lambda timeout crisis on large repos. Shard-suffixed
   vector keys guard the orphan-cleanup sweep from deleting in-flight
   shard summaries mid-merge.
-- **License layer v2.0.0 (desired-state snapshot)** — per-Lambda
-  layer that reports `repos-active` via `report_repos_snapshot()`
-  from every integration's connect / disconnect handler + an hourly
-  heartbeat scheduler. Replaces the older `track_repo_active`
-  event-based model (which drifted on missed events). License
-  server sees the ground truth, not a running tally.
-- **AWS Marketplace SaaS listing** — customers can subscribe via
-  AWS Marketplace; metering + entitlement events flow through the
-  standard Marketplace SNS topics (limited release, 2026-05-30).
 
 ## See also
 

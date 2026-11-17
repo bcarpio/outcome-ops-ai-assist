@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for the analyze-pr summary-comment wiring helpers.
 
 Covers the logic-bearing helpers added for the PR summary feature:

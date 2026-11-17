@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for analyze-pr structural-impact pass.
 
 Covers the four moving parts of the structural-impact pass:
@@ -15,7 +17,7 @@ Covers the four moving parts of the structural-impact pass:
      staleness footer.
 
 Plus the chunk-06 "Definition of done" integration test: a synthetic
-PR that changes the signature of ``report_repos_snapshot`` produces an
+PR that changes the signature of ``log_audit_entry`` produces an
 impact block that lists all 9 known callers and uses the
 signature-change reviewer note. Mirrors the same fixture set as
 ``test_symbol_graph_reader.py`` / ``test_chat_symbol_graph_augment.py``
@@ -252,7 +254,7 @@ class TestParseDiffHunks:
 
         patch = (
             "@@ -10,3 +10,3 @@\n"
-            " def report_repos_snapshot():\n"
+            " def log_audit_entry():\n"
             "-    pass\n"
             "+    return {}\n"
         )
@@ -336,14 +338,14 @@ class TestResolveTargets:
         from diff_symbol_resolver import FilePatch, resolve_targets  # type: ignore
 
         post_diff = (
-            b"def report_repos_snapshot():\n"
+            b"def log_audit_entry():\n"
             b"    return {'repos': []}\n"
         )
         # Body-only change: hunk touches the function body line, not
         # the ``def`` line.
         patch = (
             "@@ -1,2 +1,2 @@\n"
-            " def report_repos_snapshot():\n"
+            " def log_audit_entry():\n"
             "-    return {}\n"
             "+    return {'repos': []}\n"
         )
@@ -363,7 +365,7 @@ class TestResolveTargets:
         # touch line 1 of a function often touch the decorator or
         # type-annotation. That conservative read is documented in
         # diff_symbol_resolver.resolve_targets.
-        assert targets[0].symbol_id.endswith("::report_repos_snapshot")
+        assert targets[0].symbol_id.endswith("::log_audit_entry")
         assert targets[0].change_kind == "signature"
         assert targets[0].file_path == "lib/snapshot.py"
 
@@ -376,14 +378,14 @@ class TestResolveTargets:
             b"def helper(x):\n"
             b"    return x\n"
             b"\n"
-            b"def report_repos_snapshot(workspace_id, repos):\n"
+            b"def log_audit_entry(workspace_id, repos):\n"
             b"    return None\n"
         )
         # Hunk starts at line 4 (the new def line).
         patch = (
             "@@ -4,1 +4,1 @@\n"
-            "-def report_repos_snapshot(workspace_id):\n"
-            "+def report_repos_snapshot(workspace_id, repos):\n"
+            "-def log_audit_entry(workspace_id):\n"
+            "+def log_audit_entry(workspace_id, repos):\n"
         )
         targets = resolve_targets(
             [
@@ -397,7 +399,7 @@ class TestResolveTargets:
         )
         target_by_id = {t.symbol_id: t for t in targets}
         snapshot_id = next(
-            sid for sid in target_by_id if sid.endswith("::report_repos_snapshot")
+            sid for sid in target_by_id if sid.endswith("::log_audit_entry")
         )
         assert target_by_id[snapshot_id].change_kind == "signature"
         # Helper isn't touched -- shouldn't be in the targets list.
@@ -511,7 +513,7 @@ class TestAnalyzeStructuralImpact:
             workspace_id="",
             mutated=[
                 MutatedSymbol(
-                    symbol_id="python:lib.snapshot::report_repos_snapshot",
+                    symbol_id="python:lib.snapshot::log_audit_entry",
                     change_kind="signature",
                     file_path="lib/snapshot.py",
                     definition_line=1,
@@ -565,7 +567,7 @@ class TestAnalyzeStructuralImpact:
         _create_symbol_graph_table()
         _create_code_maps_table()
 
-        target = "python:lib.snapshot::report_repos_snapshot"
+        target = "python:lib.snapshot::log_audit_entry"
         _put_fact(
             workspace_id=WORKSPACE_ID,
             repo=REPO,
@@ -611,7 +613,7 @@ class TestAnalyzeStructuralImpact:
         _create_symbol_graph_table()
         _create_code_maps_table()
 
-        target = "python:lib.snapshot::report_repos_snapshot"
+        target = "python:lib.snapshot::log_audit_entry"
         _put_fact(
             workspace_id=WORKSPACE_ID,
             repo=REPO,
@@ -654,7 +656,7 @@ class TestAnalyzeStructuralImpact:
 
         mutated = [
             MutatedSymbol(
-                symbol_id="python:lib.snapshot::report_repos_snapshot",
+                symbol_id="python:lib.snapshot::log_audit_entry",
                 change_kind="signature",
                 file_path="lib/snapshot.py",
                 definition_line=1,
@@ -691,7 +693,7 @@ class TestAnalyzeStructuralImpact:
         _create_symbol_graph_table()
         _create_code_maps_table()
 
-        target = "python:lib.snapshot::report_repos_snapshot"
+        target = "python:lib.snapshot::log_audit_entry"
         _put_fact(
             workspace_id=WORKSPACE_ID,
             repo=REPO,
@@ -760,14 +762,14 @@ class TestAnalyzeStructuralImpact:
 
 class TestReportReposSnapshotIntegration:
     """Plan-gkg/06 DoD: a synthetic PR that changes the signature of
-    ``report_repos_snapshot`` produces an impact block with the 9
+    ``log_audit_entry`` produces an impact block with the 9
     known callers and the signature-change reviewer note.
 
     Mirrors the fixture set in ``test_symbol_graph_reader.py`` so a
     regression here points at the same root cause as the corresponding
     reader test. Uses the project-memory anchor set
     (project_license_layer_v2.md): 9 connect/disconnect handlers +
-    the hourly heartbeat scheduler.
+    the scheduled reporter.
     """
 
     def test_signature_change_yields_nine_callers_with_signature_note(self):
@@ -781,12 +783,12 @@ class TestReportReposSnapshotIntegration:
         _create_symbol_graph_table()
         _create_code_maps_table()
 
-        # Synthetic post-diff content for outcomeops_license.py: the
+        # Synthetic post-diff content for audit.py: the
         # signature line is at line 1 of the fixture so resolve_targets'
         # off-by-one heuristic (decorator/annotation pattern) treats
         # the change at line 1 as a signature change, matching reality.
         post_diff_source = (
-            b"def report_repos_snapshot(workspace_id, repos):\n"
+            b"def log_audit_entry(workspace_id, repos):\n"
             b"    # Refactored v2.0.0\n"
             b"    return None\n"
         )
@@ -794,15 +796,15 @@ class TestReportReposSnapshotIntegration:
         # this as a signature_line.
         patch = (
             "@@ -1,3 +1,3 @@\n"
-            "-def report_repos_snapshot(workspace_id):\n"
-            "+def report_repos_snapshot(workspace_id, repos):\n"
+            "-def log_audit_entry(workspace_id):\n"
+            "+def log_audit_entry(workspace_id, repos):\n"
             "     # Refactored v2.0.0\n"
             "     return None\n"
         )
         targets = resolve_targets(
             [
                 FilePatch(
-                    file_path="lambda/shared/outcomeops_license.py",
+                    file_path="lambda/shared/audit.py",
                     status="modified",
                     patch=patch,
                     post_diff_source=post_diff_source,
@@ -813,7 +815,7 @@ class TestReportReposSnapshotIntegration:
         # extractor uses the dotted module path of the file_path.
         target_ids = [t.symbol_id for t in targets]
         snapshot_id = next(
-            tid for tid in target_ids if tid.endswith("::report_repos_snapshot")
+            tid for tid in target_ids if tid.endswith("::log_audit_entry")
         )
         snap_target = next(t for t in targets if t.symbol_id == snapshot_id)
         assert snap_target.change_kind == "signature"
@@ -829,7 +831,7 @@ class TestReportReposSnapshotIntegration:
             ("jira-sync", "lambda/jira-sync/handler.py", 452),
             ("confluence-sync", "lambda/confluence-sync/handler.py", 476),
             ("file-ingestion", "lambda/file-ingestion/handler.py", 1456),
-            ("heartbeat", "lambda/license-heartbeat/handler.py", 42),
+            ("scheduler", "lambda/scheduled-reporter/handler.py", 42),
         ]
         for name, file_path, line in known_callers:
             _put_fact(
@@ -864,7 +866,7 @@ class TestReportReposSnapshotIntegration:
         assert "## Structural impact" in block
         assert f"`{snapshot_id}` (signature-changed)" in block
         # Definition anchor.
-        assert "Definition: lambda/shared/outcomeops_license.py:1" in block
+        assert "Definition: lambda/shared/audit.py:1" in block
         # Caller count + every file path.
         assert "Callers affected (9):" in block
         for _, file_path, line in known_callers:
@@ -904,7 +906,7 @@ class TestReportReposSnapshotIntegration:
             b"def helper():\n"
             b"    return 1\n"
             b"\n"
-            b"def report_repos_snapshot(workspace_id):\n"
+            b"def log_audit_entry(workspace_id):\n"
             b"    # v2.0.0 behavior change\n"
             b"    return {'workspace_id': workspace_id, 'updated': True}\n"
         )
@@ -916,7 +918,7 @@ class TestReportReposSnapshotIntegration:
         targets = resolve_targets(
             [
                 FilePatch(
-                    file_path="lambda/shared/outcomeops_license.py",
+                    file_path="lambda/shared/audit.py",
                     status="modified",
                     patch=patch,
                     post_diff_source=post_diff_source,
@@ -925,7 +927,7 @@ class TestReportReposSnapshotIntegration:
         )
         target_ids = [t.symbol_id for t in targets]
         snapshot_id = next(
-            tid for tid in target_ids if tid.endswith("::report_repos_snapshot")
+            tid for tid in target_ids if tid.endswith("::log_audit_entry")
         )
         snap_target = next(t for t in targets if t.symbol_id == snapshot_id)
         assert snap_target.change_kind == "body"
@@ -940,7 +942,7 @@ class TestReportReposSnapshotIntegration:
             ("jira-sync", "lambda/jira-sync/handler.py", 452),
             ("confluence-sync", "lambda/confluence-sync/handler.py", 476),
             ("file-ingestion", "lambda/file-ingestion/handler.py", 1456),
-            ("heartbeat", "lambda/license-heartbeat/handler.py", 42),
+            ("scheduler", "lambda/scheduled-reporter/handler.py", 42),
         ]
         for name, file_path, line in known_callers:
             _put_fact(
@@ -1097,7 +1099,7 @@ class TestHandlerStructuralGlue:
         _create_code_maps_table()
         handler = _load_handler()
 
-        target = "python:lib.snapshot::report_repos_snapshot"
+        target = "python:lib.snapshot::log_audit_entry"
         _put_fact(
             workspace_id=WORKSPACE_ID,
             repo=REPO,
@@ -1110,7 +1112,7 @@ class TestHandlerStructuralGlue:
         )
 
         post_diff = (
-            b"def report_repos_snapshot(workspace_id, repos):\n"
+            b"def log_audit_entry(workspace_id, repos):\n"
             b"    return None\n"
         )
         gh_file = handler.GitHubFile(
@@ -1121,8 +1123,8 @@ class TestHandlerStructuralGlue:
             changes=2,
             patch=(
                 "@@ -1,2 +1,2 @@\n"
-                "-def report_repos_snapshot(workspace_id):\n"
-                "+def report_repos_snapshot(workspace_id, repos):\n"
+                "-def log_audit_entry(workspace_id):\n"
+                "+def log_audit_entry(workspace_id, repos):\n"
                 "     return None\n"
             ),
         )

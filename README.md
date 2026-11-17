@@ -7,6 +7,21 @@
 [![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=bcarpio_outcome-ops-ai-assist-private&metric=reliability_rating&token=6aaae34e16124eecf5437befb74de946dd4aac6f)](https://sonarcloud.io/summary/new_code?id=bcarpio_outcome-ops-ai-assist-private)
 [![CI/CD](https://github.com/bcarpio/outcome-ops-ai-assist-private/actions/workflows/cicd.yml/badge.svg)](https://github.com/bcarpio/outcome-ops-ai-assist-private/actions/workflows/cicd.yml)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
+**OutcomeOps AI Assist** is a generic, language- and framework-agnostic platform for
+AI-powered code generation, pull-request review, and knowledge-base retrieval that deploys
+entirely into your own AWS account. It grounds AI in your organization's standards — ADRs,
+code-maps, and architectural decisions — so generated code and reviews match your patterns
+instead of generic defaults. The platform is **open source under the [Apache License 2.0](LICENSE)**;
+see [CONTRIBUTING.md](CONTRIBUTING.md) to get involved. Security reports go through
+[SECURITY.md](SECURITY.md).
+
+> **Trademark:** "OutcomeOps" and the OutcomeOps logo are trademarks of OutcomeOps LLC.
+> The Apache-2.0 license grants no trademark rights, so forks and derivatives must use a
+> different name.
+
+---
 
 AI generates generic code. You need code that matches **YOUR** standards.
 

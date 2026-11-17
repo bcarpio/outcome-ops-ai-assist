@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for azure-devops-boards-integration Lambda handler.
 
 Strategy mirrors ``test_azure_devops_integration.py``:
@@ -6,10 +8,9 @@ Strategy mirrors ``test_azure_devops_integration.py``:
   resolve.
 - Mock the DDB resource at the handler module level so routing and
   authorization logic can be tested without a real table.
-- Focus on chunk 04 acceptance criteria: authorize URL construction,
-  callback state validation, license-snapshot emission,
-  add-projects input-shape validation, disconnect cascade,
-  sync trigger filter.
+- Focus on acceptance criteria: authorize URL construction,
+  callback state validation, add-projects input-shape validation,
+  disconnect cascade, sync trigger filter.
 """
 
 import importlib.util
@@ -92,14 +93,6 @@ for _k, _v in _orig_env.items():
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def _pin_snapshot_helper():
-    saved = handler.report_repos_snapshot
-    handler.report_repos_snapshot = None
-    yield
-    handler.report_repos_snapshot = saved
 
 
 @pytest.fixture(autouse=True)

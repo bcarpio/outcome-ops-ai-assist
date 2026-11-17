@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """App-only Microsoft Graph client for the group binding picker (ADR-048 v1.1).
 
 Client-credentials (app-only) access to Graph, used ONLY when a deployment

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for the azure-devops-boards-sync Lambda.
 
 The worker is an orchestrator: it reads a project sync message from
@@ -102,21 +104,6 @@ def _reset_mocks(monkeypatch):
     mock_ssm_client.reset_mock()
     mock_sqs_client.send_message.side_effect = None
     handler._client_secret = None
-
-    monkeypatch.setattr(
-        handler, "validate_license",
-        lambda *a, **kw: {"sub": "test-customer"},
-    )
-
-    def _allow(*a, **kw):
-        r = MagicMock()
-        r.allowed = True
-        r.reason = None
-        r.current = 0
-        r.limit = 100
-        return r
-
-    monkeypatch.setattr(handler, "check_repo_limit", _allow)
     yield
 
 

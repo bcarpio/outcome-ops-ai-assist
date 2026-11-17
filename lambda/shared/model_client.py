@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """shared.model_client — single dispatch point for Bedrock LLM completions.
 
 Routes by model-ID prefix to one of two backends:

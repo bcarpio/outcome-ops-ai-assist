@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for jira-integration/jira_api.py.
 
 These tests import from the jira-integration directory (not jira-sync)

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 FastAPI app for the Azure DevOps Boards Integration Lambda.
 

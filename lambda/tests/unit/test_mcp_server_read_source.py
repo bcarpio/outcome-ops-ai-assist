@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for the ``read_source`` MCP tool on the OutcomeOps gateway.
 
 Covers ``handle_read_source`` (plan-read-source-adjudicator chunk 01):

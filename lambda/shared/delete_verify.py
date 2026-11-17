@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Repo-deletion completeness verifier (delete-bug 04).
 
 Checks whether a removed repo's data is actually gone from a region's

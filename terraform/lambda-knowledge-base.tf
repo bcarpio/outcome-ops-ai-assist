@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # Knowledge Base Lambda Functions
 # - process-batch-summary: Process code map batch summaries (SQS consumer)
@@ -383,10 +385,6 @@ module "process_repo_summary_lambda" {
   # Suppress verbose archive output
   quiet_archive_local_exec = true
 
-  # Attach license validator layer (ADR-019)
-  layers = [
-    var.outcomeops_license_layer_arn,
-  ]
 
   # Environment variables
   environment_variables = merge(
@@ -424,7 +422,6 @@ module "process_repo_summary_lambda" {
       CODE_MAP_TARGET_SHARD_TOKENS = tostring(var.code_map_target_shard_tokens)
       CODE_MAP_MAX_PROMPT_TOKENS   = tostring(var.code_map_max_prompt_tokens)
     },
-    local.outcomeops_license_env,
     local.ha_writer_env,
     # ADR-016 v1.2 -- code-maps workload (repo summaries use both tiers).
     local.bedrock_code_maps_env,
@@ -615,7 +612,6 @@ module "process_repo_summary_lambda" {
       resources = ["*"]
     }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam,
   )
 

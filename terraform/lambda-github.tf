@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # GitHub App Integration Lambda
 # Handles OAuth flow and connection management for GitHub App
@@ -43,13 +45,6 @@ module "github_integration_lambda" {
   # Suppress verbose archive output
   quiet_archive_local_exec = true
 
-  # ADR-019: attach OutcomeOps license validator layer so the
-  # ``report_repos_snapshot`` helper the handler imports is available
-  # at cold start (no ImportError fallback that would silently no-op
-  # every connect/disconnect snapshot).
-  layers = [
-    var.outcomeops_license_layer_arn,
-  ]
 
   environment_variables = merge(
     {
@@ -65,7 +60,6 @@ module "github_integration_lambda" {
       AUDIT_TABLE            = module.audit_logs_table.dynamodb_table_id
       AUDIT_RETENTION_DAYS   = tostring(var.audit_retention_days)
     },
-    local.outcomeops_license_env,
     local.ha_writer_env,
     local.ha_scheduler_env,
   )
@@ -153,7 +147,6 @@ module "github_integration_lambda" {
         ]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam,
     local.ha_scheduler_iam,
   )
@@ -279,10 +272,6 @@ module "github_sync_lambda" {
   # Suppress verbose archive output
   quiet_archive_local_exec = true
 
-  # ADR-019: license validator layer required for every customer-facing Lambda.
-  layers = [
-    var.outcomeops_license_layer_arn,
-  ]
 
   environment_variables = merge(
     {
@@ -301,7 +290,6 @@ module "github_sync_lambda" {
       PENDING_WORK_TABLE = module.code_map_pending_work_table.dynamodb_table_id
       FAILED_FILES_TABLE = module.code_map_failed_files_table.dynamodb_table_id
     },
-    local.outcomeops_license_env,
     local.ha_writer_env,
   )
 
@@ -422,7 +410,6 @@ module "github_sync_lambda" {
         ]
       }
     },
-    local.outcomeops_license_iam,
     local.ha_writer_events_iam,
   )
 

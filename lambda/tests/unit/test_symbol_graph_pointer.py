@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for ``shared.symbol_graph_pointer``.
 
 Covers the atomic begin -> commit / abandon protocol that owns the

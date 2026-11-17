@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 Lambda handler for processing repository architectural summaries from SQS.
 
@@ -58,23 +60,8 @@ from shared.model_client import resolve_profile_arn
 from shared.audit_writer import (
     ACTION_DOCUMENT_INGESTED,
     log_admin_action,
-    log_license_fail_open,
 )
 from shared.pii import MODE_STRICT, read_workspace_mode, redact
-
-# License layer imports (ADR-019). The layer is attached at deploy time;
-# absence is a deploy bug detected on first invocation and surfaced via
-# log_license_fail_open + a batchItemFailures response so SQS retries.
-try:
-    from outcomeops_license import (
-        check_repo_limit,
-        track_code_map_updated,
-        validate_license,
-    )
-except ImportError:
-    validate_license = None  # type: ignore[assignment]
-    check_repo_limit = None  # type: ignore[assignment]
-    track_code_map_updated = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -1354,35 +1341,7 @@ def handler(event, context):
         "discover_code_units": true
     }
     """
-    # License validation (ADR-019). SQS-driven entry: on validation
-    # failure we mark every record in the batch as failed so SQS retries
-    # / DLQs them rather than silently dropping.
     records = event.get("Records", [])
-    if validate_license is None:
-        logger.error(
-            "[process-repo-summary] License layer not attached - "
-            "deploy bug (ADR-019)"
-        )
-        log_license_fail_open(
-            os.environ.get("AUDIT_TABLE", ""), "process-repo-summary"
-        )
-        return {
-            "batchItemFailures": [
-                {"itemIdentifier": r.get("messageId")} for r in records
-            ]
-        }
-    try:
-        claims = validate_license()
-        logger.info(
-            f"[process-repo-summary] License validated: {claims.get('sub')}"
-        )
-    except Exception as e:
-        logger.error(f"[process-repo-summary] License validation failed: {e}")
-        return {
-            "batchItemFailures": [
-                {"itemIdentifier": r.get("messageId")} for r in records
-            ]
-        }
 
     load_config()
 
@@ -1427,21 +1386,6 @@ def handler(event, context):
             # Repo branch (used for usage tracking; defaults to "main"
             # when github-sync did not include it in the message body).
             branch = message_body.get("branch", "main")
-
-            # Repo limit check (ADR-019). check_repo_limit returns
-            # allowed=True when the repo is already tracked, so this is
-            # a no-op for previously-processed repos. allowed=False only
-            # when adding a new repo would exceed the tier limit. We
-            # skip the message (not added to batch_item_failures)
-            # because limit-blocked is not a retryable failure.
-            limit_result = check_repo_limit(repo=repo_project)
-            if not limit_result.allowed:
-                logger.warning(
-                    f"[process-repo-summary] Repo limit reached for "
-                    f"{repo_project}: {limit_result.reason} "
-                    f"(current={limit_result.current}/{limit_result.limit})"
-                )
-                continue
 
             # full_code_units captures the COMPLETE current tree (pre-incremental-filter).
             # Used for code-map orphan cleanup so we don't accidentally
@@ -1727,16 +1671,6 @@ def handler(event, context):
                 )
                 _queue_orphan_code_map_cleanup(
                     repo, expected_keys, workspace_id, provider=provider)
-
-            # Usage tracking (ADR-019). Non-blocking: returns bool, never
-            # raises. Liveness tracking moved to connect/disconnect handlers
-            # via report_repos_snapshot (license layer v2.0.0); only the
-            # code-map-updated usage metric still fires per code-map run.
-            track_code_map_updated(repo=repo_project, branch=branch)
-            logger.info(
-                f"[process-repo-summary] Tracked code map update for "
-                f"{repo_project} (branch={branch})"
-            )
 
         except Exception as e:
             logger.error(f"Error processing record {message_id}: {e}")

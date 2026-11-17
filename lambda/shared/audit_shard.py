@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Audit GSI2 partition sharding (fable-scale chunk 04).
 
 Every Bedrock-related audit row org-wide was writing `GSI2PK = "CAT#bedrock"`

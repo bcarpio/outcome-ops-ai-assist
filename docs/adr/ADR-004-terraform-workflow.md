@@ -23,8 +23,8 @@ ${var.environment}-${var.app_name}-{resource-name}
 **Examples:**
 ```hcl
 # DynamoDB table
-name = "${var.environment}-${var.app_name}-licenses"
-# Result: dev-outcomeops-licenses, prd-outcomeops-licenses
+name = "${var.environment}-${var.app_name}-audit"
+# Result: dev-outcomeops-audit, prd-outcomeops-audit
 
 # Lambda function
 function_name = "${var.environment}-${var.app_name}-generate-code"
@@ -35,8 +35,8 @@ bucket = "${var.environment}-${var.app_name}-artifacts"
 # Result: dev-outcomeops-artifacts, prd-outcomeops-artifacts
 
 # Secrets Manager
-name = "${var.environment}-${var.app_name}/license/private-key"
-# Result: dev-outcomeops/license/private-key
+name = "${var.environment}-${var.app_name}/github/private-key"
+# Result: dev-outcomeops/github/private-key
 ```
 
 **Required variables in every Terraform project:**
@@ -59,7 +59,7 @@ locals {
 }
 
 # Then use throughout:
-name = "${local.name_prefix}-licenses"
+name = "${local.name_prefix}-audit"
 ```
 
 ### Community Module Standards
@@ -231,11 +231,11 @@ terraform apply terraform.prd.out
 ### Standard DynamoDB Module Usage
 
 ```hcl
-module "licenses_table" {
+module "audit_table" {
   source  = "terraform-aws-modules/dynamodb-table/aws"
   version = "4.2.0"
 
-  name      = "${var.environment}-${var.app_name}-licenses"
+  name      = "${var.environment}-${var.app_name}-audit"
   hash_key  = "PK"
   range_key = "SK"
 
@@ -249,7 +249,7 @@ module "licenses_table" {
   point_in_time_recovery_enabled = true
 
   tags = {
-    Name        = "${var.environment}-${var.app_name}-licenses"
+    Name        = "${var.environment}-${var.app_name}-audit"
     Environment = var.environment
   }
 }

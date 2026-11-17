@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Delete workspaces owned by anonymous or a specific user.
 
 Calls the workspace management Lambda directly with SigV4 signing.
