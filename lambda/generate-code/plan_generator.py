@@ -28,7 +28,7 @@ from models import ExecutionPlan, PlanStep, GitHubWebhookEvent, StepExecutionMes
 from plan_manager import serialize_plan_to_markdown
 from repo_config import RepoConfig, load_repo_config_from_github
 from sqs_client import send_step_message
-from utils import generate_branch_name, calculate_cost
+from utils import generate_branch_name, calculate_cost, resolve_owning_workspace
 
 logger = logging.getLogger()
 
@@ -343,11 +343,16 @@ def generate_execution_plan(
     # Step 4: Invoke Claude
     logger.info("[plan-gen] Invoking Claude to generate plan")
 
+    # Attribute code-gen Bedrock spend to the repo's owning workspace so it
+    # shows per-workspace in Analytics instead of WS#SYSTEM. Fail-soft to "".
+    owning_workspace = resolve_owning_workspace(target_repo)
+
     response = invoke_claude(
         prompt=prompt,
         system_prompt=system_prompt,
         temperature=0.3,
-        max_tokens=4000
+        max_tokens=4000,
+        workspace_id=owning_workspace
     )
 
     # Check for truncation

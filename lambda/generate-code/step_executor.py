@@ -45,7 +45,7 @@ from models import (
 )
 from plan_manager import parse_plan_from_markdown, update_step_in_plan, serialize_plan_to_markdown
 from sqs_client import send_step_message
-from utils import calculate_cost, generate_branch_name
+from utils import calculate_cost, generate_branch_name, resolve_owning_workspace
 
 logger = logging.getLogger()
 
@@ -871,6 +871,11 @@ def execute_step(
     # Get system prompt from backend (used for all attempts)
     system_prompt = backend.get_code_generation_system_prompt()
 
+    # Resolve the repo's owning workspace once (outside the retry loop) so
+    # each attempt's Bedrock audit row attributes code-gen spend to the
+    # workspace in Analytics instead of WS#SYSTEM. Fail-soft to "".
+    owning_workspace = resolve_owning_workspace(step_message.repo_full_name)
+
     # Check if this step previously failed with truncation error (SQS retry)
     # If so, enable truncation recovery mode to ask Claude to generate minimal code
     truncation_recovery = False
@@ -946,7 +951,8 @@ def execute_step(
             prompt=prompt,
             system_prompt=system_prompt,
             temperature=0.3,
-            max_tokens=32000  # Balance between output size and avoiding truncation waste
+            max_tokens=32000,  # Balance between output size and avoiding truncation waste
+            workspace_id=owning_workspace
         )
 
         # Accumulate tokens from this attempt (even if it fails)

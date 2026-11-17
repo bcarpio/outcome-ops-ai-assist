@@ -47,7 +47,8 @@ def invoke_claude(
     prompt: str,
     temperature: float = 0.3,
     max_tokens: int = 4000,
-    system_prompt: str = None
+    system_prompt: str = None,
+    workspace_id: str = ""
 ) -> ClaudeResponse:
     """
     Invoke the configured model via shared.model_client with retry logic.
@@ -63,6 +64,10 @@ def invoke_claude(
             factual responses)
         max_tokens: Maximum tokens to generate (default 4000)
         system_prompt: Optional system prompt
+        workspace_id: Owning workspace of the repo under code generation,
+            threaded into the Bedrock audit row so code-gen spend attributes
+            to the workspace in Analytics instead of landing under WS#SYSTEM.
+            Empty when the workspace can't be resolved (row stays SYSTEM).
 
     Returns:
         ClaudeResponse: response with usage stats (legacy type name; the
@@ -114,6 +119,7 @@ def invoke_claude(
                 input_tokens=bedrock_usage.inputTokens,
                 output_tokens=bedrock_usage.outputTokens,
                 duration_ms=bedrock_duration_ms,
+                workspace_id=workspace_id,
             )
 
             return ClaudeResponse(

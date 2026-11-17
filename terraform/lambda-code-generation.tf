@@ -85,6 +85,13 @@ module "generate_code_lambda" {
       SYMBOL_GRAPH_TABLE      = module.symbol_graph_table.dynamodb_table_id
       CODE_MAPS_TABLE         = module.code_maps_table.dynamodb_table_id
       GRAPH_RETRIEVAL_ENABLED = "true"
+
+      # Repo -> owning-workspace resolution
+      # (shared.pr_check_scope.find_workspaces_for_repo). Lets generate-code
+      # attribute its Bedrock audit rows to the PR repo's workspace instead
+      # of WS#SYSTEM, so code-gen spend shows per-workspace in Analytics.
+      # Scan IAM attached below (guarded by the same enable_workspaces flag).
+      WORKSPACES_TABLE = var.enable_workspaces ? module.workspaces_table[0].dynamodb_table_id : ""
     },
     local.outcomeops_license_env,
     # ADR-016 v1.2 -- generate-code is the code-gen workload.
@@ -215,6 +222,22 @@ module "generate_code_lambda" {
         ]
       }
     },
+    # Workspaces-table read for repo -> owning-workspace resolution used by
+    # Bedrock audit attribution (shared.pr_check_scope.find_workspaces_for_repo).
+    var.enable_workspaces ? {
+      dynamodb_workspaces_read = {
+        effect = "Allow"
+        actions = [
+          # Scan only: find_workspaces_for_repo does a filtered scan to map
+          # the PR repo to its owning workspace. Cold path (once per plan /
+          # step); not a hot query.
+          "dynamodb:Scan",
+        ]
+        resources = [
+          module.workspaces_table[0].dynamodb_table_arn,
+        ]
+      }
+    } : {},
     local.outcomeops_license_iam,
   )
 

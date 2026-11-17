@@ -169,3 +169,29 @@ def extract_pr_number_from_url(pr_url: str) -> Optional[int]:
     if match:
         return int(match.group(1))
     return None
+
+
+def resolve_owning_workspace(repo_full_name: str) -> str:
+    """Resolve the repo's owning workspace for Bedrock audit attribution.
+
+    Returns the first workspace_id that owns ``repo_full_name`` (sorted for
+    determinism when a repo belongs to more than one workspace), or "" when
+    none is found or resolution fails. Threaded into the generate-code audit
+    row so code-gen spend attributes to the workspace in Analytics instead of
+    landing under WS#SYSTEM.
+
+    Fail-soft by design: attribution must never break code generation, so any
+    error (missing WORKSPACES_TABLE env/IAM, scan failure) logs a warning and
+    returns "" -- the audit row then stays under WS#SYSTEM, today's behaviour.
+    """
+    if not repo_full_name:
+        return ""
+    try:
+        from shared.pr_check_scope import find_workspaces_for_repo
+        return (sorted(find_workspaces_for_repo(repo_full_name)) or [""])[0]
+    except Exception as exc:  # fail-soft: never block codegen on attribution
+        logger.warning(
+            "[attribution] workspace resolution failed for %s: %s",
+            repo_full_name, exc,
+        )
+        return ""

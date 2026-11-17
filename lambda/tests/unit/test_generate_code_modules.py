@@ -1583,6 +1583,39 @@ class TestInvokeClaude:
 
     @patch("bedrock_client.log_audit_entry")
     @patch("bedrock_client.invoke_model")
+    def test_invoke_claude_forwards_workspace_id_to_audit(
+        self, mock_invoke, mock_audit
+    ):
+        """Code-gen Bedrock spend must attribute to the owning workspace in
+        the audit row, not WS#SYSTEM."""
+        mock_invoke.return_value = _LegacyDictResponse({
+            "output": {"message": {"content": [{"text": "code"}]}},
+            "usage": {"inputTokens": 100, "outputTokens": 50},
+            "stopReason": "end_turn",
+        })
+
+        invoke_claude("gen code", workspace_id="ws_eng")
+
+        mock_audit.assert_called_once()
+        assert mock_audit.call_args.kwargs["workspace_id"] == "ws_eng"
+
+    @patch("bedrock_client.log_audit_entry")
+    @patch("bedrock_client.invoke_model")
+    def test_invoke_claude_defaults_empty_workspace_id(
+        self, mock_invoke, mock_audit
+    ):
+        mock_invoke.return_value = _LegacyDictResponse({
+            "output": {"message": {"content": [{"text": "code"}]}},
+            "usage": {"inputTokens": 10, "outputTokens": 5},
+            "stopReason": "end_turn",
+        })
+
+        invoke_claude("gen code")
+
+        assert mock_audit.call_args.kwargs["workspace_id"] == ""
+
+    @patch("bedrock_client.log_audit_entry")
+    @patch("bedrock_client.invoke_model")
     def test_invoke_claude_with_system_prompt(self, mock_invoke, mock_audit):
         """Test invocation with system prompt."""
         mock_invoke.return_value = _LegacyDictResponse({
@@ -1833,3 +1866,35 @@ class TestExtractBalancedJson:
         text = '{"a": {"b": {"c": {"d": "val"}}}}'
         result = _extract_balanced_json(text, 0)
         assert result == text
+
+
+class TestResolveOwningWorkspace:
+    """Repo -> owning-workspace resolution for code-gen audit attribution.
+    Fail-soft: never raises, so attribution can't break code generation."""
+
+    def test_returns_first_sorted_workspace(self):
+        with patch(
+            "shared.pr_check_scope.find_workspaces_for_repo",
+            return_value=["ws_zeta", "ws_alpha"],
+        ):
+            assert (
+                utils_module.resolve_owning_workspace("owner/repo") == "ws_alpha"
+            )
+
+    def test_empty_repo_returns_empty(self):
+        assert utils_module.resolve_owning_workspace("") == ""
+
+    def test_no_workspaces_returns_empty(self):
+        with patch(
+            "shared.pr_check_scope.find_workspaces_for_repo",
+            return_value=[],
+        ):
+            assert utils_module.resolve_owning_workspace("owner/repo") == ""
+
+    def test_resolution_error_is_failsoft(self):
+        """A scan/IAM failure must return '' (row stays WS#SYSTEM), not raise."""
+        with patch(
+            "shared.pr_check_scope.find_workspaces_for_repo",
+            side_effect=RuntimeError("AccessDenied"),
+        ):
+            assert utils_module.resolve_owning_workspace("owner/repo") == ""
