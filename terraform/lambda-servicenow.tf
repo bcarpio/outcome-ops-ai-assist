@@ -64,6 +64,7 @@ module "servicenow_integration_lambda" {
       SERVICENOW_SYNC_QUEUE        = aws_sqs_queue.servicenow_sync[0].url
       DELETE_QUEUE                 = aws_sqs_queue.delete_queue[0].url
       AUDIT_TABLE                  = module.audit_logs_table.dynamodb_table_id
+      AUDIT_RETENTION_DAYS         = tostring(var.audit_retention_days)
       SERVICENOW_STATE_TTL_SECONDS = "600"
       # UI-facing callback URL used to build the ServiceNow authorize
       # redirect. Empty when the deploy has no custom domain configured yet
@@ -271,6 +272,7 @@ module "servicenow_sync_lambda" {
       SERVICENOW_SYNC_QUEUE = aws_sqs_queue.servicenow_sync[0].url
       KB_BUCKET             = module.knowledge_base_bucket.s3_bucket_id
       AUDIT_TABLE           = module.audit_logs_table.dynamodb_table_id
+      AUDIT_RETENTION_DAYS  = tostring(var.audit_retention_days)
     },
     local.servicenow_common_env,
     local.outcomeops_license_env,

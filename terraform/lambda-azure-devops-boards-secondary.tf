@@ -100,6 +100,7 @@ module "azure_devops_boards_integration_lambda_secondary" {
       AZURE_DEVOPS_BOARDS_SYNC_QUEUE = aws_sqs_queue.azure_devops_boards_sync_secondary[0].url
       DELETE_QUEUE                   = aws_sqs_queue.delete_queue_secondary[0].url
       AUDIT_TABLE                    = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS           = tostring(var.audit_retention_days)
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -234,6 +235,7 @@ module "azure_devops_boards_sync_lambda_secondary" {
 
       FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
       AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,

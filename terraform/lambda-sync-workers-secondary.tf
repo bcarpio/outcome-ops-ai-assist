@@ -61,6 +61,7 @@ module "github_sync_lambda_secondary" {
       DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
       KB_BUCKET            = module.knowledge_base_bucket_secondary.s3_bucket_id
       AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
       PENDING_WORK_TABLE   = module.code_map_pending_work_table_secondary[0].dynamodb_table_id
       FAILED_FILES_TABLE   = module.code_map_failed_files_table_secondary[0].dynamodb_table_id
     },
@@ -199,6 +200,7 @@ module "confluence_sync_lambda_secondary" {
       FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
       DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
       AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -315,6 +317,7 @@ module "jira_sync_lambda_secondary" {
       FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
       DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
       AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -436,8 +439,9 @@ module "outlook_sync_lambda_secondary" {
       # this, the handler's continuation branch logs "not configured for
       # continuation" and stops, silently truncating large mailbox syncs
       # in the secondary region post-failover.
-      OUTLOOK_SYNC_QUEUE = aws_sqs_queue.outlook_sync_secondary[0].url
-      AUDIT_TABLE        = module.audit_logs_table_secondary[0].dynamodb_table_id
+      OUTLOOK_SYNC_QUEUE   = aws_sqs_queue.outlook_sync_secondary[0].url
+      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -560,8 +564,9 @@ module "teams_sync_lambda_secondary" {
       # this, the handler's continuation branch logs "not configured for
       # continuation" and stops -- large syncs silently truncate in the
       # secondary region post-failover.
-      TEAMS_SYNC_QUEUE = aws_sqs_queue.teams_sync_secondary[0].url
-      AUDIT_TABLE      = module.audit_logs_table_secondary[0].dynamodb_table_id
+      TEAMS_SYNC_QUEUE     = aws_sqs_queue.teams_sync_secondary[0].url
+      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -686,6 +691,7 @@ module "sharepoint_sync_lambda_secondary" {
       # secondary region post-failover.
       SHAREPOINT_SYNC_QUEUE = aws_sqs_queue.sharepoint_sync_secondary[0].url
       AUDIT_TABLE           = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS  = tostring(var.audit_retention_days)
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -808,8 +814,9 @@ module "onedrive_sync_lambda_secondary" {
       # this, the handler's continuation branch logs "not configured for
       # continuation" and stops -- large syncs silently truncate in the
       # secondary region post-failover.
-      ONEDRIVE_SYNC_QUEUE = aws_sqs_queue.onedrive_sync_secondary[0].url
-      AUDIT_TABLE         = module.audit_logs_table_secondary[0].dynamodb_table_id
+      ONEDRIVE_SYNC_QUEUE  = aws_sqs_queue.onedrive_sync_secondary[0].url
+      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -932,8 +939,9 @@ module "onenote_sync_lambda_secondary" {
       # this, the handler's continuation branch logs "not configured for
       # continuation" and stops -- large syncs silently truncate in the
       # secondary region post-failover.
-      ONENOTE_SYNC_QUEUE = aws_sqs_queue.onenote_sync_secondary[0].url
-      AUDIT_TABLE        = module.audit_logs_table_secondary[0].dynamodb_table_id
+      ONENOTE_SYNC_QUEUE   = aws_sqs_queue.onenote_sync_secondary[0].url
+      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -1068,6 +1076,7 @@ module "database_sync_lambda_secondary" {
       DELETE_QUEUE             = aws_sqs_queue.delete_queue_secondary[0].url
       DATABASE_DRIFT_TOPIC_ARN = length(aws_sns_topic.database_drift_secondary) > 0 ? aws_sns_topic.database_drift_secondary[0].arn : ""
       AUDIT_TABLE              = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS     = tostring(var.audit_retention_days)
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -1199,6 +1208,7 @@ module "azure_devops_sync_lambda_secondary" {
       # so code-map + symbol-graph regen silently stops for ADO repos.
       REPO_SUMMARIES_QUEUE = module.repo_summaries_queue_secondary.queue_url
       AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -1335,6 +1345,7 @@ module "gitlab_sync_lambda_secondary" {
       GITLAB_SYNC_QUEUE    = aws_sqs_queue.gitlab_sync_secondary[0].url
       REPO_SUMMARIES_QUEUE = module.repo_summaries_queue_secondary.queue_url
       AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -1460,6 +1471,7 @@ module "servicenow_sync_lambda_secondary" {
       SERVICENOW_SYNC_QUEUE = aws_sqs_queue.servicenow_sync_secondary[0].url
       KB_BUCKET             = module.knowledge_base_bucket_secondary.s3_bucket_id
       AUDIT_TABLE           = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS  = tostring(var.audit_retention_days)
     },
     local.servicenow_common_env,
     local.outcomeops_license_env,
@@ -1592,6 +1604,7 @@ module "salesforce_sync_lambda_secondary" {
       SALESFORCE_SYNC_QUEUE = aws_sqs_queue.salesforce_sync_secondary[0].url
       KB_BUCKET             = module.knowledge_base_bucket_secondary.s3_bucket_id
       AUDIT_TABLE           = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS  = tostring(var.audit_retention_days)
     },
     local.salesforce_common_env,
     local.outcomeops_license_env,

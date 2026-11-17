@@ -383,6 +383,63 @@ class TestRerankAuditEntry:
         assert item["model_id"] == "cohere.rerank-v3-5:0"
 
 
+class TestAuditRetentionTTL:
+    """ADR-060: the audit DDB hot-window retention is tunable via
+    AUDIT_RETENTION_DAYS (default 365), always bounded. Long-term retention
+    lives downstream in the customer's SIEM via the Kinesis export, so a
+    non-positive / unparseable value falls back to 365 rather than writing a
+    never-expiring row."""
+
+    def _ttl_of(self, mock_table):
+        item = mock_table.put_item.call_args[1]["Item"]
+        return item["ttl"]
+
+    def test_default_retention_is_365_days(self, mock_table, monkeypatch):
+        monkeypatch.delenv("AUDIT_RETENTION_DAYS", raising=False)
+        before = int(time.time())
+        log_audit_entry(
+            audit_table_name="audit-table", lambda_name="chat",
+            model_id="m", input_text="q", output_text="a",
+        )
+        after = int(time.time())
+        ttl = self._ttl_of(mock_table)
+        assert ttl >= before + 365 * 86400
+        assert ttl <= after + 365 * 86400 + 5
+
+    def test_custom_retention_honored(self, mock_table, monkeypatch):
+        monkeypatch.setenv("AUDIT_RETENTION_DAYS", "2555")  # ~7 years
+        before = int(time.time())
+        log_audit_entry(
+            audit_table_name="audit-table", lambda_name="chat",
+            model_id="m", input_text="q", output_text="a",
+        )
+        after = int(time.time())
+        ttl = self._ttl_of(mock_table)
+        assert ttl >= before + 2555 * 86400
+        assert ttl <= after + 2555 * 86400 + 5
+
+    def test_non_positive_falls_back_to_365(self, mock_table, monkeypatch):
+        # No 0=forever: a zero/negative env must NOT write a never-expiring row.
+        monkeypatch.setenv("AUDIT_RETENTION_DAYS", "0")
+        before = int(time.time())
+        log_audit_entry(
+            audit_table_name="audit-table", lambda_name="chat",
+            model_id="m", input_text="q", output_text="a",
+        )
+        ttl = self._ttl_of(mock_table)
+        assert ttl >= before + 365 * 86400
+
+    def test_unparseable_falls_back_to_365(self, mock_table, monkeypatch):
+        monkeypatch.setenv("AUDIT_RETENTION_DAYS", "forever")
+        before = int(time.time())
+        log_audit_entry(
+            audit_table_name="audit-table", lambda_name="chat",
+            model_id="m", input_text="q", output_text="a",
+        )
+        ttl = self._ttl_of(mock_table)
+        assert ttl >= before + 365 * 86400
+
+
 class TestComprehendPerCharPricing:
     """Comprehend Detect-PII is priced per character scanned. Mirrors the
     rerank tests but for the per_char shape introduced in chunk 02 of the

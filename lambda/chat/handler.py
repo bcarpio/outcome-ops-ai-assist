@@ -865,6 +865,13 @@ def create_conversation(title: str, user_id: str = None, workspace_id: str = Non
         "memory_chunk_count": 0,
         "created_at": now,
         "updated_at": now,
+        # ADR-060: the METADATA row carries the same TTL as its messages so a
+        # conversation ages out WHOLE. Without this the messages TTL'd out but
+        # the metadata lived forever, leaving "ghost" conversations that listed
+        # with a message_count but opened empty. update_conversation refreshes
+        # this on every new message, so the conversation always outlives its
+        # newest message by a hair (never orphaned).
+        "expires_at": int(time.time()) + _chat_ttl_seconds(),
     }
     if user_id:
         item["user_id"] = user_id
@@ -883,19 +890,30 @@ def update_conversation(conversation_id: str, message_count: int):
     now = datetime.now(timezone.utc).isoformat()
 
     try:
+        # ADR-060: refresh the METADATA TTL on every message so the
+        # conversation always outlives its newest message (metadata expiry =
+        # now + ttl, written just after the message's own now + ttl), and ages
+        # out whole once the last message expires. No ghost conversations.
+        expires_at = int(time.time()) + _chat_ttl_seconds()
         dual_write.ddb_update_item(
             _get_chat_table(),
             {"PK": f"CONV#{conversation_id}", "SK": "METADATA"},
-            UpdateExpression="SET message_count = :mc, updated_at = :ua, GSI2SK = :gsi2sk",
+            UpdateExpression="SET message_count = :mc, updated_at = :ua, GSI2SK = :gsi2sk, expires_at = :exp",
             ExpressionAttributeValues={
                 ":mc": message_count,
                 ":ua": now,
                 ":gsi2sk": f"CONV#{now}",
+                ":exp": expires_at,
             },
         )
 
         # Sync share items if conversation is shared
-        _sync_share_items(conversation_id, message_count=message_count, updated_at=now)
+        _sync_share_items(
+            conversation_id,
+            message_count=message_count,
+            updated_at=now,
+            expires_at=expires_at,
+        )
     except ClientError as e:
         logger.error(f"Error updating conversation: {e}")
 
@@ -950,6 +968,25 @@ def _cap_message_content(content: str) -> str:
     return head + marker.format(truncated_chars) + tail
 
 
+def _chat_ttl_seconds() -> int:
+    """Chat-table row TTL in seconds (fable-scale chunk 10; ADR-060).
+
+    The chat table is a bounded live UI cache -- the durable record is the
+    audit table plus the Kinesis SIEM export (docs/audit-stream-export.md), so
+    there is no perpetual-retention mode here. Mirrors the tfvars floor
+    (var.chat_message_ttl_seconds >= 1 day): a non-positive, sub-floor, or
+    unparseable env value falls back to the 90-day default rather than writing
+    an instant-expiry or never-expiring row.
+    """
+    try:
+        ttl = int(os.environ.get("CHAT_MESSAGE_TTL_SECONDS", "7776000"))
+    except (TypeError, ValueError):
+        ttl = 7776000
+    if ttl < 86400:  # < 1 day -- treat as misconfig, use default
+        ttl = 7776000
+    return ttl
+
+
 def save_message(conversation_id: str, role: str, content: str, sources: List[Dict] = None):
     """Save a message to the conversation."""
     message_id = generate_id()
@@ -961,7 +998,6 @@ def save_message(conversation_id: str, role: str, content: str, sources: List[Di
     # fable-scale chunk 10: TTL. Rows written before this deploy have no
     # expires_at and stay indefinitely (safe default). New rows drop out
     # after CHAT_MESSAGE_TTL_SECONDS (env, default 90d).
-    ttl_seconds = int(os.environ.get("CHAT_MESSAGE_TTL_SECONDS", "7776000"))
     item = {
         "PK": f"CONV#{conversation_id}",
         "SK": f"MSG#{now}#{message_id}",
@@ -969,7 +1005,7 @@ def save_message(conversation_id: str, role: str, content: str, sources: List[Di
         "role": role,
         "content": content,
         "created_at": now,
-        "expires_at": int(time.time()) + ttl_seconds,
+        "expires_at": int(time.time()) + _chat_ttl_seconds(),
     }
     if sources:
         item["sources"] = sources
@@ -2258,10 +2294,14 @@ def _sync_share_items(
     title: str = None,
     message_count: int = None,
     updated_at: str = None,
+    expires_at: int = None,
 ):
     """Sync share items when conversation metadata changes.
 
     This is best-effort - failures are logged but do not propagate.
+
+    ADR-060: expires_at is refreshed alongside the METADATA TTL so a shared
+    conversation's SHARE# rows age out together with it (no ghost shared views).
     """
     dynamodb = _get_dynamodb()
     table = dynamodb.Table(_get_chat_table())
@@ -2293,6 +2333,9 @@ def _sync_share_items(
         if message_count is not None:
             update_parts.append("message_count = :mc")
             expr_values[":mc"] = message_count
+        if expires_at is not None:
+            update_parts.append("expires_at = :exp")
+            expr_values[":exp"] = expires_at
 
         if not update_parts:
             return
@@ -2404,7 +2447,10 @@ def handle_share_conversation(
                     },
                 )
 
-        # Write SHARE items for each authorized workspace
+        # Write SHARE items for each authorized workspace.
+        # ADR-060: carry the same TTL as the METADATA row so shared views age
+        # out together with the conversation (no ghost shared entries).
+        share_expires_at = int(time.time()) + _chat_ttl_seconds()
         share_items = [
             {
                 "PK": f"CONV#{conversation_id}",
@@ -2417,6 +2463,7 @@ def handle_share_conversation(
                 "user_id": user_id,
                 "updated_at": updated_at,
                 "shared_at": now,
+                "expires_at": share_expires_at,
             }
             for ws_id in authorized_ws
         ]

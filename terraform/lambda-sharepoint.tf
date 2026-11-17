@@ -60,6 +60,7 @@ module "sharepoint_integration_lambda" {
       SHAREPOINT_SYNC_QUEUE = aws_sqs_queue.sharepoint_sync[0].url
       DELETE_QUEUE          = aws_sqs_queue.delete_queue[0].url
       AUDIT_TABLE           = module.audit_logs_table.dynamodb_table_id
+      AUDIT_RETENTION_DAYS  = tostring(var.audit_retention_days)
     },
     local.outcomeops_license_env,
     local.ha_writer_env,
@@ -292,6 +293,7 @@ module "sharepoint_sync_lambda" {
       SHAREPOINT_SYNC_QUEUE = aws_sqs_queue.sharepoint_sync[0].url
       DELETE_QUEUE          = aws_sqs_queue.delete_queue[0].url
       AUDIT_TABLE           = module.audit_logs_table.dynamodb_table_id
+      AUDIT_RETENTION_DAYS  = tostring(var.audit_retention_days)
     },
     local.outcomeops_license_env,
     local.ha_writer_env,

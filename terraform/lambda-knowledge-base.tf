@@ -70,6 +70,7 @@ module "process_batch_summary_lambda" {
     BATCH_SUMMARY_MERGE_ATTEMPTS       = tostring(var.batch_summary_merge_attempts)
     BATCH_SUMMARY_MERGE_DELAY_SECONDS  = tostring(var.batch_summary_merge_delay_s)
     AUDIT_TABLE                        = module.audit_logs_table.dynamodb_table_id
+    AUDIT_RETENTION_DAYS               = tostring(var.audit_retention_days)
     WORKSPACES_TABLE                   = module.workspaces_table[0].dynamodb_table_id
     BEDROCK_ADVANCED_MODEL_ID          = var.bedrock_advanced_model_id
     BEDROCK_DEFAULT_BACKEND            = var.bedrock_default_backend
@@ -394,6 +395,7 @@ module "process_repo_summary_lambda" {
       APP_NAME                           = var.app_name
       GITHUB_BASE_URL                    = var.github_base_url
       AUDIT_TABLE                        = module.audit_logs_table.dynamodb_table_id
+      AUDIT_RETENTION_DAYS               = tostring(var.audit_retention_days)
       WORKSPACES_TABLE                   = module.workspaces_table[0].dynamodb_table_id
       DELETE_QUEUE                       = aws_sqs_queue.delete_queue[0].url
       BEDROCK_ADVANCED_MODEL_ID          = var.bedrock_advanced_model_id

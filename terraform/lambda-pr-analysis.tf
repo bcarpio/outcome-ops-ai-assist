@@ -275,10 +275,11 @@ module "process_pr_check_lambda" {
 
   # Environment variables
   environment_variables = merge({
-    ENV             = var.environment
-    APP_NAME        = var.app_name
-    GITHUB_BASE_URL = var.github_base_url
-    AUDIT_TABLE     = module.audit_logs_table.dynamodb_table_id
+    ENV                  = var.environment
+    APP_NAME             = var.app_name
+    GITHUB_BASE_URL      = var.github_base_url
+    AUDIT_TABLE          = module.audit_logs_table.dynamodb_table_id
+    AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
 
     # Plane-1 breaking-change detection (ADR-054): shared.symbol_graph_reader
     # resolves a changed symbol's callers/importers from the symbol-graph table;

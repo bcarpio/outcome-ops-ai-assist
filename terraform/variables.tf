@@ -982,9 +982,27 @@ variable "github_scheduler_parallel_workers" {
 # ============================================================================
 
 variable "chat_message_ttl_seconds" {
-  description = "TTL applied to new chat table rows via `expires_at`. Prior behavior: unbounded — every historical chat message survived forever. Default 90 days (7776000s). Rows written before this landed have no attribute and are ignored by TTL."
+  description = "TTL applied to new chat table rows via `expires_at`. The chat table is a live UI cache, NOT the durable record (that is the audit table + the Kinesis SIEM export; see docs/audit-stream-export.md and ADR-060). Default 90 days (7776000s). Rows written before this landed have no attribute and are ignored by TTL. Must be > 0 (ADR-060): the chat table is always bounded, so there is no perpetual-retention setting here; 0 would mean instant expiry, not forever."
   type        = number
   default     = 7776000 # 90 days
+
+  validation {
+    # ADR-060: no 0=forever and no instant-expiry footgun. Floor at 1 day.
+    condition     = var.chat_message_ttl_seconds >= 86400
+    error_message = "chat_message_ttl_seconds must be >= 86400 (1 day). The chat table is a bounded UI cache; durable retention is the audit table + SIEM export, not perpetual chat."
+  }
+}
+
+variable "audit_retention_days" {
+  description = "Retention (in days) for the audit DDB table's hot, in-app-queryable window, applied via the `ttl` attribute by shared/audit.py. This is the window Analytics and the audit UI can show; it is tunable so the platform team can keep more (or less) queryable history independent of the security/SIEM team's long-term retention. Durable/long-term retention lives DOWNSTREAM in the customer's own SIEM via the Kinesis export (docs/audit-stream-export.md), NOT in this table. Default 365 days. Must be > 0 (ADR-060): the DDB window is always bounded (the row holds up to 100KB of prompt+response text at Bedrock write volume, so perpetual DDB retention is a cost footgun); point perpetual retention at the SIEM export instead."
+  type        = number
+  default     = 365
+
+  validation {
+    # ADR-060: bounded only. Floor at 1 day; no 0=forever.
+    condition     = var.audit_retention_days >= 1
+    error_message = "audit_retention_days must be >= 1. The audit DDB table is a bounded hot window; for perpetual retention consume the Kinesis SIEM export (docs/audit-stream-export.md), do not set this to 0."
+  }
 }
 
 variable "chat_max_message_content_chars" {

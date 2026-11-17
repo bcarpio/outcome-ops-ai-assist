@@ -65,6 +65,7 @@ module "salesforce_integration_lambda" {
       SALESFORCE_SYNC_QUEUE        = aws_sqs_queue.salesforce_sync[0].url
       DELETE_QUEUE                 = aws_sqs_queue.delete_queue[0].url
       AUDIT_TABLE                  = module.audit_logs_table.dynamodb_table_id
+      AUDIT_RETENTION_DAYS         = tostring(var.audit_retention_days)
       SALESFORCE_STATE_TTL_SECONDS = "600"
       # UI-facing callback URL used to build the Salesforce authorize
       # redirect. Empty when the deploy has no custom domain configured yet
@@ -273,6 +274,7 @@ module "salesforce_sync_lambda" {
       SALESFORCE_SYNC_QUEUE = aws_sqs_queue.salesforce_sync[0].url
       KB_BUCKET             = module.knowledge_base_bucket.s3_bucket_id
       AUDIT_TABLE           = module.audit_logs_table.dynamodb_table_id
+      AUDIT_RETENTION_DAYS  = tostring(var.audit_retention_days)
     },
     local.salesforce_common_env,
     local.outcomeops_license_env,

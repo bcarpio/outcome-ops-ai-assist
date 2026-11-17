@@ -86,6 +86,7 @@ module "azure_devops_boards_integration_lambda" {
       AZURE_DEVOPS_BOARDS_SYNC_QUEUE = aws_sqs_queue.azure_devops_boards_sync[0].url
       DELETE_QUEUE                   = aws_sqs_queue.delete_queue[0].url
       AUDIT_TABLE                    = module.audit_logs_table.dynamodb_table_id
+      AUDIT_RETENTION_DAYS           = tostring(var.audit_retention_days)
     },
     local.outcomeops_license_env,
     local.ha_writer_env,
@@ -304,6 +305,7 @@ module "azure_devops_boards_sync_lambda" {
 
       FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion[0].url
       AUDIT_TABLE          = module.audit_logs_table.dynamodb_table_id
+      AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
     },
     local.outcomeops_license_env,
     local.ha_writer_env,

@@ -407,11 +407,12 @@ module "outlook_scheduler_lambda_secondary" {
   quiet_archive_local_exec          = true
 
   environment_variables = merge({
-    ENV                = var.environment
-    APP_NAME           = var.app_name
-    WORKSPACES_TABLE   = module.workspaces_table_secondary[0].dynamodb_table_id
-    OUTLOOK_SYNC_QUEUE = aws_sqs_queue.outlook_sync_secondary[0].url
-    AUDIT_TABLE        = module.audit_logs_table_secondary[0].dynamodb_table_id
+    ENV                  = var.environment
+    APP_NAME             = var.app_name
+    WORKSPACES_TABLE     = module.workspaces_table_secondary[0].dynamodb_table_id
+    OUTLOOK_SYNC_QUEUE   = aws_sqs_queue.outlook_sync_secondary[0].url
+    AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+    AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
     },
     local.ha_scheduler_env_secondary,
   )

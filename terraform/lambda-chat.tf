@@ -76,6 +76,7 @@ module "chat_streaming_lambda" {
       AWS_LWA_READINESS_CHECK_PATH       = "/health"
       PORT                               = "8000"
       AUDIT_TABLE                        = module.audit_logs_table.dynamodb_table_id
+      AUDIT_RETENTION_DAYS               = tostring(var.audit_retention_days)
       BEDROCK_ADVANCED_MODEL_ID          = var.bedrock_advanced_model_id
       BEDROCK_DEFAULT_BACKEND            = var.bedrock_default_backend
       BEDROCK_RESPONSES_REASONING_EFFORT = var.bedrock_responses_reasoning_effort

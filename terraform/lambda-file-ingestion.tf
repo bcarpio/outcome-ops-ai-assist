@@ -148,7 +148,8 @@ module "file_ingestion_lambda" {
       KB_BUCKET         = module.knowledge_base_bucket.s3_bucket_id
       OAUTH_KMS_KEY_ARN = aws_kms_key.oauth_tokens[0].arn
       # AUDIT_TABLE for log_license_fail_open() regression detector (ADR-019)
-      AUDIT_TABLE = module.audit_logs_table.dynamodb_table_id
+      AUDIT_TABLE          = module.audit_logs_table.dynamodb_table_id
+      AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
       # plan-git-truth chunk 01: SHA-truth ledger tables. Wired but not
       # yet imported; chunk 02 lights up the docs-pipeline consumer.
       PENDING_WORK_TABLE = module.code_map_pending_work_table.dynamodb_table_id
@@ -355,6 +356,7 @@ module "process_documents_lambda" {
       APP_NAME                          = var.app_name
       KB_BUCKET                         = module.knowledge_base_bucket.s3_bucket_id
       AUDIT_TABLE                       = module.audit_logs_table.dynamodb_table_id
+      AUDIT_RETENTION_DAYS              = tostring(var.audit_retention_days)
       WORKSPACES_TABLE                  = module.workspaces_table[0].dynamodb_table_id
       BEDROCK_EMBEDDING_MODEL_ID        = var.bedrock_embedding_model_id
       BEDROCK_EMBEDDING_INPUT_PRICE     = tostring(var.bedrock_embedding_input_price)

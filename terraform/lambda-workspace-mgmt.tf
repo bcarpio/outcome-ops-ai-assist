@@ -91,6 +91,7 @@ module "workspace_management_lambda" {
     DELETE_QUEUE_URL_SECONDARY = var.secondary_region != "" ? aws_sqs_queue.delete_queue_secondary[0].url : ""
     OAUTH_KMS_KEY_ARN          = aws_kms_key.oauth_tokens[0].arn
     AUDIT_TABLE                = module.audit_logs_table.dynamodb_table_id
+    AUDIT_RETENTION_DAYS       = tostring(var.audit_retention_days)
     ANALYTICS_TABLE            = module.analytics_table.dynamodb_table_id
     # PII redaction posture (read for GET /workspaces/{id}/privacy so the
     # UI knows whether to render the toggle). plan/ chunk 07.

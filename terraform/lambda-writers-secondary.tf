@@ -49,14 +49,15 @@ module "file_ingestion_lambda_secondary" {
 
   environment_variables = merge(
     {
-      ENV                = var.environment
-      APP_NAME           = var.app_name
-      WORKSPACES_TABLE   = module.workspaces_table_secondary[0].dynamodb_table_id
-      KB_BUCKET          = module.knowledge_base_bucket_secondary.s3_bucket_id
-      OAUTH_KMS_KEY_ARN  = aws_kms_replica_key.oauth_tokens_secondary[0].arn
-      AUDIT_TABLE        = module.audit_logs_table_secondary[0].dynamodb_table_id
-      PENDING_WORK_TABLE = module.code_map_pending_work_table_secondary[0].dynamodb_table_id
-      FAILED_FILES_TABLE = module.code_map_failed_files_table_secondary[0].dynamodb_table_id
+      ENV                  = var.environment
+      APP_NAME             = var.app_name
+      WORKSPACES_TABLE     = module.workspaces_table_secondary[0].dynamodb_table_id
+      KB_BUCKET            = module.knowledge_base_bucket_secondary.s3_bucket_id
+      OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
+      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
+      PENDING_WORK_TABLE   = module.code_map_pending_work_table_secondary[0].dynamodb_table_id
+      FAILED_FILES_TABLE   = module.code_map_failed_files_table_secondary[0].dynamodb_table_id
     },
     # HA parity with primary lambda-file-ingestion.tf: shared/oauth modules
     # read their env at module init on import, so servicenow_attachment /
@@ -182,6 +183,7 @@ module "process_documents_lambda_secondary" {
       APP_NAME                          = var.app_name
       KB_BUCKET                         = module.knowledge_base_bucket_secondary.s3_bucket_id
       AUDIT_TABLE                       = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS              = tostring(var.audit_retention_days)
       WORKSPACES_TABLE                  = module.workspaces_table_secondary[0].dynamodb_table_id
       BEDROCK_EMBEDDING_MODEL_ID        = var.bedrock_embedding_model_id
       BEDROCK_EMBEDDING_INPUT_PRICE     = tostring(var.bedrock_embedding_input_price)
@@ -444,6 +446,7 @@ module "process_batch_summary_lambda_secondary" {
       # primary lambda-knowledge-base.tf.
       ENABLE_BEDROCK_COOLDOWN            = tostring(var.enable_bedrock_cooldown)
       AUDIT_TABLE                        = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS               = tostring(var.audit_retention_days)
       WORKSPACES_TABLE                   = module.workspaces_table_secondary[0].dynamodb_table_id
       BEDROCK_ADVANCED_MODEL_ID          = var.bedrock_advanced_model_id
       BEDROCK_DEFAULT_BACKEND            = var.bedrock_default_backend
@@ -660,6 +663,7 @@ module "process_repo_summary_lambda_secondary" {
       APP_NAME                           = var.app_name
       GITHUB_BASE_URL                    = var.github_base_url
       AUDIT_TABLE                        = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS               = tostring(var.audit_retention_days)
       WORKSPACES_TABLE                   = module.workspaces_table_secondary[0].dynamodb_table_id
       DELETE_QUEUE                       = aws_sqs_queue.delete_queue_secondary[0].url
       BEDROCK_ADVANCED_MODEL_ID          = var.bedrock_advanced_model_id

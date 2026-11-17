@@ -64,6 +64,7 @@ module "database_integration_lambda" {
       DATABASE_SYNC_QUEUE       = aws_sqs_queue.database_sync[0].url
       DELETE_QUEUE              = aws_sqs_queue.delete_queue[0].url
       AUDIT_TABLE               = module.audit_logs_table.dynamodb_table_id
+      AUDIT_RETENTION_DAYS      = tostring(var.audit_retention_days)
     },
     local.outcomeops_license_env,
     local.ha_writer_env,
@@ -239,6 +240,7 @@ module "database_sync_lambda" {
       DATABASE_SYNC_QUEUE       = aws_sqs_queue.database_sync[0].url
       DELETE_QUEUE              = aws_sqs_queue.delete_queue[0].url
       AUDIT_TABLE               = module.audit_logs_table.dynamodb_table_id
+      AUDIT_RETENTION_DAYS      = tostring(var.audit_retention_days)
       # chunk 07: empty string when no subscribers configured - the
       # handler's publish path is gated on truthiness, so a missing
       # topic is a clean no-op (audit row still fires).

@@ -53,13 +53,14 @@ module "jira_integration_lambda" {
 
   environment_variables = merge(
     {
-      ENV               = var.environment
-      APP_NAME          = var.app_name
-      WORKSPACES_TABLE  = module.workspaces_table[0].dynamodb_table_id
-      OAUTH_KMS_KEY_ARN = aws_kms_key.oauth_tokens[0].arn
-      JIRA_SYNC_QUEUE   = aws_sqs_queue.jira_sync[0].url
-      DELETE_QUEUE      = aws_sqs_queue.delete_queue[0].url
-      AUDIT_TABLE       = module.audit_logs_table.dynamodb_table_id
+      ENV                  = var.environment
+      APP_NAME             = var.app_name
+      WORKSPACES_TABLE     = module.workspaces_table[0].dynamodb_table_id
+      OAUTH_KMS_KEY_ARN    = aws_kms_key.oauth_tokens[0].arn
+      JIRA_SYNC_QUEUE      = aws_sqs_queue.jira_sync[0].url
+      DELETE_QUEUE         = aws_sqs_queue.delete_queue[0].url
+      AUDIT_TABLE          = module.audit_logs_table.dynamodb_table_id
+      AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
     },
     local.outcomeops_license_env,
     local.ha_writer_env,
@@ -283,6 +284,7 @@ module "jira_sync_lambda" {
       FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion[0].url
       DELETE_QUEUE         = aws_sqs_queue.delete_queue[0].url
       AUDIT_TABLE          = module.audit_logs_table.dynamodb_table_id
+      AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
     },
     local.outcomeops_license_env,
     local.ha_writer_env,

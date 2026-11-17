@@ -55,6 +55,7 @@ module "analytics_cost_alert_lambda" {
       ORG_MONTHLY_USD       = tostring(var.cost_alert_org_monthly_usd)
       WORKSPACE_MONTHLY_USD = tostring(var.cost_alert_workspace_monthly_usd)
       AUDIT_TABLE           = module.audit_logs_table.dynamodb_table_id
+      AUDIT_RETENTION_DAYS  = tostring(var.audit_retention_days)
     },
     local.ha_scheduler_env,
   )

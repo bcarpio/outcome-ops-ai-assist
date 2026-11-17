@@ -94,7 +94,8 @@ module "mcp_outcomeops" {
     MCP_SESSIONS_TABLE = module.mcp_sessions_table[0].dynamodb_table_id
     # plan/audit-completeness chunk 02 + 08: MCP server emits
     # ACTION_API_KEY_USED + ACTION_MCP_TOOL_INVOKED audit rows.
-    AUDIT_TABLE = module.audit_logs_table.dynamodb_table_id
+    AUDIT_TABLE          = module.audit_logs_table.dynamodb_table_id
+    AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
     # Symbol-graph query tools (find_callers, find_importers,
     # find_implementers, find_definitions; see docs/mcp-server.md).
     # The reader uses SYMBOL_GRAPH_TABLE for the Fact stream +

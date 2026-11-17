@@ -41,6 +41,7 @@ module "ask_claude_lambda" {
       ENV                                = var.environment
       APP_NAME                           = var.app_name
       AUDIT_TABLE                        = module.audit_logs_table.dynamodb_table_id
+      AUDIT_RETENTION_DAYS               = tostring(var.audit_retention_days)
       BEDROCK_ADVANCED_MODEL_ID          = var.bedrock_advanced_model_id
       BEDROCK_DEFAULT_BACKEND            = var.bedrock_default_backend
       BEDROCK_RESPONSES_REASONING_EFFORT = var.bedrock_responses_reasoning_effort
@@ -159,6 +160,7 @@ module "query_kb_lambda" {
       ENV                            = var.environment
       APP_NAME                       = var.app_name
       AUDIT_TABLE                    = module.audit_logs_table.dynamodb_table_id
+      AUDIT_RETENTION_DAYS           = tostring(var.audit_retention_days)
       BEDROCK_EMBEDDING_MODEL_ID     = var.bedrock_embedding_model_id
       BEDROCK_EMBEDDING_INPUT_PRICE  = tostring(var.bedrock_embedding_input_price)
       BEDROCK_EMBEDDING_OUTPUT_PRICE = tostring(var.bedrock_embedding_output_price)

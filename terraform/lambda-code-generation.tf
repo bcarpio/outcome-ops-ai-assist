@@ -60,6 +60,7 @@ module "generate_code_lambda" {
       EVENT_BUS_NAME                     = aws_cloudwatch_event_bus.automation.name
       ENABLE_BEDROCK_COOLDOWN            = tostring(var.enable_bedrock_cooldown)
       AUDIT_TABLE                        = module.audit_logs_table.dynamodb_table_id
+      AUDIT_RETENTION_DAYS               = tostring(var.audit_retention_days)
       BEDROCK_ADVANCED_MODEL_ID          = var.bedrock_advanced_model_id
       BEDROCK_DEFAULT_BACKEND            = var.bedrock_default_backend
       BEDROCK_RESPONSES_REASONING_EFFORT = var.bedrock_responses_reasoning_effort
@@ -297,10 +298,11 @@ module "generate_code_dlq_lambda" {
   # Environment variables
   environment_variables = merge(
     {
-      ENV             = var.environment
-      APP_NAME        = var.app_name
-      GITHUB_BASE_URL = var.github_base_url
-      AUDIT_TABLE     = module.audit_logs_table.dynamodb_table_id
+      ENV                  = var.environment
+      APP_NAME             = var.app_name
+      GITHUB_BASE_URL      = var.github_base_url
+      AUDIT_TABLE          = module.audit_logs_table.dynamodb_table_id
+      AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
     },
     local.outcomeops_license_env,
   )
@@ -532,6 +534,7 @@ module "run_tests_lambda" {
       TEST_RESULTS_PREFIX                = "test-results"
       EVENT_BUS_NAME                     = aws_cloudwatch_event_bus.automation.name
       AUDIT_TABLE                        = module.audit_logs_table.dynamodb_table_id
+      AUDIT_RETENTION_DAYS               = tostring(var.audit_retention_days)
       BEDROCK_ADVANCED_MODEL_ID          = var.bedrock_advanced_model_id
       BEDROCK_DEFAULT_BACKEND            = var.bedrock_default_backend
       BEDROCK_RESPONSES_REASONING_EFFORT = var.bedrock_responses_reasoning_effort
@@ -644,6 +647,7 @@ module "handle_command_lambda" {
       APP_NAME                           = var.app_name
       GITHUB_BASE_URL                    = var.github_base_url
       AUDIT_TABLE                        = module.audit_logs_table.dynamodb_table_id
+      AUDIT_RETENTION_DAYS               = tostring(var.audit_retention_days)
       BEDROCK_BASIC_MODEL_ID             = var.bedrock_basic_model_id
       BEDROCK_DEFAULT_BACKEND            = var.bedrock_default_backend
       BEDROCK_RESPONSES_REASONING_EFFORT = var.bedrock_responses_reasoning_effort

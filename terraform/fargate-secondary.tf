@@ -121,6 +121,7 @@ module "mcp_outcomeops_secondary" {
     MCP_JWT_AUDIENCE        = var.mcp_jwt_audience
     MCP_STATIC_KEYS_ENABLED = tostring(var.mcp_static_keys_enabled)
     AUDIT_TABLE             = module.audit_logs_table_secondary[0].dynamodb_table_id
+    AUDIT_RETENTION_DAYS    = tostring(var.audit_retention_days)
     # fable-scale chunk 02 (HA parity): DDB-backed session store, secondary
     # region's own table. Sessions are region-scoped by design (chunk 02
     # comment in terraform/dynamodb-mcp-sessions.tf).

@@ -84,6 +84,7 @@ module "chat_streaming_lambda_secondary" {
       AWS_LWA_READINESS_CHECK_PATH = "/health"
       PORT                         = "8000"
       AUDIT_TABLE                  = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS         = tostring(var.audit_retention_days)
       # fable-scale 10 mirror (chat TTL + content cap + prompt-cache
       # scaffold). Missing here = secondary chat silently diverges from
       # primary data-hygiene behavior post-failover.
@@ -330,6 +331,7 @@ module "workspace_management_lambda_secondary" {
       DELETE_QUEUE_URL_SECONDARY = aws_sqs_queue.delete_queue[0].url
       OAUTH_KMS_KEY_ARN          = aws_kms_replica_key.oauth_tokens_secondary[0].arn
       AUDIT_TABLE                = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS       = tostring(var.audit_retention_days)
       ANALYTICS_TABLE            = module.analytics_table_secondary[0].dynamodb_table_id
       PII_REDACTION_ENABLED      = tostring(var.pii_redaction_enabled)
       REQUESTS_CA_BUNDLE         = "/opt/ca-bundle.pem"

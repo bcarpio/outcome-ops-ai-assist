@@ -315,8 +315,21 @@ def log_audit_entry(
         user_key = f"USER#{user_email}" if user_email else f"LAMBDA#{lambda_name}"
         sort_key = f"{timestamp}#{request_id}"
 
-        # TTL: 365 days from now
-        ttl = int(time.time()) + (365 * 24 * 60 * 60)
+        # TTL: tunable hot-window retention for the audit DDB table (ADR-060).
+        # AUDIT_RETENTION_DAYS is customer-configurable via tfvars
+        # (var.audit_retention_days, default 365) and wired wherever AUDIT_TABLE
+        # is. This bounds only the in-app QUERYABLE window (Analytics + audit
+        # UI); long-term/compliance retention lives downstream in the customer's
+        # SIEM via the Kinesis export (docs/audit-stream-export.md), so this is
+        # always bounded -- a non-positive or unparseable value falls back to
+        # the 365-day default rather than writing a never-expiring row.
+        try:
+            retention_days = int(os.environ.get("AUDIT_RETENTION_DAYS", "365"))
+        except (TypeError, ValueError):
+            retention_days = 365
+        if retention_days < 1:
+            retention_days = 365
+        ttl = int(time.time()) + (retention_days * 24 * 60 * 60)
 
         item = {
             "PK": ws_key,

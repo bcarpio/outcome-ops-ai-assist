@@ -61,6 +61,7 @@ module "confluence_integration_lambda" {
       CONFLUENCE_SYNC_QUEUE = aws_sqs_queue.confluence_sync[0].url
       DELETE_QUEUE          = aws_sqs_queue.delete_queue[0].url
       AUDIT_TABLE           = module.audit_logs_table.dynamodb_table_id
+      AUDIT_RETENTION_DAYS  = tostring(var.audit_retention_days)
     },
     local.outcomeops_license_env,
     local.ha_writer_env,
@@ -284,6 +285,7 @@ module "confluence_sync_lambda" {
       FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion[0].url
       DELETE_QUEUE         = aws_sqs_queue.delete_queue[0].url
       AUDIT_TABLE          = module.audit_logs_table.dynamodb_table_id
+      AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
     },
     local.outcomeops_license_env,
     local.ha_writer_env,

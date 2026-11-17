@@ -154,7 +154,8 @@ module "gitlab_integration_lambda" {
       # both regions (delete-bug 02). Empty in single-region mode.
       DELETE_QUEUE_SECONDARY = var.secondary_region != "" ? aws_sqs_queue.delete_queue_secondary[0].url : ""
 
-      AUDIT_TABLE = module.audit_logs_table.dynamodb_table_id
+      AUDIT_TABLE          = module.audit_logs_table.dynamodb_table_id
+      AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
     },
     local.outcomeops_license_env,
     local.ha_writer_env,
@@ -523,6 +524,7 @@ module "gitlab_sync_lambda" {
       # file-content fetch to the S3 mirror via shared.source_fetch.
       REPO_SUMMARIES_QUEUE = module.repo_summaries_queue.queue_url
       AUDIT_TABLE          = module.audit_logs_table.dynamodb_table_id
+      AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
     },
     local.outcomeops_license_env,
     local.ha_writer_env,

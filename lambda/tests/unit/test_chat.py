@@ -812,6 +812,19 @@ class TestCreateConversation:
         assert item["GSI2PK"] == "USER#user@example.com"
         assert item["GSI2SK"].startswith("CONV#")
 
+    def test_create_conversation_sets_metadata_ttl(self, mock_table):
+        """ADR-060 ghost fix: the METADATA row carries expires_at so a
+        conversation ages out whole instead of outliving its expired messages."""
+        import time as _time
+        before = int(_time.time())
+        create_conversation("Test Title")
+        after = int(_time.time())
+        item = mock_table.put_item.call_args[1]["Item"]
+        assert "expires_at" in item
+        # Default chat TTL = 90d (7776000s).
+        assert item["expires_at"] >= before + 7776000
+        assert item["expires_at"] <= after + 7776000 + 5
+
 
 class TestUpdateConversation:
     """Test updating conversation metadata."""
@@ -822,6 +835,19 @@ class TestUpdateConversation:
         call_args = mock_table.update_item.call_args[1]
         assert call_args["Key"] == {"PK": "CONV#conv_test123", "SK": "METADATA"}
         assert call_args["ExpressionAttributeValues"][":mc"] == 5
+
+    def test_update_conversation_refreshes_ttl(self, mock_table):
+        """ADR-060 ghost fix: each message refreshes the METADATA TTL so the
+        conversation always outlives its newest message (never orphaned)."""
+        import time as _time
+        before = int(_time.time())
+        update_conversation("conv_test123", 5)
+        after = int(_time.time())
+        call_args = mock_table.update_item.call_args[1]
+        assert "expires_at = :exp" in call_args["UpdateExpression"]
+        exp = call_args["ExpressionAttributeValues"][":exp"]
+        assert exp >= before + 7776000
+        assert exp <= after + 7776000 + 5
 
     def test_update_conversation_dynamodb_error(self, mock_table):
         mock_table.update_item.side_effect = ClientError(

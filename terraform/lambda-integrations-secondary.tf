@@ -75,6 +75,7 @@ module "github_integration_lambda_secondary" {
       # side it points to the secondary queue).
       DELETE_QUEUE_SECONDARY = aws_sqs_queue.delete_queue[0].url
       AUDIT_TABLE            = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS   = tostring(var.audit_retention_days)
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -207,9 +208,10 @@ module "confluence_integration_lambda_secondary" {
       CONFLUENCE_SYNC_QUEUE = aws_sqs_queue.confluence_sync_secondary[0].url
       # chunk 08 (HA parity): mirror primary DELETE_QUEUE so disconnect-
       # cleanup enqueues delete jobs after failover (silent no-op otherwise).
-      DELETE_QUEUE      = aws_sqs_queue.delete_queue_secondary[0].url
-      AUDIT_TABLE       = module.audit_logs_table_secondary[0].dynamodb_table_id
-      OAUTH_KMS_KEY_ARN = aws_kms_replica_key.oauth_tokens_secondary[0].arn
+      DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
+      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
+      OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -332,9 +334,10 @@ module "jira_integration_lambda_secondary" {
       JIRA_SYNC_QUEUE  = aws_sqs_queue.jira_sync_secondary[0].url
       # chunk 08 (HA parity): mirror primary DELETE_QUEUE so disconnect-
       # cleanup enqueues delete jobs after failover (silent no-op otherwise).
-      DELETE_QUEUE      = aws_sqs_queue.delete_queue_secondary[0].url
-      AUDIT_TABLE       = module.audit_logs_table_secondary[0].dynamodb_table_id
-      OAUTH_KMS_KEY_ARN = aws_kms_replica_key.oauth_tokens_secondary[0].arn
+      DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
+      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
+      OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -457,9 +460,10 @@ module "outlook_integration_lambda_secondary" {
       OUTLOOK_SYNC_QUEUE = aws_sqs_queue.outlook_sync_secondary[0].url
       # chunk 08 (HA parity): mirror primary DELETE_QUEUE so disconnect-
       # cleanup enqueues delete jobs after failover (silent no-op otherwise).
-      DELETE_QUEUE      = aws_sqs_queue.delete_queue_secondary[0].url
-      AUDIT_TABLE       = module.audit_logs_table_secondary[0].dynamodb_table_id
-      OAUTH_KMS_KEY_ARN = aws_kms_replica_key.oauth_tokens_secondary[0].arn
+      DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
+      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
+      OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -580,9 +584,10 @@ module "teams_integration_lambda_secondary" {
       TEAMS_SYNC_QUEUE = aws_sqs_queue.teams_sync_secondary[0].url
       # chunk 08 (HA parity): mirror primary DELETE_QUEUE so disconnect-
       # cleanup enqueues delete jobs after failover (silent no-op otherwise).
-      DELETE_QUEUE      = aws_sqs_queue.delete_queue_secondary[0].url
-      AUDIT_TABLE       = module.audit_logs_table_secondary[0].dynamodb_table_id
-      OAUTH_KMS_KEY_ARN = aws_kms_replica_key.oauth_tokens_secondary[0].arn
+      DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
+      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
+      OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -703,9 +708,10 @@ module "sharepoint_integration_lambda_secondary" {
       SHAREPOINT_SYNC_QUEUE = aws_sqs_queue.sharepoint_sync_secondary[0].url
       # chunk 08 (HA parity): mirror primary DELETE_QUEUE so disconnect-
       # cleanup enqueues delete jobs after failover (silent no-op otherwise).
-      DELETE_QUEUE      = aws_sqs_queue.delete_queue_secondary[0].url
-      AUDIT_TABLE       = module.audit_logs_table_secondary[0].dynamodb_table_id
-      OAUTH_KMS_KEY_ARN = aws_kms_replica_key.oauth_tokens_secondary[0].arn
+      DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
+      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
+      OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -826,9 +832,10 @@ module "onedrive_integration_lambda_secondary" {
       ONEDRIVE_SYNC_QUEUE = aws_sqs_queue.onedrive_sync_secondary[0].url
       # chunk 08 (HA parity): mirror primary DELETE_QUEUE so disconnect-
       # cleanup enqueues delete jobs after failover (silent no-op otherwise).
-      DELETE_QUEUE      = aws_sqs_queue.delete_queue_secondary[0].url
-      AUDIT_TABLE       = module.audit_logs_table_secondary[0].dynamodb_table_id
-      OAUTH_KMS_KEY_ARN = aws_kms_replica_key.oauth_tokens_secondary[0].arn
+      DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
+      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
+      OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -949,9 +956,10 @@ module "onenote_integration_lambda_secondary" {
       ONENOTE_SYNC_QUEUE = aws_sqs_queue.onenote_sync_secondary[0].url
       # chunk 08 (HA parity): mirror primary DELETE_QUEUE so disconnect-
       # cleanup enqueues delete jobs after failover (silent no-op otherwise).
-      DELETE_QUEUE      = aws_sqs_queue.delete_queue_secondary[0].url
-      AUDIT_TABLE       = module.audit_logs_table_secondary[0].dynamodb_table_id
-      OAUTH_KMS_KEY_ARN = aws_kms_replica_key.oauth_tokens_secondary[0].arn
+      DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
+      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
+      OAUTH_KMS_KEY_ARN    = aws_kms_replica_key.oauth_tokens_secondary[0].arn
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -1082,6 +1090,7 @@ module "database_integration_lambda_secondary" {
       # cleanup enqueues delete jobs after failover (silent no-op otherwise).
       DELETE_QUEUE              = aws_sqs_queue.delete_queue_secondary[0].url
       AUDIT_TABLE               = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS      = tostring(var.audit_retention_days)
       DB_CREDENTIAL_KMS_KEY_ARN = aws_kms_replica_key.db_credentials_secondary[0].arn
     },
     local.outcomeops_license_env,
@@ -1273,6 +1282,7 @@ module "azure_devops_integration_lambda_secondary" {
       # regions). Name is region-neutral: "the other region's queue".
       DELETE_QUEUE_SECONDARY = aws_sqs_queue.delete_queue[0].url
       AUDIT_TABLE            = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS   = tostring(var.audit_retention_days)
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -1469,7 +1479,8 @@ module "gitlab_integration_lambda_secondary" {
       DELETE_QUEUE           = aws_sqs_queue.delete_queue_secondary[0].url
       DELETE_QUEUE_SECONDARY = aws_sqs_queue.delete_queue[0].url
 
-      AUDIT_TABLE = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
     },
     local.outcomeops_license_env,
     local.ha_writer_env_secondary,
@@ -1614,6 +1625,7 @@ module "servicenow_integration_lambda_secondary" {
       SERVICENOW_SYNC_QUEUE        = aws_sqs_queue.servicenow_sync_secondary[0].url
       DELETE_QUEUE                 = aws_sqs_queue.delete_queue_secondary[0].url
       AUDIT_TABLE                  = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS         = tostring(var.audit_retention_days)
       OAUTH_KMS_KEY_ARN            = aws_kms_replica_key.oauth_tokens_secondary[0].arn
       SERVICENOW_STATE_TTL_SECONDS = "600"
       # Same callback URL as primary -- resolves against local.fqdn if
@@ -1756,6 +1768,7 @@ module "salesforce_integration_lambda_secondary" {
       SALESFORCE_SYNC_QUEUE        = aws_sqs_queue.salesforce_sync_secondary[0].url
       DELETE_QUEUE                 = aws_sqs_queue.delete_queue_secondary[0].url
       AUDIT_TABLE                  = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS         = tostring(var.audit_retention_days)
       OAUTH_KMS_KEY_ARN            = aws_kms_replica_key.oauth_tokens_secondary[0].arn
       SALESFORCE_STATE_TTL_SECONDS = "600"
       SALESFORCE_CALLBACK_URL      = var.domain != "" ? "https://${local.fqdn}/api/salesforce/callback" : ""

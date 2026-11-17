@@ -308,6 +308,7 @@ module "analytics_cost_alert_lambda_secondary" {
     ANALYTICS_TABLE       = module.analytics_table_secondary[0].dynamodb_table_id
     WORKSPACES_TABLE      = module.workspaces_table_secondary[0].dynamodb_table_id
     AUDIT_TABLE           = module.audit_logs_table_secondary[0].dynamodb_table_id
+    AUDIT_RETENTION_DAYS  = tostring(var.audit_retention_days)
     ORG_MONTHLY_USD       = tostring(var.cost_alert_org_monthly_usd)
     WORKSPACE_MONTHLY_USD = tostring(var.cost_alert_workspace_monthly_usd)
     },

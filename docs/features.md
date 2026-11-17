@@ -532,6 +532,27 @@ to the `/audit` page, and ADR-018 for schema design.
   ticket / SIEM escalation. 5,000-row safety cap.
 - **Source IP + User Agent on every row** — captured browser-side via
   proxy header forwarding.
+- **Configurable audit hot-window** — `audit_retention_days` tfvar
+  (default 365) sets how far back Analytics + the `/audit` page can
+  query; wired as `AUDIT_RETENTION_DAYS` on every audit-writing Lambda
+  (`shared/audit.py` ttl). Bounded by design (validation `>= 1`, no
+  `0`=forever) — durable/long-term retention lives downstream in the
+  customer's SIEM via the Kinesis export, not this table. ADR-060.
+
+## Retention model (ADR-060)
+
+Three tiers, each with a deliberate lifetime:
+- **Chat table = live UI cache**, not the record of truth.
+  `chat_message_ttl_seconds` (default 90d, validation `>= 1 day`).
+  Conversation `METADATA` + `SHARE#` rows carry the same TTL as their
+  messages (refreshed per message) so a conversation ages out *whole* —
+  no "ghost" conversations that list but open empty.
+- **Audit table = queryable hot window**, tunable via
+  `audit_retention_days` (above).
+- **Kinesis SIEM export = durable/compliance retention**, in the
+  customer's own store (`docs/audit-stream-export.md`). Neither DDB
+  store supports perpetual retention by design; "keep forever" = consume
+  the export.
 
 ## Cost tracking and analytics
 
