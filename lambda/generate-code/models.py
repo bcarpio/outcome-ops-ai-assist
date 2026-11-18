@@ -6,7 +6,7 @@ Data models for code generation.
 All Pydantic models used across the generate-code Lambda.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, validator
@@ -129,7 +129,7 @@ class ExecutionPlan(BaseModel):
     branch_name: str
     repo_full_name: str
     steps: List[PlanStep] = Field(default_factory=list)
-    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     total_cost: Optional[TokenUsage] = None
 
     # Haiku summarization cost for KB standards (separate from Sonnet code gen cost)

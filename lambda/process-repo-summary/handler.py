@@ -27,7 +27,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from urllib.request import Request, urlopen
 from urllib.error import URLError
@@ -657,7 +657,7 @@ def store_code_map_embedding(
             "repo": repo,
             "type": doc_type,
             "file_path": path,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         if workspace_id:
             metadata["workspace_id"] = workspace_id

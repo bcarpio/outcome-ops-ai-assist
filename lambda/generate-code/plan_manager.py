@@ -9,7 +9,7 @@ Handles serialization, parsing, and updating of execution plans stored as markdo
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from models import ExecutionPlan, PlanStep, TokenUsage
@@ -660,7 +660,7 @@ def parse_plan_from_markdown(markdown: str) -> ExecutionPlan:
         "branch_name": branch_name,
         "repo_full_name": repo_full_name,
         "steps": steps,
-        "created_at": created_at or datetime.utcnow().isoformat(),
+        "created_at": created_at or datetime.now(timezone.utc).isoformat(),
         "lambda_standards": lambda_standards,
         "terraform_standards": terraform_standards,
         "testing_standards": testing_standards,
@@ -734,7 +734,7 @@ def update_step_in_plan(
         step.cost = cost
 
     if status == "completed":
-        step.completed_at = datetime.utcnow().isoformat()
+        step.completed_at = datetime.now(timezone.utc).isoformat()
 
     # Recalculate total cost
     total_input = sum(s.cost.input_tokens for s in plan.steps if s.cost)

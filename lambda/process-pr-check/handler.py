@@ -1277,7 +1277,7 @@ def _store_inline_row(pk: str, sk: str, job: CheckJob, fd: "Finding",
         "line": fd.line,
         "side": fd.side,
         "severity": fd.severity,
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     for k, v in ids.items():
         if v is not None:
@@ -1408,7 +1408,7 @@ def process_check_job(job: CheckJob) -> CheckResult:
     # so rows don't collide across repos with the same PR number.
     pk = f"PR#{job.provider}#{job.repository}#{job.pr_number}"
     sk = f"CHECK#{job.check_type.value.lower()}"
-    timestamp = datetime.utcnow().isoformat() + "Z"
+    timestamp = datetime.now(timezone.utc).isoformat()
     result = CheckResult(
         PK=pk,
         SK=sk,

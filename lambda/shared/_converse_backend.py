@@ -21,7 +21,7 @@ and hides which layer absorbed a throttle. See `invoke_with_retry` and
 import json
 import logging
 import os
-import random
+import secrets
 import time
 from typing import Any, Callable, Iterator, Optional
 
@@ -76,7 +76,7 @@ def _next_backoff_ms(attempt: int, base_ms: int = 500, cap_ms: int = 8000) -> in
     delay = random(0, min(cap, base * 2^attempt)).
     """
     ceiling = min(cap_ms, base_ms * (2 ** (attempt - 1)))
-    return random.randint(0, max(1, ceiling))
+    return secrets.randbelow(max(1, ceiling) + 1)
 
 
 def _max_attempts() -> int:

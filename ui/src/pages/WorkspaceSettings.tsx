@@ -2315,8 +2315,8 @@ export default function WorkspaceSettings() {
       // Materialize per-schema selection into the wire format —
       // uses 2-segment "catalog.schema" keys for both
       // introspection.include and sampling.include.
-      const introspectInclude = Array.from(databaseIntrospectSchemas).sort()
-      const samplingInclude = Array.from(databaseSamplingSchemas).sort()
+      const introspectInclude = Array.from(databaseIntrospectSchemas).sort((a, b) => a.localeCompare(b))
+      const samplingInclude = Array.from(databaseSamplingSchemas).sort((a, b) => a.localeCompare(b))
 
       const scope: DatabaseScopeConfig = {
         introspection: { include: introspectInclude, exclude: [] },

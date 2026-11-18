@@ -10,7 +10,7 @@ Uses pluggable backends for language-specific plan generation.
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from codegen_backends import CodeGeneratorBackend, get_backend_for_repo
@@ -444,7 +444,7 @@ def generate_execution_plan(
         summarization_cost=summarization_cost if summarization_cost.total_cost_usd > 0 else None,
         # Store plan generation cost (Sonnet)
         plan_generation_cost=plan_gen_cost,
-        plan_completed_at=datetime.utcnow().isoformat(),
+        plan_completed_at=datetime.now(timezone.utc).isoformat(),
     )
 
     logger.info(f"[plan-gen] Plan generated with {len(steps)} steps using {backend.display_name}")

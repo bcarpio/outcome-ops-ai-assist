@@ -21,7 +21,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Iterator, List, Optional
 from urllib.request import Request, urlopen
 from urllib.error import URLError
@@ -1244,7 +1244,7 @@ def store_batch_summary(
             "batch_type": batch["batch_type"],
             "group_name": batch["group_name"],
             "file_count": str(len(batch["file_paths"])),
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         if workspace_id:
             metadata["workspace_id"] = workspace_id

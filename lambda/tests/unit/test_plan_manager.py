@@ -681,7 +681,7 @@ class TestUpdateStepInPlan:
         """Test: Updating to 'completed' sets completed_at timestamp."""
         # Arrange & Act
         with patch('plan_manager.datetime') as mock_datetime:
-            mock_datetime.utcnow.return_value.isoformat.return_value = "2024-01-15T12:00:00"
+            mock_datetime.now.return_value.isoformat.return_value = "2024-01-15T12:00:00"
             updated_plan = update_step_in_plan(basic_plan, step_number=1, status="completed")
 
         # Assert
