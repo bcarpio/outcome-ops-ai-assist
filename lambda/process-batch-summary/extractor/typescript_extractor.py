@@ -7,7 +7,10 @@ Emits:
 
   * ``defines`` for every top-level function, class, and arrow-function
     assigned to a top-level ``const``/``let``. Class methods are emitted
-    with the class as their namespace.
+    with the class as their namespace. Top-level ``interface`` /
+    ``type`` alias / ``enum`` declarations are emitted as ``defines``
+    too (no signature, no body) so that type-only imports resolve to a
+    definition node instead of being left as a raw import specifier.
   * ``imports`` for every ``import`` form including ``import {a,b}``,
     ``import * as foo``, ``import defaultExport``, and side-effect
     imports (``import 'x'`` -> ``*``).
@@ -393,6 +396,39 @@ def _emit_const_arrow(
             )
 
 
+def _emit_type_def(
+    node: Node,
+    source: bytes,
+    file_path: str,
+    module: str,
+    module_symbol_id: str,
+) -> Iterator[Fact]:
+    """Emit a ``defines`` fact for a top-level ``interface`` /
+    ``type`` alias / ``enum`` declaration.
+
+    These carry no signature and no body (nothing to walk for calls);
+    the sole purpose is to give type-only imports (``import type
+    { Conversation }``) a definition node to bind to during resolution.
+    Without it the resolver leaves the import target as a raw specifier
+    (``typescript:../lib/api::Conversation``), which never repo-qualifies
+    and collides across repos that share the same specifier.
+    """
+
+    name_node = _child_by_field(node, "name")
+    if name_node is None:
+        return
+    name = _node_text(name_node, source)
+    type_id = make_symbol_id("typescript", module, name)
+    yield Fact(
+        kind="defines",
+        source_symbol_id=module_symbol_id,
+        target_symbol_id=type_id,
+        file_path=file_path,
+        line=node.start_point[0] + 1,
+        language="typescript",
+    )
+
+
 def _iter_top_level(root: Node) -> Iterator[Node]:
     """Yield each top-level statement, unwrapping ``export`` wrappers."""
 
@@ -432,6 +468,14 @@ def extract(file_path: str, source: bytes) -> Iterator[Fact]:
             )
         elif t in ("lexical_declaration", "variable_declaration"):
             yield from _emit_const_arrow(
+                node, source, file_path, module, module_symbol_id
+            )
+        elif t in (
+            "interface_declaration",
+            "type_alias_declaration",
+            "enum_declaration",
+        ):
+            yield from _emit_type_def(
                 node, source, file_path, module, module_symbol_id
             )
 

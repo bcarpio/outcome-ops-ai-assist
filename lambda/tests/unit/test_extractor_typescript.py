@@ -93,6 +93,41 @@ class TestSubpathImports:
         assert any("./side-effect-only::*" in t for t in targets)
 
 
+class TestTypeDefinitions:
+    """Top-level interface / type-alias / enum declarations must emit
+    ``defines`` facts so type-only imports resolve to a definition node
+    instead of being left as a raw import specifier.
+    """
+
+    @pytest.fixture
+    def facts(self):
+        return _load("type_defs.ts")
+
+    def test_interface_defines(self, facts):
+        ids = [f.target_symbol_id for f in _by_kind(facts, "defines")]
+        assert any(i.endswith("::Conversation") for i in ids)
+        assert any(i.endswith("::InternalShape") for i in ids)
+
+    def test_type_alias_defines(self, facts):
+        ids = [f.target_symbol_id for f in _by_kind(facts, "defines")]
+        assert any(i.endswith("::Message") for i in ids)
+        assert any(i.endswith("::AliasOnly") for i in ids)
+
+    def test_enum_defines(self, facts):
+        ids = [f.target_symbol_id for f in _by_kind(facts, "defines")]
+        assert any(i.endswith("::Color") for i in ids)
+        assert any(i.endswith("::InternalEnum") for i in ids)
+
+    def test_type_defs_have_no_signature(self, facts):
+        type_defs = [
+            f
+            for f in _by_kind(facts, "defines")
+            if f.target_symbol_id.endswith(("::Conversation", "::Message", "::Color"))
+        ]
+        assert type_defs  # guard: the fixture actually produced them
+        assert all(f.signature is None for f in type_defs)
+
+
 class TestNameCollisions:
     @pytest.fixture
     def facts(self):
