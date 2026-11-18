@@ -105,6 +105,8 @@ class AdvanceResult:
       - ``not_complete``  ledger still has outstanding work
       - ``has_failures``  failed_count > 0 and partial-advance disabled
       - ``stale_sha``     a newer SHA already advanced past this one
+      - ``repo_removed``  the workspaces row no longer exists (repo was
+                          removed mid-pipeline); nothing is written
     """
 
     advanced: bool
@@ -461,14 +463,22 @@ def try_advance_sha(
             os.environ["WORKSPACES_TABLE"],
             {"PK": _ws_pk(workspace_id), "SK": _ws_sk(repo)},
             UpdateExpression=f"SET {column} = :sha, {ts_column} = :ts",
+            # attribute_exists(PK): UpdateItem upserts, so without this a
+            # pipeline that finishes after the repo was removed from the
+            # workspace recreates the deleted row as a stub holding only the
+            # SHA columns.
             ConditionExpression=(
-                f"attribute_not_exists({ts_column}) OR {ts_column} < :ts"
+                f"attribute_exists(PK) AND "
+                f"(attribute_not_exists({ts_column}) OR {ts_column} < :ts)"
             ),
             ExpressionAttributeValues={":sha": target_sha, ":ts": target_ts},
+            ReturnValuesOnConditionCheckFailure="ALL_OLD",
         )
         return AdvanceResult(True, "ok")
     except ClientError as exc:
         if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            if not exc.response.get("Item"):
+                return AdvanceResult(False, "repo_removed")
             return AdvanceResult(False, "stale_sha")
         raise
 

@@ -94,7 +94,13 @@ def tables():
             ],
             BillingMode="PAY_PER_REQUEST",
         )
-    return boto3.resource("dynamodb", region_name="us-west-2")
+    resource = boto3.resource("dynamodb", region_name="us-west-2")
+    # The repo is attached to the workspace; try_advance_sha only updates an
+    # existing row (it must not recreate a removed repo).
+    resource.Table(WORKSPACES_TABLE).put_item(
+        Item={"PK": f"WS#{WORKSPACE_ID}", "SK": f"GITHUB_REPO#{REPO}"}
+    )
+    return resource
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +382,29 @@ def test_try_advance_writes_column_and_ts(tables):
     ).get("Item", {})
     assert ws_item["last_docs_sha"] == SHA_A
     assert int(ws_item["last_docs_sha_ts"]) == COMMIT_TS_NEW
+
+
+def test_try_advance_does_not_recreate_removed_repo(tables):
+    """A pipeline that closes after the repo was removed from the workspace
+    must not upsert a stub workspaces row holding only the SHA columns."""
+
+    from shared.sha_truth import (  # type: ignore
+        mark_unit_complete,
+        open_pending_batch,
+        try_advance_sha,
+    )
+
+    ws_table = tables.Table(WORKSPACES_TABLE)
+    key = {"PK": f"WS#{WORKSPACE_ID}", "SK": f"GITHUB_REPO#{REPO}"}
+
+    open_pending_batch(_make_batch(expected_count=1))
+    closing = mark_unit_complete(WORKSPACE_ID, REPO, "docs", SHA_A)
+    ws_table.delete_item(Key=key)  # repo removed mid-pipeline
+
+    result = try_advance_sha(closing)
+    assert result.advanced is False
+    assert result.reason == "repo_removed"
+    assert "Item" not in ws_table.get_item(Key=key)
 
 
 def test_try_advance_monotonic_blocks_older_sha(tables):

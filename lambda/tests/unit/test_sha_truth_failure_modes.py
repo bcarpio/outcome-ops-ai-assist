@@ -77,7 +77,13 @@ def tables():
             ],
             BillingMode="PAY_PER_REQUEST",
         )
-    return boto3.resource("dynamodb", region_name="us-west-2")
+    resource = boto3.resource("dynamodb", region_name="us-west-2")
+    # The repo is attached to the workspace; try_advance_sha only updates an
+    # existing row (it must not recreate a removed repo).
+    resource.Table(WORKSPACES_TABLE).put_item(
+        Item={"PK": f"WS#{WORKSPACE_ID}", "SK": f"GITHUB_REPO#{REPO}"}
+    )
+    return resource
 
 
 def _open(pipeline, sha, ts, expected):
