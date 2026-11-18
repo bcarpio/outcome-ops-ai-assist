@@ -960,17 +960,16 @@ def test_callers_table_name_from_env(tables, monkeypatch):
 
 def test_callers_log_audit_entry_resolves_nine_known_callers(tables):
     """callers(workspace_id, "...log_audit_entry") returns exactly
-    the 9 known callers (the integration handlers wired in license-layer
-    v2.0.0). Validates the OutcomeOps proof case end-to-end against the
-    reader's public surface. See docs/symbol-graph-validation.md.
+    the 9 known callers of log_audit_entry. Validates the proof case
+    end-to-end against the reader's public surface. See
+    docs/symbol-graph-validation.md.
     """
     from shared.symbol_graph_reader import callers  # type: ignore
 
     target = "python:lambda.shared.audit::log_audit_entry"
 
-    # The 9 callers wired in license-layer v2.0.0 (per the project
-    # memory: 9 *-integration connect/disconnect handlers + the hourly
-    # scheduler). Order doesn't matter — the reader doesn't promise
+    # The 9 callers of log_audit_entry. Order doesn't matter, the
+    # reader doesn't promise
     # an order, just the set.
     known_callers = [
         ("github-integration", "lambda/github-integration/handler.py", 137),

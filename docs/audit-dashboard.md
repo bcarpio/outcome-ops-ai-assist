@@ -39,7 +39,7 @@ underlying schema and design rationale, see
 │ ┌─ Top Actors ──────────────────────────────────────┐       │
 │ │ ppatel@…       890   2h ago                        │       │
 │ │ rsilva@…       620   3h ago                        │       │
-│ │ bcarpio@…      480   5m ago                        │       │
+│ │ jdoe@…         480   5m ago                        │       │
 │ └────────────────────────────────────────────────────┘       │
 │                                                              │
 │ ┌─ Recent Activity ─────────────────────────────────┐       │

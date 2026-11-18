@@ -1,3 +1,5 @@
+// Copyright 2025-2026 OutcomeOps
+// SPDX-License-Identifier: Apache-2.0
 import { defineConfig, mergeConfig } from 'vitest/config'
 import viteConfig from './vite.config'
 

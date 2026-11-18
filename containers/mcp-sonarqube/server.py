@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Minimal SonarQube Cloud MCP server (OutcomeOps-owned).
 
 Replaces the third-party `mcp/sonarqube` image whose Apache HttpClient async I/O

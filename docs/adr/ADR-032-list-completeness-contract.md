@@ -33,11 +33,10 @@ single caller at `org-management/handler.py:5830` in a 6,000-line
 file was queryable). The bug was in the call site's contract with
 the reader and the LLM's contract with the response shape.
 
-The product is GA on AWS Marketplace as of 2026-05-30. Every
-customer running an enumeration question against a workspace with
-more name collisions than the reader's defaults silently gets a
-clipped answer today. This is the correctness failure mode regulated
-buyers screenshot during an audit.
+Any enumeration question against a workspace with more name
+collisions than the reader's defaults silently gets a clipped answer.
+This is the correctness failure mode regulated buyers screenshot
+during an audit.
 
 ## Decision
 

@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 OutcomeOps AI Assist - Data Flow Diagram
 ARCH-004: Data flow showing ingestion, query, and PR analysis event routing.

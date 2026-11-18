@@ -1,3 +1,5 @@
+// Copyright 2025-2026 OutcomeOps
+// SPDX-License-Identifier: Apache-2.0
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createMockFetchResponse, createMockStreamResponse } from '../../helpers/mocks'
 

@@ -1,6 +1,6 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for onedrive-sync Lambda (handler + license-layer integration)."""
+"""Unit tests for onedrive-sync Lambda handler."""
 
 import importlib.util
 import json

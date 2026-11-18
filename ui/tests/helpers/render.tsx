@@ -1,3 +1,5 @@
+// Copyright 2025-2026 OutcomeOps
+// SPDX-License-Identifier: Apache-2.0
 import { render, type RenderOptions } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router'
 import type { ReactElement } from 'react'

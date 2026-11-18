@@ -767,9 +767,7 @@ class TestReportReposSnapshotIntegration:
 
     Mirrors the fixture set in ``test_symbol_graph_reader.py`` so a
     regression here points at the same root cause as the corresponding
-    reader test. Uses the project-memory anchor set
-    (project_license_layer_v2.md): 9 connect/disconnect handlers +
-    the scheduled reporter.
+    reader test. Uses the same 9-caller fan-out of log_audit_entry.
     """
 
     def test_signature_change_yields_nine_callers_with_signature_note(self):

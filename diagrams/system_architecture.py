@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 OutcomeOps AI Assist - Full System Architecture
 ARCH-001: Complete system architecture showing all AWS services, integrations, and data flows.

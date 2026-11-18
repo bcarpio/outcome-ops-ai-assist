@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 OutcomeOps AI Assist - Network Architecture
 ARCH-005: Network topology with VPC, subnets, security groups, and connectivity.

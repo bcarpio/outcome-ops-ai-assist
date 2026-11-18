@@ -13,7 +13,6 @@ omit =
     ../terraform-layer/*
     ../.venv/*
     ../.ca-bundles-staging/*
-    ../.license-layer-staging/*
     */venv/*
 
 [report]

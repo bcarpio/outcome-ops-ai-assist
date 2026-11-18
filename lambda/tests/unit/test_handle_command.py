@@ -595,13 +595,13 @@ class TestLambdaHandler:
         assert "GitHub credentials" in body["error"]
 
 
-class TestLicenseIntegration:
-    """Test license validation and enforcement integration."""
+class TestHandlerBasics:
+    """Test the handler's basic command path."""
 
     @patch.object(handler_module, 'get_github_token')
     @patch.object(handler_module, 'post_pr_comment')
-    def test_handler_without_license_layer(self, mock_post, mock_token):
-        """Test handler works when license layer is not attached."""
+    def test_handler_help_command_succeeds(self, mock_post, mock_token):
+        """Test the handler returns 200 for a help command."""
         # Arrange
         mock_token.return_value = "ghp_test_token"
         mock_post.return_value = True
@@ -614,7 +614,7 @@ class TestLicenseIntegration:
             "branch": "main"
         }
 
-        # Act - ImportError for license validation is caught gracefully
+        # Act
         response = lambda_handler(event, None)
 
         # Assert - Should still succeed

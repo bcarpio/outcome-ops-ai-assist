@@ -96,14 +96,14 @@ This is Context Engineering. This is OutcomeOps.
 - AWS account (for Lambda deployment)
 - ADRs or architectural docs (or we'll help you create them)
 - AWS CLI v2, Terraform 1.5+, and Docker installed
-- An OutcomeOps license — see [Getting Started](docs/getting-started.md) for the
-  full prerequisite list (VPC, domain/cert, Azure AD) and how to request one
+- See [Getting Started](docs/getting-started.md) for the full prerequisite
+  list (VPC, domain/cert, Azure AD)
 
 **Ready to get started?**
 
-OutcomeOps is a commercial platform licensed for enterprise use. [Contact us](https://www.linkedin.com/in/briancarpio/) to discuss licensing and implementation for your organization.
+OutcomeOps is open source under the [Apache License 2.0](LICENSE). Clone the repo and deploy it into your own AWS account, no license or sign-up required.
 
-Once licensed, a first deployment takes roughly 30–45 minutes (most of it building the Lambda layers + container images — see [Getting Started](docs/getting-started.md)):
+A first deployment takes roughly 30 to 45 minutes (most of it building the Lambda layers and container images, see [Getting Started](docs/getting-started.md)):
 - Deploy infrastructure to your AWS account
 - Configure GitHub webhook
 - Create test issue with label "approved-for-generation"
@@ -181,20 +181,15 @@ OutcomeOps applies the same playbook to AI-assisted development:
 
 ---
 
-## Get Started
+## Resources
 
-**Ready to implement OutcomeOps?**
+**Ready to deploy OutcomeOps?**
 
 - **[Learn the Methodology](https://www.outcomeops.ai)** - Understand the OutcomeOps approach
 - **[Learn ADRs](docs/getting-started-with-adrs.md)** - New to Architecture Decision Records?
-- **[Technical Documentation](docs/getting-started.md)** - Implementation guide for licensed users
-- **Licensing & Support** - [Get in touch](https://www.linkedin.com/in/briancarpio/)
-
-**For Licensed Customers:**
-- Technical support and implementation assistance
-- Custom feature development
-- Training and onboarding
-- Architecture consultation
+- **[Technical Documentation](docs/getting-started.md)** - Deployment and implementation guide
+- **[Contributing](CONTRIBUTING.md)** - How to get involved
+- **Questions & Support** - open an [issue or discussion](https://github.com/outcomeops/outcome-ops-ai-assist/issues)
 
 ---
 

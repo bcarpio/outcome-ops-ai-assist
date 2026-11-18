@@ -308,10 +308,9 @@ def test_augment_returns_nine_callers_for_log_audit_entry(_inject_clients):
     """Plan-gkg/05 DoD: end-to-end question -> structural block with
     9 callers of log_audit_entry.
 
-    Seeds the 9 license-layer v2.0.0 caller sites (project memory
-    project_license_layer_v2.md), stubs the router to return
-    ``structural`` + the bare symbol name, and asserts the rendered
-    block contains every expected file path + line.
+    Seeds the 9 caller sites of log_audit_entry, stubs the router to
+    return ``structural`` + the bare symbol name, and asserts the
+    rendered block contains every expected file path + line.
     """
     _create_symbol_graph_table()
     _create_code_maps_table()
@@ -335,9 +334,7 @@ def test_augment_returns_nine_callers_for_log_audit_entry(_inject_clients):
         line=142,
     )
 
-    # The 9 callers wired in license-layer v2.0.0 (per the project
-    # memory: 9 *-integration connect/disconnect handlers + the
-    # scheduled reporter). Same fixtures as
+    # The 9 callers of log_audit_entry. Same fixtures as
     # test_symbol_graph_reader.test_callers_log_audit_entry_*.
     known_callers = [
         ("github-integration", "lambda/github-integration/handler.py", 137),

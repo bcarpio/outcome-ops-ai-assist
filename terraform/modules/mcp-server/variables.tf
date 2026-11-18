@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # MCP Server Base Module - Variables
 # Deploys a single MCP server as a Fargate Spot task with ALB routing

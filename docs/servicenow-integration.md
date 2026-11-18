@@ -314,6 +314,6 @@ prd-outcome-ops-ai-assist-workspace-management --query
 `"true"`. If yes, force-redeploy the UI ECS service.
 
 **Q: The sync log says `log_audit_entry failed`.**
-A: Non-fatal — license-layer liveness reporting couldn't reach the license
-server. Sync proceeds normally. If persistent, check the outcomeops-license
-Lambda layer is attached to the `servicenow-integration` function.
+A: Non-fatal. The audit-log write for this sync did not complete; the sync
+proceeds normally. If it persists, check the `servicenow-integration`
+function's IAM permissions for the audit DynamoDB table.

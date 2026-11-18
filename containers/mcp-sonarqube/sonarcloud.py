@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """Native SonarQube Cloud tools for the OutcomeOps MCP server.
 
 Replaces the third-party SonarQube MCP Fargate service, whose async HttpClient

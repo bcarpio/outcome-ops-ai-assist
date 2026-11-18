@@ -7,10 +7,9 @@ When a step execution fails and ends up in the DLQ, this handler:
 1. Parses the failed message to get repo/branch info
 2. Checks if a PR already exists for the branch
 3. Creates a draft PR with whatever code was generated before failure
-4. Fires usage metric to license server (we still count partial generations)
-5. Adds a comment to the GitHub issue explaining the failure
+4. Adds a comment to the GitHub issue explaining the failure
 
-This ensures we don't lose partial work and always track usage.
+This ensures we don't lose partial work.
 """
 
 import json

@@ -72,8 +72,8 @@ SYMBOL_GRAPH_TABLE = "test-impact-symbol-graph"
 CODE_MAPS_TABLE = "test-impact-code-maps"
 WORKSPACE_ID = "ws-impact"
 
-# 9-caller fixture mirrors the real license-layer v2.0.0 migration —
-# the Definition of Done's named example.
+# A 9-caller fan-out fixture: one shared function called from nine
+# sites, used as the named example for impact analysis.
 REPORT_REPOS_SYMBOL = (
     "python:lambda.shared.audit::log_audit_entry"
 )
@@ -772,8 +772,8 @@ class TestRunImpactAnalysis:
         ``log_audit_entry`` produces a plan that lists all 9
         caller updates.
 
-        Mirrors the license-layer v2.0.0 migration the plan calls out as
-        the proof case — see project_license_layer_v2.md in memory.
+        Exercises the 9-caller fan-out fixture as the impact-analysis
+        proof case.
         """
         from impact_analysis import run_impact_analysis  # type: ignore
 

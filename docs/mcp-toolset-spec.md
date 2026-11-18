@@ -298,8 +298,8 @@ Per-edge semantics (all **across the workspace's repos**):
 {
   "edge": "callers",
   "sites": [
-    { "file_path": "lambda/license-layer/handler.py", "line": 212,
-      "repo": "ai-assist", "source_symbol_id": "python:lambda.license-layer.handler::heartbeat",
+    { "file_path": "lambda/chat/handler.py", "line": 1806,
+      "repo": "ai-assist", "source_symbol_id": "python:lambda.chat.handler::handle_chat_stream",
       "language": "python" }
   ],
   "complete": true,

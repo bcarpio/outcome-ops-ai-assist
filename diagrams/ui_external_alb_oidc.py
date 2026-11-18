@@ -1,3 +1,5 @@
+# Copyright 2025-2026 OutcomeOps
+# SPDX-License-Identifier: Apache-2.0
 """
 OutcomeOps AI Assist - External ALB with Azure AD OIDC
 ui_alb_internal = false
