@@ -205,9 +205,9 @@ module "analyze_pr_lambda" {
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",
           "dynamodb:Query",
-          # Scan for pr_check_scope.find_workspaces_for_repo: the
-          # structural-impact pass resolves the PR's repo -> workspace
-          # (filtered scan, once per PR).
+          # Scan for pr_check_scope (find_workspaces_for_repo +
+          # resolve_consumer_query_scope): the structural-impact pass
+          # resolves the repo's workspace + shared + global scope (once per PR).
           "dynamodb:Scan",
         ]
         resources = [

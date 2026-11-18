@@ -553,7 +553,7 @@ class TestAnalyzeStructuralImpact:
         assert len(impacts) == 1
         assert impacts[0].callers == []
         block = build_impact_block(impacts)
-        assert "Callers affected: none in this workspace." in block
+        assert "Callers affected: none in the workspaces searched" in block
 
     def test_signature_change_renders_signature_note(self):
         from diff_symbol_resolver import MutatedSymbol  # type: ignore
@@ -1004,7 +1004,7 @@ class TestHandlerStructuralGlue:
             pr=MagicMock(),
             files=[],
             token="t",
-            workspace_id="ws",
+            workspace_ids=["ws"],
             base_sha="b",
             head_sha="h",
         )
@@ -1022,7 +1022,7 @@ class TestHandlerStructuralGlue:
             pr=MagicMock(),
             files=[],
             token="t",
-            workspace_id="ws",
+            workspace_ids=["ws"],
             base_sha="b",
             head_sha="h",
         )
@@ -1037,7 +1037,7 @@ class TestHandlerStructuralGlue:
             pr=MagicMock(),
             files=[],
             token="t",
-            workspace_id=None,
+            workspace_ids=[],
             base_sha="b",
             head_sha="h",
         )
@@ -1053,7 +1053,7 @@ class TestHandlerStructuralGlue:
             pr=MagicMock(),
             files=[],
             token="t",
-            workspace_id="ws",
+            workspace_ids=["ws"],
             base_sha="b",
             head_sha="h",
         )
@@ -1082,7 +1082,7 @@ class TestHandlerStructuralGlue:
             pr=MagicMock(),
             files=[gh_file],
             token="t",
-            workspace_id=WORKSPACE_ID,
+            workspace_ids=[WORKSPACE_ID],
             base_sha="basesha789012",
             head_sha="headsha789012",
         )
@@ -1138,7 +1138,7 @@ class TestHandlerStructuralGlue:
                 pr=MagicMock(),
                 files=[gh_file],
                 token="t",
-                workspace_id=WORKSPACE_ID,
+                workspace_ids=[WORKSPACE_ID],
                 base_sha="basesha789012",
                 head_sha="headsha789012",
             )
@@ -1189,7 +1189,21 @@ def _repo_row(workspace_id, repo):
     }
 
 
-class TestResolveStructuralWorkspaceId:
+def _ws_meta(workspace_id, *, shared_with=None, is_global=False):
+    item = {
+        "PK": f"WS#{workspace_id}",
+        "SK": "METADATA",
+        "workspace_id": workspace_id,
+        "is_global": is_global,
+    }
+    if shared_with:
+        item["search_allowed_workspaces"] = list(shared_with)
+    return item
+
+
+class TestResolveStructuralWorkspaceScope:
+    """Same consumer scope as BREAKING_CHANGES (ADR-056 §5)."""
+
     @pytest.fixture
     def handler(self, monkeypatch):
         monkeypatch.delenv("PR_WORKSPACE_ID", raising=False)
@@ -1202,38 +1216,225 @@ class TestResolveStructuralWorkspaceId:
         monkeypatch.setattr(scope, "_dynamodb", None)
         return mod
 
-    def test_resolves_connected_repo(self, handler):
+    def test_repo_workspace_only_when_not_shared(self, handler):
         _create_workspaces_table([
-            _repo_row("ws-a", "owner/repo"),
-            _repo_row("ws-b", "owner/other"),
+            _ws_meta("eng"),
+            _ws_meta("analytics"),
+            _repo_row("eng", "owner/repo"),
         ])
 
-        assert handler._resolve_structural_workspace_id("owner/repo") == "ws-a"
+        assert handler._resolve_structural_workspace_scope("owner/repo") == ["eng"]
 
-    def test_multiple_workspaces_picks_lowest_id(self, handler):
+    def test_includes_workspaces_the_repo_workspace_is_shared_with(self, handler):
+        # Engineering holds the repo and is shared with Analytics: consumers
+        # in Analytics keep their edges in Analytics' partition, so both are
+        # queried. Marketing is not shared with, so it is excluded.
         _create_workspaces_table([
-            _repo_row("ws-z", "owner/repo"),
-            _repo_row("ws-m", "owner/repo"),
+            _ws_meta("eng", shared_with=["analytics"]),
+            _ws_meta("analytics"),
+            _ws_meta("marketing"),
+            _repo_row("eng", "owner/repo"),
         ])
 
-        assert handler._resolve_structural_workspace_id("owner/repo") == "ws-m"
+        assert handler._resolve_structural_workspace_scope("owner/repo") == [
+            "eng",
+            "analytics",
+        ]
 
-    def test_unconnected_repo_returns_none(self, handler):
-        _create_workspaces_table([_repo_row("ws-a", "owner/other")])
+    def test_reverse_grant_is_not_included(self, handler):
+        # Analytics sharing ITS workspace with Engineering lets Engineering
+        # read Analytics, not the other way round -- Analytics code cannot
+        # consume the repo, so Analytics is not in the consumer scope.
+        _create_workspaces_table([
+            _ws_meta("eng"),
+            _ws_meta("analytics", shared_with=["eng"]),
+            _repo_row("eng", "owner/repo"),
+        ])
 
-        assert handler._resolve_structural_workspace_id("owner/repo") is None
+        assert handler._resolve_structural_workspace_scope("owner/repo") == ["eng"]
 
-    def test_env_override_wins_without_lookup(self, handler, monkeypatch):
+    def test_includes_global_workspaces(self, handler):
+        _create_workspaces_table([
+            _ws_meta("eng"),
+            _ws_meta("platform", is_global=True),
+            _repo_row("eng", "owner/repo"),
+        ])
+
+        assert handler._resolve_structural_workspace_scope("owner/repo") == [
+            "eng",
+            "platform",
+        ]
+
+    def test_repo_in_global_workspace_scopes_every_workspace(self, handler):
+        _create_workspaces_table([
+            _ws_meta("platform", is_global=True),
+            _ws_meta("analytics"),
+            _ws_meta("eng"),
+            _repo_row("platform", "owner/repo"),
+        ])
+
+        assert handler._resolve_structural_workspace_scope("owner/repo") == [
+            "platform",
+            "analytics",
+            "eng",
+        ]
+
+    def test_repo_workspaces_come_first(self, handler):
+        _create_workspaces_table([
+            _ws_meta("aaa-shared"),
+            _ws_meta("zz-home", shared_with=["aaa-shared"]),
+            _ws_meta("mm-home"),
+            _repo_row("zz-home", "owner/repo"),
+            _repo_row("mm-home", "owner/repo"),
+        ])
+
+        assert handler._resolve_structural_workspace_scope("owner/repo") == [
+            "mm-home",
+            "zz-home",
+            "aaa-shared",
+        ]
+
+    def test_unconnected_repo_returns_empty(self, handler):
+        _create_workspaces_table([
+            _ws_meta("eng", shared_with=["analytics"]),
+            _ws_meta("platform", is_global=True),
+            _repo_row("eng", "owner/other"),
+        ])
+
+        assert handler._resolve_structural_workspace_scope("owner/repo") == []
+
+    def test_env_override_pins_scope_without_lookup(self, handler, monkeypatch):
         monkeypatch.setenv("PR_WORKSPACE_ID", "ws-override")
         # No table created: a lookup would raise, so this proves it is skipped.
 
-        assert handler._resolve_structural_workspace_id("owner/repo") == "ws-override"
+        assert handler._resolve_structural_workspace_scope("owner/repo") == [
+            "ws-override"
+        ]
 
-    def test_workspaces_disabled_returns_none(self, handler, monkeypatch):
+    def test_workspaces_disabled_returns_empty(self, handler, monkeypatch):
         monkeypatch.setenv("WORKSPACES_TABLE", "")
 
-        assert handler._resolve_structural_workspace_id("owner/repo") is None
+        assert handler._resolve_structural_workspace_scope("owner/repo") == []
 
     def test_lookup_error_is_non_fatal(self, handler):
         # Table does not exist -> ResourceNotFoundException inside the scan.
-        assert handler._resolve_structural_workspace_id("owner/repo") is None
+        assert handler._resolve_structural_workspace_scope("owner/repo") == []
+
+
+class TestAnalyzeStructuralImpactAcrossWorkspaces:
+    TARGET = "python:lib.snapshot::log_audit_entry"
+
+    def _mutated(self):
+        from diff_symbol_resolver import MutatedSymbol  # type: ignore
+
+        return [
+            MutatedSymbol(
+                symbol_id=self.TARGET,
+                change_kind="signature",
+                file_path="lib/snapshot.py",
+                definition_line=1,
+                language="python",
+            )
+        ]
+
+    def _caller(self, ws, repo, file_path, line, source):
+        _put_fact(
+            workspace_id=ws,
+            repo=repo,
+            commit_sha=SHA,
+            kind="calls",
+            source_symbol_id=source,
+            target_symbol_id=self.TARGET,
+            file_path=file_path,
+            line=line,
+        )
+
+    def test_merges_callers_from_every_workspace_in_scope(self):
+        from structural_review import analyze_structural_impact  # type: ignore
+
+        _create_symbol_graph_table()
+        _create_code_maps_table()
+        self._caller("eng", REPO, "lib/eng_caller.py", 10, "python:lib.eng_caller::run")
+        self._caller(
+            "analytics", "owner/dash", "dash/report.py", 42, "python:dash.report::build"
+        )
+        self._caller(
+            "marketing", "owner/site", "site/x.py", 7, "python:site.x::go"
+        )
+
+        impacts = analyze_structural_impact(
+            workspace_ids=["eng", "analytics"],
+            mutated=self._mutated(),
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+            code_maps_table_name=CODE_MAPS_TABLE,
+        )
+
+        assert len(impacts) == 1
+        assert impacts[0].error is None
+        found = {(c.repo, c.file_path, c.line) for c in impacts[0].callers}
+        assert found == {
+            (REPO, "lib/eng_caller.py", 10),
+            ("owner/dash", "dash/report.py", 42),
+        }
+
+    def test_dedupes_the_same_site_across_workspaces(self):
+        from structural_review import analyze_structural_impact  # type: ignore
+
+        _create_symbol_graph_table()
+        _create_code_maps_table()
+        # A repo connected to two workspaces is ingested into both, so the
+        # same edge exists in each partition.
+        for ws in ("eng", "eng-mirror"):
+            self._caller(ws, REPO, "lib/eng_caller.py", 10, "python:lib.eng_caller::run")
+
+        impacts = analyze_structural_impact(
+            workspace_ids=["eng", "eng-mirror"],
+            mutated=self._mutated(),
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+            code_maps_table_name=CODE_MAPS_TABLE,
+        )
+
+        assert len(impacts[0].callers) == 1
+
+    def test_any_workspace_failure_marks_symbol_unverified(self, monkeypatch):
+        from shared import symbol_graph_reader  # type: ignore
+        from structural_review import analyze_structural_impact  # type: ignore
+
+        real_callers = symbol_graph_reader.callers
+
+        def flaky_callers(ws, *args, **kwargs):
+            if ws == "analytics":
+                raise symbol_graph_reader.SymbolGraphUnavailable("throttled")
+            return real_callers(ws, *args, **kwargs)
+
+        monkeypatch.setattr(symbol_graph_reader, "callers", flaky_callers)
+        _create_symbol_graph_table()
+        _create_code_maps_table()
+        self._caller("eng", REPO, "lib/eng_caller.py", 10, "python:lib.eng_caller::run")
+
+        impacts = analyze_structural_impact(
+            workspace_ids=["eng", "analytics"],
+            mutated=self._mutated(),
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+            code_maps_table_name=CODE_MAPS_TABLE,
+        )
+
+        # A partial list could read as the full blast radius -- fail closed.
+        assert impacts[0].error == "graph_unavailable"
+        assert impacts[0].callers == []
+
+    def test_single_workspace_form_still_supported(self):
+        from structural_review import analyze_structural_impact  # type: ignore
+
+        _create_symbol_graph_table()
+        _create_code_maps_table()
+        self._caller("eng", REPO, "lib/eng_caller.py", 10, "python:lib.eng_caller::run")
+
+        impacts = analyze_structural_impact(
+            workspace_id="eng",
+            mutated=self._mutated(),
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+            code_maps_table_name=CODE_MAPS_TABLE,
+        )
+
+        assert len(impacts[0].callers) == 1

@@ -83,10 +83,15 @@ ci_oidc_github_subjects = ["repo:<org>/<repo>:pull_request"]
 - Onboarding is per-repo (add the workflow + grant invoke), not a single
   org-wide webhook. A repo without the workflow simply isn't analyzed.
 - The customer must stand up a CI->AWS identity (or enable the fallback role).
-- Workspace scoping is resolved per repo from the workspaces table: the PR
-  checks via `shared/pr_check_scope.py`, and `analyze-pr`'s symbol-graph
-  structural pass via the same `find_workspaces_for_repo` lookup. A repo that is
-  not connected to any workspace gets no structural-impact comment.
+- Workspace scoping is resolved per repo from the workspaces table
+  (`shared/pr_check_scope.py`). `analyze-pr`'s symbol-graph structural pass uses
+  the same consumer scope as BREAKING_CHANGES (ADR-056 §5): the repo's own
+  workspace(s), every workspace they are shared with, and the `is_global`
+  workspaces (all workspaces when the repo's workspace is global). Each changed
+  symbol is queried in every workspace in scope, because a consumer's edges live
+  in the consumer's workspace. If any workspace in scope errors, that symbol
+  renders as unverified rather than as a partial list. A repo that is not
+  connected to any workspace gets no structural-impact comment.
   `PR_WORKSPACE_ID` remains only as an operator override.
 
 ## Implementation
@@ -110,6 +115,7 @@ the static `PR_WORKSPACE_ID` (which was never set, so the pass never ran).
 
 - ADR-011: API Gateway Exposure and Git Provider Support (Island-VPC / ingress)
 - ADR-043: analyze-pr / generate-code are primary-region-only (no HA secondary)
+- ADR-056: Cross-repo / cross-workspace symbol resolution (consumer scope)
 
 ## References
 
@@ -121,7 +127,8 @@ the static `PR_WORKSPACE_ID` (which was never set, so the pass never ran).
 Version History:
 
 - v1.0 (2026-10-06): Initial decision.
-- v1.1 (2026-11-18): analyze-pr resolves repo -> workspace for the structural
-  pass from the workspaces table; `PR_WORKSPACE_ID` is an override only.
+- v1.1 (2026-11-18): analyze-pr resolves the structural pass's workspace scope
+  per repo (repo workspace + shared + global, ADR-056 §5) from the workspaces
+  table; `PR_WORKSPACE_ID` is an override only.
 
 <!-- Confluence sync -->

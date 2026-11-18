@@ -201,20 +201,32 @@ def _is_subpath_symbol(symbol_id: str) -> bool:
 
 def analyze_structural_impact(
     *,
-    workspace_id: str,
     mutated: Sequence[object],
+    workspace_ids: Optional[Sequence[str]] = None,
+    workspace_id: Optional[str] = None,
     symbol_graph_table_name: Optional[str] = None,
     code_maps_table_name: Optional[str] = None,
 ) -> List[SymbolReviewImpact]:
-    """Run the reader queries for each mutated symbol.
+    """Run the reader queries for each mutated symbol across a workspace scope.
 
-    Resilient: a ``SymbolGraphUnavailable`` (or any other reader
-    exception) for one symbol produces a ``SymbolReviewImpact`` with
-    ``error`` set and the analysis continues with the rest. Failure
-    mode: graph unavailable -> block omitted, review still ships.
+    ``workspace_ids`` is the consumer scope (ADR-056 §5): the repo's own
+    workspace(s) first, then every workspace that can read them (forward
+    grants, ``is_global``). A cross-workspace consumer's edge lives in ITS OWN
+    workspace partition, so each symbol is queried in every workspace in scope
+    and the sites are merged (deduped on repo/file/line/caller). The first
+    workspace anchors ``graph_sha``; staleness is the worst across workspaces.
+    ``workspace_id`` is the single-workspace form, kept for existing callers.
+
+    Fails closed per symbol (same rule as the BREAKING_CHANGES plane-1 check):
+    if ANY workspace in scope errors, that symbol renders as unverified rather
+    than as a partial caller list that could read as complete. Other symbols
+    continue. Graph unavailable -> block omitted, review still ships.
     """
 
-    if not workspace_id or not mutated:
+    scope: List[str] = [w for w in (workspace_ids or []) if w]
+    if not scope and workspace_id:
+        scope = [workspace_id]
+    if not scope or not mutated:
         return []
 
     # Lazy import (matches generate-code.impact_analysis pattern). The
@@ -234,39 +246,66 @@ def analyze_structural_impact(
 
     results: List[SymbolReviewImpact] = []
     for target in mutated:
-        try:
-            if _is_subpath_symbol(target.symbol_id):
-                qr = q_importers(
-                    workspace_id,
+        if _is_subpath_symbol(target.symbol_id):
+            query, limit = q_importers, _IMPORTERS_QUERY_LIMIT
+        else:
+            query, limit = q_callers, _CALLERS_QUERY_LIMIT
+
+        sites: List[object] = []
+        seen = set()
+        truncated = False
+        graph_sha: Optional[str] = None
+        staleness: Optional[int] = None
+        error: Optional[str] = None
+
+        for index, ws in enumerate(scope):
+            try:
+                qr = query(
+                    ws,
                     target.symbol_id,
-                    limit=_IMPORTERS_QUERY_LIMIT,
+                    limit=limit,
                     symbol_graph_table_name=symbol_graph_table_name,
                     code_maps_table_name=code_maps_table_name,
                 )
-            else:
-                qr = q_callers(
-                    workspace_id,
+            except SymbolGraphUnavailable as exc:
+                logger.warning(
+                    "[structural_review] graph unavailable for %s in %s: %s",
                     target.symbol_id,
-                    limit=_CALLERS_QUERY_LIMIT,
-                    symbol_graph_table_name=symbol_graph_table_name,
-                    code_maps_table_name=code_maps_table_name,
+                    ws,
+                    exc,
                 )
-            results.append(
-                SymbolReviewImpact(
-                    mutated=target,
-                    callers=list(qr.sites),
-                    truncated=bool(qr.truncated),
-                    graph_sha=qr.graph_sha,
-                    staleness_seconds=qr.staleness_seconds,
-                    error=None,
+                error = "graph_unavailable"
+                break
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "[structural_review] unexpected error querying %s in %s: %s",
+                    target.symbol_id,
+                    ws,
+                    exc,
                 )
-            )
-        except SymbolGraphUnavailable as exc:
-            logger.warning(
-                "[structural_review] graph unavailable for %s: %s",
-                target.symbol_id,
-                exc,
-            )
+                error = f"unexpected:{type(exc).__name__}"
+                break
+
+            for site in qr.sites:
+                key = (
+                    getattr(site, "repo", ""),
+                    getattr(site, "file_path", ""),
+                    getattr(site, "line", 0),
+                    getattr(site, "source_symbol_id", ""),
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                sites.append(site)
+            truncated = truncated or bool(qr.truncated)
+            if index == 0:
+                graph_sha = qr.graph_sha
+            if qr.staleness_seconds is not None and (
+                staleness is None or qr.staleness_seconds > staleness
+            ):
+                staleness = qr.staleness_seconds
+
+        if error:
             results.append(
                 SymbolReviewImpact(
                     mutated=target,
@@ -274,25 +313,21 @@ def analyze_structural_impact(
                     truncated=False,
                     graph_sha=None,
                     staleness_seconds=None,
-                    error="graph_unavailable",
+                    error=error,
                 )
             )
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.warning(
-                "[structural_review] unexpected error querying %s: %s",
-                target.symbol_id,
-                exc,
+            continue
+
+        results.append(
+            SymbolReviewImpact(
+                mutated=target,
+                callers=sites,
+                truncated=truncated,
+                graph_sha=graph_sha,
+                staleness_seconds=staleness,
+                error=None,
             )
-            results.append(
-                SymbolReviewImpact(
-                    mutated=target,
-                    callers=[],
-                    truncated=False,
-                    graph_sha=None,
-                    staleness_seconds=None,
-                    error=f"unexpected:{type(exc).__name__}",
-                )
-            )
+        )
 
     return results
 
@@ -368,7 +403,7 @@ def _render_symbol_section(impact: SymbolReviewImpact) -> List[str]:
 
     lines.append("")
     if count == 0:
-        lines.append(f"{label}: none in this workspace.")
+        lines.append(f"{label}: none in the workspaces searched (repo workspace + shared + global).")
     else:
         truncation_suffix = " (truncated; more exist)" if impact.truncated else ""
         rendered_cap = min(count, _RENDERED_CALLERS_CAP)

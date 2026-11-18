@@ -1396,13 +1396,13 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         try:
             base_sha = (pr.base or {}).get("sha") if isinstance(pr.base, dict) else None
             head_sha = (pr.head or {}).get("sha") if isinstance(pr.head, dict) else None
-            workspace_id = _resolve_structural_workspace_id(request.repository)
+            workspace_ids = _resolve_structural_workspace_scope(request.repository)
             structural_block = _build_structural_impact_comment(
                 repository=request.repository,
                 pr=pr,
                 files=files,
                 token=token,
-                workspace_id=workspace_id,
+                workspace_ids=workspace_ids,
                 base_sha=base_sha,
                 head_sha=head_sha,
             )
@@ -1997,62 +1997,70 @@ def _handle_gitlab(
     ).dict()
 
 
-def _resolve_structural_workspace_id(repository: str) -> Optional[str]:
-    """Resolve the workspace whose symbol graph anchors the structural pass.
+def _resolve_structural_workspace_scope(repository: str) -> List[str]:
+    """Resolve the workspaces the structural pass queries for a PR's repo.
 
     The symbol-graph reader is workspace-scoped, and a PR only carries
-    ``owner/repo``. Resolution order:
+    ``owner/repo``. The scope is the same consumer scope BREAKING_CHANGES uses
+    (ADR-056 §5, ``shared.pr_check_scope.resolve_consumer_query_scope``): the
+    repo's own workspace(s), every workspace those workspaces are shared with,
+    and the ``is_global`` workspaces (every workspace if the repo's workspace is
+    itself global). A consumer in a shared-to workspace keeps its edges in its
+    own workspace partition, so querying only the repo's workspace would miss it.
 
-    1. ``PR_WORKSPACE_ID`` env var -- explicit operator override.
-    2. The workspace(s) that connected this repo (a ``GITHUB_REPO#owner/repo``
-       row in the workspaces table), via the same
-       ``shared.pr_check_scope.find_workspaces_for_repo`` lookup the PR
-       checks use. A repo connected to several workspaces is ingested into
-       each, so any of them holds its graph; the lowest id is taken so the
-       choice is deterministic.
+    Order: the repo's own workspace(s) first (lowest id first, which anchors the
+    graph-SHA footer), then the rest sorted. ``PR_WORKSPACE_ID`` is an operator
+    override that pins the scope to that one workspace.
 
-    Returns None (structural pass skipped) when the repo is not connected to
-    any workspace, workspaces are disabled, or the lookup fails -- the pass is
-    additive context and must never block check queueing.
+    Returns ``[]`` (structural pass skipped) when the repo is not connected to
+    any workspace -- it has no graph -- when workspaces are disabled, or when
+    the lookup fails. The pass is additive context and must never block check
+    queueing.
     """
     override = os.environ.get("PR_WORKSPACE_ID", "")
     if override:
-        return override
+        return [override]
 
     if not os.environ.get("WORKSPACES_TABLE", ""):
         logger.info(
             "[analyze-pr.structural] WORKSPACES_TABLE not set; "
-            "cannot resolve workspace for %s",
+            "cannot resolve workspaces for %s",
             repository,
         )
-        return None
+        return []
 
     try:
-        from shared.pr_check_scope import find_workspaces_for_repo
+        from shared.pr_check_scope import (
+            find_workspaces_for_repo,
+            resolve_consumer_query_scope,
+        )
 
-        workspace_ids = sorted(find_workspaces_for_repo(repository))
+        home = sorted(find_workspaces_for_repo(repository))
+        if not home:
+            logger.info(
+                "[analyze-pr.structural] %s is not connected to any workspace",
+                repository,
+            )
+            return []
+        shared_with = [
+            ws for ws in resolve_consumer_query_scope(repository) if ws not in home
+        ]
     except Exception as exc:
         logger.warning(
             "[analyze-pr.structural] workspace lookup failed for %s: %s",
             repository,
             exc,
         )
-        return None
+        return []
 
-    if not workspace_ids:
-        logger.info(
-            "[analyze-pr.structural] %s is not connected to any workspace",
-            repository,
-        )
-        return None
-    if len(workspace_ids) > 1:
-        logger.info(
-            "[analyze-pr.structural] %s is in %d workspaces; using %s",
-            repository,
-            len(workspace_ids),
-            workspace_ids[0],
-        )
-    return workspace_ids[0]
+    scope = home + shared_with
+    logger.info(
+        "[analyze-pr.structural] %s scope: %d own + %d shared/global workspace(s)",
+        repository,
+        len(home),
+        len(shared_with),
+    )
+    return scope
 
 
 def _build_structural_impact_comment(
@@ -2061,7 +2069,7 @@ def _build_structural_impact_comment(
     pr: Any,
     files: List[GitHubFile],
     token: str,
-    workspace_id: Optional[str],
+    workspace_ids: Optional[List[str]],
     base_sha: Optional[str],
     head_sha: Optional[str],
 ) -> Optional[str]:
@@ -2069,7 +2077,7 @@ def _build_structural_impact_comment(
 
     Returns a Markdown string ready to post as a PR comment, or None
     when no block should be emitted (no mutated symbols resolved, or
-    no workspace_id, or graph augmentation gated off).
+    no workspace scope, or graph augmentation gated off).
 
     Graceful degradation: any exception in the symbol-graph reader
     is swallowed and we return ``build_unavailable_block`` so the
@@ -2108,13 +2116,13 @@ def _build_structural_impact_comment(
             "[analyze-pr.structural] SYMBOL_GRAPH_TABLE not set; skipping"
         )
         return None
-    if not workspace_id:
+    if not workspace_ids:
         # Per the symbol-graph reader contract: queries are
-        # workspace-scoped. The caller resolves it via
-        # _resolve_structural_workspace_id; None means the repo isn't
+        # workspace-scoped. The caller resolves the scope via
+        # _resolve_structural_workspace_scope; empty means the repo isn't
         # connected to a workspace, so there is no graph to read.
         logger.info(
-            "[analyze-pr.structural] no workspace_id resolved; skipping"
+            "[analyze-pr.structural] no workspace resolved; skipping"
         )
         return None
 
@@ -2194,13 +2202,13 @@ def _build_structural_impact_comment(
     # 3. Query the graph. Resilient -- per-symbol errors get surfaced
     # in the block, not raised.
     impacts = analyze_structural_impact(
-        workspace_id=workspace_id,
+        workspace_ids=workspace_ids,
         mutated=mutated,
         symbol_graph_table_name=symbol_graph_table,
         code_maps_table_name=code_maps_table or None,
     )
     if not impacts:
-        # Reader raised at module-import time, or the workspace_id
+        # Reader raised at module-import time, or the workspace scope
         # / mutated list mismatched. Render an unavailable block so
         # the reviewer knows the structural pass was attempted but
         # couldn't complete.
