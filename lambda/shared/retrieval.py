@@ -22,6 +22,7 @@ retrieval mechanics; each caller owns its config.
 from __future__ import annotations
 
 import concurrent.futures
+import heapq
 import logging
 import re
 import time
@@ -604,3 +605,109 @@ def rerank_dual_channel(
         len(reranked_docs), len(doc_hits), len(combined),
     )
     return combined
+
+
+# --------------------------------------------------------------------------- #
+# Recent-document listing (KB ingestion verification).
+#
+# S3 Vectors has no server-side ordering, so "newest first" requires walking
+# the whole index. Each document is stored as N chunk vectors; only chunk 0 is
+# kept so a document appears once. A bounded min-heap keeps memory at O(limit)
+# regardless of index size, and ``max_scan`` caps the walk so a very large
+# index degrades to a truncated (flagged) answer instead of a Lambda timeout.
+# --------------------------------------------------------------------------- #
+DEFAULT_LIST_PAGE_SIZE = 500
+DEFAULT_LIST_MAX_SCAN = 200_000
+
+
+def _is_first_chunk(metadata: Dict[str, Any]) -> bool:
+    """True for chunk 0 (or vectors written before chunk_index existed)."""
+    return str(metadata.get("chunk_index", "0")) == "0"
+
+
+def list_recent_documents(
+    *,
+    s3vectors_client,
+    vector_bucket: str,
+    vector_index: str,
+    limit: int,
+    workspace_id: Optional[str] = None,
+    page_size: int = DEFAULT_LIST_PAGE_SIZE,
+    max_scan: int = DEFAULT_LIST_MAX_SCAN,
+) -> Dict[str, Any]:
+    """Return the ``limit`` most recently ingested documents, newest first.
+
+    Walks ``list_vectors`` (with metadata) page by page, keeps one entry per
+    document (its first chunk), optionally scoped to ``workspace_id``, and
+    orders by the ``timestamp`` metadata that process-documents stamps at
+    ingest time.
+
+    Returns a dict:
+
+    - ``documents`` -- list of ``{key, workspace_id, repo, doc_type,
+      file_path, ingested_at}`` dicts, newest first.
+    - ``scanned``   -- number of vectors examined.
+    - ``truncated`` -- True when ``max_scan`` stopped the walk early, so the
+      result may miss newer documents later in the index.
+
+    Raises ``ClientError`` from S3 Vectors unchanged; the caller decides how
+    to surface it.
+    """
+    if limit < 1:
+        return {"documents": [], "scanned": 0, "truncated": False}
+
+    heap: List[Tuple[str, str, Dict[str, Any]]] = []
+    scanned = 0
+    truncated = False
+    next_token: Optional[str] = None
+
+    while True:
+        params: Dict[str, Any] = {
+            "vectorBucketName": vector_bucket,
+            "indexName": vector_index,
+            "maxResults": page_size,
+            "returnMetadata": True,
+        }
+        if next_token:
+            params["nextToken"] = next_token
+
+        response = s3vectors_client.list_vectors(**params)
+
+        for vector in response.get("vectors", []):
+            scanned += 1
+            metadata = vector.get("metadata") or {}
+            if not _is_first_chunk(metadata):
+                continue
+            if workspace_id and metadata.get("workspace_id") != workspace_id:
+                continue
+            ingested_at = str(metadata.get("timestamp", ""))
+            key = vector.get("key", "")
+            doc = {
+                "key": key,
+                "workspace_id": metadata.get("workspace_id", ""),
+                "repo": derive_repo(metadata),
+                "doc_type": metadata.get("type", ""),
+                "file_path": metadata.get("file_path", ""),
+                "ingested_at": ingested_at,
+            }
+            # ISO-8601 UTC timestamps sort lexicographically; key breaks ties
+            # deterministically.
+            entry = (ingested_at, key, doc)
+            if len(heap) < limit:
+                heapq.heappush(heap, entry)
+            elif entry[:2] > heap[0][:2]:
+                heapq.heapreplace(heap, entry)
+
+        next_token = response.get("nextToken")
+        if not next_token:
+            break
+        if scanned >= max_scan:
+            truncated = True
+            logger.warning(
+                "[retrieval.list_recent] stopped at max_scan=%d; result may be incomplete",
+                max_scan,
+            )
+            break
+
+    documents = [doc for _, _, doc in sorted(heap, key=lambda e: e[:2], reverse=True)]
+    return {"documents": documents, "scanned": scanned, "truncated": truncated}

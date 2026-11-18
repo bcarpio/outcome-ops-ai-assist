@@ -673,6 +673,10 @@ Three tiers, each with a deliberate lifetime:
   remediation.
 - **CLI** — `scripts/outcome-ops-assist` for ad-hoc KB queries
   (when MCP isn't available); `docs/cli-usage.md`.
+- **KB ingestion check** — `outcome-ops-assist list-recent-docs`
+  lists the newest ingested documents (S3 Vectors metadata, one row
+  per document) via the read-only `list-recent-docs` Lambda;
+  `docs/lambda-list-recent-docs.md`.
 
 ## Infrastructure and deployment
 

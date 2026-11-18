@@ -7,6 +7,7 @@
 #   outcome-ops-assist "your question here" [--topK 5] [--env dev]
 #   outcome-ops-assist analyze-pr <pr_number> <repository> [--env dev]
 #   outcome-ops-assist analyze-pr-ado <pr_number> <org>/<project>/<repo> --connection-id <id> [--env dev]
+#   outcome-ops-assist list-recent-docs [--limit 10] [--workspace-id ID] [--env dev]
 #
 # Legacy subcommands (ingest-docs, generate-code-maps) have been removed.
 # These functions are now handled by the workspace pipeline (github-sync -> process-repo-summary).
@@ -24,6 +25,8 @@ REPOSITORY=""
 SHOW_COST=false
 MODEL="haiku"
 CONNECTION_ID=""
+LIMIT=10
+WORKSPACE_ID=""
 
 # Show help
 show_help() {
@@ -40,9 +43,13 @@ USAGE:
   PR Analysis (Azure DevOps):
     outcome-ops-assist analyze-pr-ado <pr_number> <org>/<project>/<repo> --connection-id <id> [options]
 
+  KB Ingestion Check:
+    outcome-ops-assist list-recent-docs [--limit N] [--workspace-id ID] [options]
+
 COMMANDS:
   analyze-pr           Analyze a GitHub Pull Request
   analyze-pr-ado       Analyze an Azure DevOps Pull Request
+  list-recent-docs     List the most recently ingested KB documents
   (default)            Query the knowledge base
 
 OPTIONS:
@@ -51,6 +58,8 @@ OPTIONS:
   --cost               Show token usage and cost for KB queries
   --advanced           Use Sonnet model for complex reasoning (default: Haiku)
   --connection-id ID   ADO connection ID (required for analyze-pr-ado)
+  --limit N            Documents to list for list-recent-docs, 1-100 (default: 10)
+  --workspace-id ID    Scope list-recent-docs to one workspace
   --help, -h           Show this help message
 
 EXAMPLES:
@@ -66,6 +75,10 @@ EXAMPLES:
   PR Analysis (Azure DevOps):
     outcome-ops-assist analyze-pr-ado 42 my-org/my-project/my-repo \\
       --connection-id conn-xyz --env prd
+
+  KB Ingestion Check:
+    outcome-ops-assist list-recent-docs
+    outcome-ops-assist list-recent-docs --limit 25 --workspace-id ws-123
 
 ENVIRONMENT VARIABLES:
   AWS_PROFILE       AWS profile to use for authentication
@@ -109,8 +122,20 @@ while [[ $# -gt 0 ]]; do
       REPOSITORY="$2"
       shift 2
       ;;
+    list-recent-docs)
+      COMMAND="list-recent-docs"
+      shift
+      ;;
     --connection-id)
       CONNECTION_ID="$2"
+      shift 2
+      ;;
+    --limit)
+      LIMIT="$2"
+      shift 2
+      ;;
+    --workspace-id)
+      WORKSPACE_ID="$2"
       shift 2
       ;;
     --env)
@@ -417,8 +442,68 @@ analyze_pr_ado() {
 # Main Execution
 # ============================================================================
 
+# ============================================================================
+# Command: List recently ingested KB documents
+# ============================================================================
+
+list_recent_docs() {
+  local limit="$1"
+  local workspace_id="$2"
+  local lambda_name="${ENVIRONMENT}-${APP_NAME}-list-recent-docs"
+
+  local payload
+  payload=$(jq -n \
+    --argjson limit "$limit" \
+    --arg workspace_id "$workspace_id" \
+    '{limit: $limit} + (if $workspace_id != "" then {workspace_id: $workspace_id} else {} end)')
+
+  local temp_file
+  temp_file=$(mktemp)
+  trap "rm -f $temp_file" EXIT
+
+  if ! aws lambda invoke \
+    --function-name "$lambda_name" \
+    --payload "$payload" \
+    --cli-binary-format raw-in-base64-out \
+    "$temp_file" > /dev/null 2>&1; then
+    echo "Error: Failed to invoke Lambda function: $lambda_name" >&2
+    echo "Make sure the function exists and you have permissions to invoke it" >&2
+    exit 1
+  fi
+
+  local response
+  response=$(cat "$temp_file")
+
+  if echo "$response" | jq -e '.errorMessage' > /dev/null 2>&1; then
+    echo "Error from Lambda:" >&2
+    echo "$response" | jq -r '.errorMessage' >&2
+    exit 1
+  fi
+
+  local status
+  status=$(echo "$response" | jq -r '.statusCode')
+  if [[ "$status" != "200" ]]; then
+    echo "Error ($status): $(echo "$response" | jq -c '.body.error // .body')" >&2
+    exit 1
+  fi
+
+  echo "$response" | jq -r '
+    .body as $b
+    | ($b.documents[] | [.ingested_at, .doc_type, .repo, .file_path] | @tsv),
+      "",
+      "\($b.count) document(s), \($b.scanned) vectors scanned\(if $b.truncated then " (TRUNCATED: index larger than scan cap)" else "" end)"'
+}
+
 # Route to appropriate command
 case "$COMMAND" in
+  list-recent-docs)
+    if ! [[ "$LIMIT" =~ ^[0-9]+$ ]] || (( LIMIT < 1 || LIMIT > 100 )); then
+      echo "Error: --limit must be an integer between 1 and 100" >&2
+      exit 1
+    fi
+    list_recent_docs "$LIMIT" "$WORKSPACE_ID"
+    ;;
+
   analyze-pr)
     # Validate PR number and repository
     if [[ -z "$PR_NUMBER" || -z "$REPOSITORY" ]]; then
