@@ -248,22 +248,21 @@ grep -rn 'ingest\|document\|process' lambda/github-sync/ \
 changes the signature of `log_audit_entry` (e.g., adds a new
 parameter).
 
-**Expected output from `analyze-pr`**:
+**Expected output from the PR checks**:
 
-- The PR receives a comment with a "Structural impact" section.
-- All 9 `*-integration` callers listed with file paths and lines.
-- A reviewer note flags "signature change; verify each caller is
-  updated".
-- ADR-grounded review continues unchanged.
+- The BREAKING CHANGES check result lists the 9 `*-integration`
+  callers as consumers, with file paths and lines (resolved from the
+  symbol graph, ADR-054).
+- The other checks (ADR compliance, test coverage, ...) run unchanged.
 
 **Verification command**: same grep as Validation 1 to confirm
 caller count.
 
 **Fail signal**:
 
-- No structural-impact comment on the PR.
+- BREAKING CHANGES reports "no dependencies found".
 - Caller list incomplete.
-- ADR-grounded review missing.
+- Any other check missing.
 
 ---
 
@@ -371,7 +370,6 @@ If the alarm fires, investigate:
 Each consumer Lambda gates the graph path with the
 `GRAPH_RETRIEVAL_ENABLED` env var (default `"true"`, set in
 `terraform/lambda-chat.tf` /
-`terraform/lambda-pr-analysis.tf` /
 `terraform/lambda-code-generation.tf`).
 
 **To disable graph retrieval without redeploy** — flip the env var
@@ -382,8 +380,6 @@ takes effect on the next cold start.
 Affected Lambdas:
 
 - `${env}-${app_name}-chat-streaming` — chat reverts to RAG-only.
-- `${env}-${app_name}-analyze-pr` — PR reviews lose the
-  "Structural impact" comment; ADR review continues.
 - `${env}-${app_name}-generate-code` — modify-path impact analysis
   skipped; greenfield path is unaffected by design.
 

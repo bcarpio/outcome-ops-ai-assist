@@ -22,6 +22,12 @@ from botocore.exceptions import ClientError
 
 # Load the analyze-pr handler module with unique name to avoid conflicts
 handler_path = os.path.join(os.path.dirname(__file__), '../../analyze-pr/handler.py')
+# The handler imports sibling modules (pr_summary) by bare name, as it does
+# from the root of its deployed zip; mirror that here instead of relying on
+# another test file having put analyze-pr/ on sys.path.
+_analyze_pr_dir = os.path.abspath(os.path.dirname(handler_path))
+if _analyze_pr_dir not in sys.path:
+    sys.path.insert(0, _analyze_pr_dir)
 spec = importlib.util.spec_from_file_location("analyze_pr_handler", handler_path)
 handler_module = importlib.util.module_from_spec(spec)
 sys.modules['analyze_pr_handler'] = handler_module
@@ -382,7 +388,7 @@ class TestBuildAnalysisStartedComment:
 
 class TestAnalyzePrUpsertHelpers:
     """of the update-in-place plan: analyze-pr's three
-    self-emitted comments (analysis_started / structural_impact /
+    self-emitted comments (analysis_started / summary /
     no_checks_needed) get PATCHed on subsequent runs instead of POSTed."""
 
     def test_build_comment_pk_shape(self):

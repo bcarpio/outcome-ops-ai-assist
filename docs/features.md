@@ -131,18 +131,10 @@ customer's account; no diff leaves their boundary.
   freshness, test coverage, license/copyleft (ADR-008). ADR
   compliance, duplication, and license checks query the KB for the
   relevant standards and judge the diff against the *retrieved ADRs*,
-  not hardcoded rules (ADR-007).
-- **Symbol-graph structural impact** — `diff_symbol_resolver` +
-  `structural_review.build_impact_block` resolve mutated symbols and
-  query the symbol-graph reader for callers/importers **as of the PR
-  base SHA**, fold the impact into the reviewer prompt, and post a
-  `structural_impact` comment. Honest empty-sets: a symbol with zero
-  callers renders "no known callers" rather than being omitted or
-  fabricated — audit-grade. Fail-soft + disclosed on an
-  unavailable/stale graph, never silently wrong. Impact crosses
-  repository boundaries: a signature change to a shared library flags
-  the consuming repos — including those in other workspaces within the
-  authorized resolution scope — not only same-repo callers (ADR-056).
+  not hardcoded rules (ADR-007). Breaking changes resolves the changed
+  symbols' callers/importers from the symbol graph, including consumers
+  in other repos and in workspaces the repo's workspace is shared with
+  (ADR-054, ADR-056).
 - **Cross-SCM parity** — GitHub PRs, Azure DevOps PRs, and GitLab MRs
   (ADR-050 v1.2) get the same checks and the same collapsed
   `<details>` comments **upserted in place per push** (one per check,

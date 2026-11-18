@@ -22,15 +22,6 @@ module "analyze_pr_lambda" {
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs.arn
 
   # Source code from local directory.
-  #
-  # analyze-pr's structural-impact pass needs the symbol-graph
-  # extractor at runtime so canonical symbol IDs produced from
-  # post-diff file content line up exactly with the graph. The
-  # extractor lives in lambda/process-batch-summary/extractor because
-  # that's where the writer runs; here we ship it as a prefixed
-  # subdirectory so the lazy import in diff_symbol_resolver.py finds it
-  # without a sys.path shim in the deployed zip. Local tests keep the
-  # sys.path fallback for convenience.
   source_path = [
     {
       path             = "${path.module}/../lambda/analyze-pr"
@@ -41,10 +32,6 @@ module "analyze_pr_lambda" {
         "!.*\\.pyc",
         "!tests/.*",
       ]
-    },
-    {
-      path          = "${path.module}/../lambda/process-batch-summary/extractor"
-      prefix_in_zip = "extractor"
     },
     # analyze-pr's ADO dispatch path (widened for provider awareness in
     # the AI PR Analyzer follow-up plan) consumes shared.pr_metadata,
@@ -61,22 +48,12 @@ module "analyze_pr_lambda" {
 
   # Environment variables.
   #
-  # Wire the symbol-graph reader's two anchor tables; the SSM params
-  # exist alongside the DDB module but we read directly from the module
-  # output rather than re-resolving SSM at cold-start.
-  # GRAPH_RETRIEVAL_ENABLED is the platform-wide kill-switch (defaults
-  # to "true" via the handler) so an operator can flip the flag without
-  # redeploy via SSM-backed env override. PR_WORKSPACE_ID is NOT wired
-  # here -- the structural pass resolves repo -> workspace at runtime
-  # from WORKSPACES_TABLE (needs the dynamodb:Scan grant below); the env
-  # var is only an operator override.
+  # CODE_MAPS_TABLE holds analyze-pr's per-PR comment/summary state.
   environment_variables = merge({
-    ENV                     = var.environment
-    APP_NAME                = var.app_name
-    GITHUB_BASE_URL         = var.github_base_url
-    SYMBOL_GRAPH_TABLE      = module.symbol_graph_table.dynamodb_table_id
-    CODE_MAPS_TABLE         = module.code_maps_table.dynamodb_table_id
-    GRAPH_RETRIEVAL_ENABLED = "true"
+    ENV             = var.environment
+    APP_NAME        = var.app_name
+    GITHUB_BASE_URL = var.github_base_url
+    CODE_MAPS_TABLE = module.code_maps_table.dynamodb_table_id
 
     # Azure DevOps OAuth app credentials -- needed for the widened
     # provider-aware dispatch path (analyze-pr accepts
@@ -205,10 +182,6 @@ module "analyze_pr_lambda" {
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",
           "dynamodb:Query",
-          # Scan for pr_check_scope (find_workspaces_for_repo +
-          # resolve_consumer_query_scope): the structural-impact pass
-          # resolves the repo's workspace + shared + global scope (once per PR).
-          "dynamodb:Scan",
         ]
         resources = [
           module.workspaces_table[0].dynamodb_table_arn,

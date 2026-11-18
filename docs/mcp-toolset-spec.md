@@ -411,9 +411,8 @@ Transitive impact set of a change to a symbol or file — the closure over calle
 module importers) an external agent would use to scope a change's review surface.
 
 **Why roadmap, not aspirational:** the capability **exists in the platform** — an internal
-impact engine (`lambda/generate-code/impact_analysis.py::run_impact_analysis`, and
-`lambda/analyze-pr/structural_review.py`) already composes transitive reach over the same
-`callers`/`importers` primitives for codegen and PR review. It is simply **not exposed
+impact engine (`lambda/generate-code/impact_analysis.py::run_impact_analysis`) already
+composes transitive reach over the same `callers`/`importers` primitives for codegen. It is simply **not exposed
 over MCP**. Today an external agent can *approximate* it by composing `search symbols` →
 `get symbol_edges (callers/importers)` and recursing client-side.
 

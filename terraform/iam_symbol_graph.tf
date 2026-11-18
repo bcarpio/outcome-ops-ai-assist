@@ -11,8 +11,8 @@
 #                            old partition.
 #   delete-worker          - SWEEP path. Workspace/repo deletion enumerates
 #                            and batch-deletes partitions.
-#   chat / analyze-pr /    - READ-only path. Consumers are wired now so
-#   generate-code /          the infrastructure is ready. process-pr-check reads
+#   chat / generate-code / - READ-only path. Consumers are wired now so
+#   query-kb /               the infrastructure is ready. process-pr-check reads
 #   process-pr-check         callers/importers for BREAKING_CHANGES (ADR-054).
 #
 # Resource ARNs are exact (table + each GSI; GSI names governed by
@@ -111,7 +111,8 @@ resource "aws_iam_role_policy_attachment" "delete_worker_symbol_graph_sweep" {
 }
 
 # ============================================================================
-# Reader policy - chat / analyze-pr / generate-code
+# Reader policy - chat / generate-code / query-kb / process-pr-check
+# (description string below is historical; changing it forces policy replacement)
 # Query-only against the table and both GSIs. Writes deliberately omitted
 # so a buggy retrieval path cannot corrupt the graph.
 # ============================================================================
@@ -142,11 +143,6 @@ resource "aws_iam_policy" "symbol_graph_reader" {
 
 resource "aws_iam_role_policy_attachment" "chat_symbol_graph_reader" {
   role       = module.chat_streaming_lambda.lambda_role_name
-  policy_arn = aws_iam_policy.symbol_graph_reader.arn
-}
-
-resource "aws_iam_role_policy_attachment" "analyze_pr_symbol_graph_reader" {
-  role       = module.analyze_pr_lambda.lambda_role_name
   policy_arn = aws_iam_policy.symbol_graph_reader.arn
 }
 

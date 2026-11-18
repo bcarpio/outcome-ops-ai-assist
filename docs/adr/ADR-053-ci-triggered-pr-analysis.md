@@ -83,16 +83,11 @@ ci_oidc_github_subjects = ["repo:<org>/<repo>:pull_request"]
 - Onboarding is per-repo (add the workflow + grant invoke), not a single
   org-wide webhook. A repo without the workflow simply isn't analyzed.
 - The customer must stand up a CI->AWS identity (or enable the fallback role).
-- Workspace scoping is resolved per repo from the workspaces table
-  (`shared/pr_check_scope.py`). `analyze-pr`'s symbol-graph structural pass uses
-  the same consumer scope as BREAKING_CHANGES (ADR-056 §5): the repo's own
-  workspace(s), every workspace they are shared with, and the `is_global`
-  workspaces (all workspaces when the repo's workspace is global). Each changed
-  symbol is queried in every workspace in scope, because a consumer's edges live
-  in the consumer's workspace. If any workspace in scope errors, that symbol
-  renders as unverified rather than as a partial list. A repo that is not
-  connected to any workspace gets no structural-impact comment.
-  `PR_WORKSPACE_ID` remains only as an operator override.
+- Workspace scoping is resolved per repo, per check, from the workspaces table
+  (`shared/pr_check_scope.py`); BREAKING_CHANGES uses the consumer scope
+  (ADR-056 §5: the repo's workspace(s) + the workspaces they are shared with +
+  `is_global`). `analyze-pr` itself needs no workspace: it posts the
+  analysis-started note and the PR summary, and queues the checks.
 
 ## Implementation
 
@@ -107,9 +102,6 @@ ci_oidc_github_subjects = ["repo:<org>/<repo>:pull_request"]
 ### Next phases
 
 1. Optional org-wide onboarding tooling (templated workflow distribution).
-
-Done (v1.1): per-repo -> workspace resolution for the structural pass, replacing
-the static `PR_WORKSPACE_ID` (which was never set, so the pass never ran).
 
 ## Related ADRs
 
@@ -130,5 +122,11 @@ Version History:
 - v1.1 (2026-11-18): analyze-pr resolves the structural pass's workspace scope
   per repo (repo workspace + shared + global, ADR-056 §5) from the workspaces
   table; `PR_WORKSPACE_ID` is an override only.
+- v1.2 (2026-11-18): Removed analyze-pr's symbol-graph "Structural impact"
+  comment and `PR_WORKSPACE_ID`. The comment posted ahead of, and outside, the
+  PR analyzer's comment pattern (summary, analysis-started note, one result per
+  check) and duplicated BREAKING_CHANGES, which already resolves consumers from
+  the symbol graph across shared workspaces. It had never run in a deployment
+  before v1.1.
 
 <!-- Confluence sync -->

@@ -224,9 +224,9 @@ class GitHubFile(BaseModel):
     changes: int
     # GitHub's /pulls/{n}/files response includes a ``patch`` field with
     # the unified-diff body for each file (omitted for binary diffs or
-    # very large patches). The structural-impact pass walks this for
-    # symbol resolution. Optional so the existing parse/queue path
-    # (which only needs filename + status) stays backwards-compatible.
+    # very large patches). The PR summary renders it. Optional so the
+    # existing parse/queue path (which only needs filename + status)
+    # stays backwards-compatible.
     patch: Optional[str] = None
 
 
@@ -358,41 +358,6 @@ def fetch_pr_files(repository: str, pr_number: int, token: str) -> List[GitHubFi
         raise Exception(f"GitHub API error: {str(e)}")
 
 
-def fetch_file_contents(
-    repository: str, file_path: str, ref: str, token: str
-) -> Optional[bytes]:
-    """Fetch the raw bytes of ``file_path`` at ``ref`` from GitHub.
-
-    Used by the structural-impact pass: the diff symbol resolver
-    runs the extractor over the **post-diff** file content so
-    canonical symbol IDs match the graph. ``ref`` is the PR's head
-    SHA for "what the symbol looks like after the change", or the
-    base SHA for staleness queries.
-
-    Returns None for missing files (e.g. removed-in-PR), binary blobs,
-    or any error -- callers degrade gracefully.
-    """
-    url = f"{_github_api()}/repos/{repository}/contents/{file_path}"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        # Raw media type so we skip the base64-encoded JSON envelope.
-        "Accept": "application/vnd.github.v3.raw",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    params = {"ref": ref}
-    try:
-        response = requests.get(url, headers=headers, params=params, timeout=30)
-        if response.status_code == 404:
-            return None
-        response.raise_for_status()
-        return response.content
-    except requests.exceptions.RequestException as e:
-        logger.warning(
-            f"Failed to fetch contents of {file_path} at {ref}: {e}"
-        )
-        return None
-
-
 def post_pr_comment(repository: str, pr_number: int, body: str, token: str) -> Dict[str, Any]:
     """
     Post a comment to the PR via GitHub API.
@@ -480,12 +445,11 @@ def patch_pr_comment(
 # Upsert helpers: PATCH the same comment on subsequent runs instead of
 # POSTing a new one. Companion DDB row is keyed by (PR × comment-role).
 # Mirrors the process-pr-check side, but adapted to analyze-pr's three
-# self-emitted comments (analysis_started / structural_impact /
+# self-emitted comments (analysis_started / summary /
 # no_checks_needed) which don't fit the CheckResult schema.
 # =============================================================================
 
 COMMENT_ROLE_ANALYSIS_STARTED = "analysis_started"
-COMMENT_ROLE_STRUCTURAL_IMPACT = "structural_impact"
 COMMENT_ROLE_NO_CHECKS_NEEDED = "no_checks_needed"
 COMMENT_ROLE_SUMMARY = "summary"
 
@@ -798,7 +762,7 @@ def _upsert_gitlab_comment(
 # walkthrough + per-file table + queued-checks line and upserts it as the top
 # comment, PATCHing in place on re-push. Additive reviewer context -- every
 # call site wraps this in try/except so a summary failure never blocks the
-# check-queueing pipeline (ADR-004 non-fatal; mirrors the structural pass).
+# check-queueing pipeline (ADR-004 non-fatal).
 # =============================================================================
 
 # Bound the number of files we fetch diffs for on ADO/GitLab (GitHub ships
@@ -1388,48 +1352,6 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
         logger.info(f"Changed files: {len(changed_files)}, Checks to run: {len(checks_to_run)}")
 
-        # Compute the structural-impact block and post it as a PR
-        # comment. This is best-effort -- we wrap the whole pass in
-        # try/except so a graph failure can't break the existing
-        # check-queueing pipeline (structural retrieval is additive
-        # context, never blocking).
-        try:
-            base_sha = (pr.base or {}).get("sha") if isinstance(pr.base, dict) else None
-            head_sha = (pr.head or {}).get("sha") if isinstance(pr.head, dict) else None
-            workspace_ids = _resolve_structural_workspace_scope(request.repository)
-            structural_block = _build_structural_impact_comment(
-                repository=request.repository,
-                pr=pr,
-                files=files,
-                token=token,
-                workspace_ids=workspace_ids,
-                base_sha=base_sha,
-                head_sha=head_sha,
-            )
-            if structural_block:
-                comment_body = (
-                    structural_block
-                    + "\n\n---\n*Powered by [OutcomeOps AI Assist](https://outcomeops.ai)*"
-                )
-                _upsert_github_comment(
-                    repository=request.repository,
-                    pr_number=request.pr_number,
-                    role=COMMENT_ROLE_STRUCTURAL_IMPACT,
-                    body=comment_body,
-                    token=token,
-                )
-                logger.info(
-                    "[analyze-pr.structural] posted structural-impact comment "
-                    "for PR #%d", request.pr_number
-                )
-        except Exception as exc:
-            # Non-fatal -- the structural pass is additive context.
-            logger.warning(
-                "[analyze-pr.structural] failed for PR #%d: %s",
-                request.pr_number,
-                exc,
-            )
-
         # If no checks needed, post comment and return
         if not checks_to_run:
             comment_body = """**OutcomeOps Analysis:** No checks needed for this PR (no relevant files changed)
@@ -1645,9 +1567,6 @@ def _handle_azure_devops(
     - Post initial "analysis started" comment via ADO PR-thread API.
     - Queue CheckJobs carrying ADO context so process-pr-check
       dispatches on provider="azure_devops" downstream.
-
-    Structural-impact block is NOT posted for ADO in v1 -- it depends
-    on GitHub-specific data plumbing (a follow-up cleans that up).
     """
     from shared.pr_metadata import fetch_pr_metadata
     from shared.source_fetch import fetch_file_at_sha, SourceFetchError
@@ -1828,9 +1747,6 @@ def _handle_gitlab(
     - Upsert the "analysis started" note (collapsed <details>; PUT the
       previous run's note in place on re-runs).
     - Queue CheckJobs with provider="gitlab" + connection_id.
-
-    Structural-impact block is NOT posted for GitLab in v1 (same as
-    ADO -- it depends on GitHub-specific data plumbing).
     """
     from shared.oauth.gitlab import (
         get_valid_access_token, instance_for_connection)
@@ -1995,226 +1911,6 @@ def _handle_gitlab(
         pr_number=request.pr_number,
         checks_queued=jobs_queued,
     ).dict()
-
-
-def _resolve_structural_workspace_scope(repository: str) -> List[str]:
-    """Resolve the workspaces the structural pass queries for a PR's repo.
-
-    The symbol-graph reader is workspace-scoped, and a PR only carries
-    ``owner/repo``. The scope is the same consumer scope BREAKING_CHANGES uses
-    (ADR-056 §5, ``shared.pr_check_scope.resolve_consumer_query_scope``): the
-    repo's own workspace(s), every workspace those workspaces are shared with,
-    and the ``is_global`` workspaces (every workspace if the repo's workspace is
-    itself global). A consumer in a shared-to workspace keeps its edges in its
-    own workspace partition, so querying only the repo's workspace would miss it.
-
-    Order: the repo's own workspace(s) first (lowest id first, which anchors the
-    graph-SHA footer), then the rest sorted. ``PR_WORKSPACE_ID`` is an operator
-    override that pins the scope to that one workspace.
-
-    Returns ``[]`` (structural pass skipped) when the repo is not connected to
-    any workspace -- it has no graph -- when workspaces are disabled, or when
-    the lookup fails. The pass is additive context and must never block check
-    queueing.
-    """
-    override = os.environ.get("PR_WORKSPACE_ID", "")
-    if override:
-        return [override]
-
-    if not os.environ.get("WORKSPACES_TABLE", ""):
-        logger.info(
-            "[analyze-pr.structural] WORKSPACES_TABLE not set; "
-            "cannot resolve workspaces for %s",
-            repository,
-        )
-        return []
-
-    try:
-        from shared.pr_check_scope import (
-            find_workspaces_for_repo,
-            resolve_consumer_query_scope,
-        )
-
-        home = sorted(find_workspaces_for_repo(repository))
-        if not home:
-            logger.info(
-                "[analyze-pr.structural] %s is not connected to any workspace",
-                repository,
-            )
-            return []
-        shared_with = [
-            ws for ws in resolve_consumer_query_scope(repository) if ws not in home
-        ]
-    except Exception as exc:
-        logger.warning(
-            "[analyze-pr.structural] workspace lookup failed for %s: %s",
-            repository,
-            exc,
-        )
-        return []
-
-    scope = home + shared_with
-    logger.info(
-        "[analyze-pr.structural] %s scope: %d own + %d shared/global workspace(s)",
-        repository,
-        len(home),
-        len(shared_with),
-    )
-    return scope
-
-
-def _build_structural_impact_comment(
-    *,
-    repository: str,
-    pr: Any,
-    files: List[GitHubFile],
-    token: str,
-    workspace_ids: Optional[List[str]],
-    base_sha: Optional[str],
-    head_sha: Optional[str],
-) -> Optional[str]:
-    """Compute the structural-impact block for a PR.
-
-    Returns a Markdown string ready to post as a PR comment, or None
-    when no block should be emitted (no mutated symbols resolved, or
-    no workspace scope, or graph augmentation gated off).
-
-    Graceful degradation: any exception in the symbol-graph reader
-    is swallowed and we return ``build_unavailable_block`` so the
-    human reviewer still sees that structural retrieval failed --
-    the review otherwise proceeds. Structural section omitted;
-    review still ships.
-
-    We run the reader against the **base SHA** (the parent of the
-    PR) so the pre-change graph anchors caller analysis. The
-    reader's pointer aggregation already returns ``graph_sha`` /
-    ``staleness_seconds``; the staleness phrase in the rendered
-    footer is the disclaimer.
-    """
-
-    # Operator kill-switch: GRAPH_RETRIEVAL_ENABLED is the
-    # platform-wide gate shared across chat / analyze-pr /
-    # generate-code. When disabled, this pass is a no-op so a
-    # rollout can be paused without redeploy. The legacy
-    # ``GRAPH_AUGMENT_ENABLED`` value is honored as a fallback so
-    # older deploys continue to work.
-    _kill_switch = os.environ.get(
-        "GRAPH_RETRIEVAL_ENABLED",
-        os.environ.get("GRAPH_AUGMENT_ENABLED", "true"),
-    )
-    if _kill_switch.lower() != "true":
-        logger.info("[analyze-pr.structural] augmentation disabled via env")
-        return None
-
-    symbol_graph_table = os.environ.get("SYMBOL_GRAPH_TABLE", "")
-    code_maps_table = os.environ.get("CODE_MAPS_TABLE", "")
-    if not symbol_graph_table:
-        # IAM + env-var wiring lives in terraform/iam_symbol_graph.tf
-        # + terraform/lambda-pr-analysis.tf. If we got here without
-        # the env var, the structural pass simply doesn't run.
-        logger.info(
-            "[analyze-pr.structural] SYMBOL_GRAPH_TABLE not set; skipping"
-        )
-        return None
-    if not workspace_ids:
-        # Per the symbol-graph reader contract: queries are
-        # workspace-scoped. The caller resolves the scope via
-        # _resolve_structural_workspace_scope; empty means the repo isn't
-        # connected to a workspace, so there is no graph to read.
-        logger.info(
-            "[analyze-pr.structural] no workspace resolved; skipping"
-        )
-        return None
-
-    # Lazy import so module-load of analyze-pr's handler.py doesn't
-    # require the extractor module to be on sys.path (live Lambda zip
-    # doesn't include it today; tests + future zip layouts will).
-    try:
-        from diff_symbol_resolver import FilePatch, resolve_targets  # type: ignore
-        from structural_review import (  # type: ignore
-            analyze_structural_impact,
-            build_impact_block,
-            build_unavailable_block,
-        )
-    except Exception as exc:  # pragma: no cover - import path
-        logger.warning(
-            "[analyze-pr.structural] module import failed (%s); skipping",
-            exc,
-        )
-        return None
-
-    if not head_sha:
-        # Fall back to "main" if the PR's head SHA isn't available --
-        # the extractor doesn't care about ref correctness for the
-        # symbol-resolution step, only for picking up the post-diff
-        # content. Real PRs always have a head SHA.
-        head_sha = "HEAD"
-
-    # 1. Build FilePatch list: filename + patch + post-diff bytes.
-    file_patches: List[FilePatch] = []
-    for f in files:
-        if f.status == "removed":
-            file_patches.append(
-                FilePatch(
-                    file_path=f.filename,
-                    status=f.status,
-                    patch=f.patch,
-                    post_diff_source=None,
-                )
-            )
-            continue
-        if not f.patch:
-            # Binary diff or omitted patch -- still record so the
-            # resolver can log/skip. post_diff_source stays None to
-            # short-circuit.
-            file_patches.append(
-                FilePatch(
-                    file_path=f.filename,
-                    status=f.status,
-                    patch=None,
-                    post_diff_source=None,
-                )
-            )
-            continue
-        post = fetch_file_contents(repository, f.filename, head_sha, token)
-        file_patches.append(
-            FilePatch(
-                file_path=f.filename,
-                status=f.status,
-                patch=f.patch,
-                post_diff_source=post,
-            )
-        )
-
-    # 2. Resolve canonical symbol IDs from the diff.
-    mutated = resolve_targets(file_patches)
-    if not mutated:
-        logger.info(
-            "[analyze-pr.structural] no mutated symbols resolved; "
-            "skipping structural block"
-        )
-        return None
-
-    logger.info(
-        "[analyze-pr.structural] %d mutated symbol(s) resolved", len(mutated)
-    )
-
-    # 3. Query the graph. Resilient -- per-symbol errors get surfaced
-    # in the block, not raised.
-    impacts = analyze_structural_impact(
-        workspace_ids=workspace_ids,
-        mutated=mutated,
-        symbol_graph_table_name=symbol_graph_table,
-        code_maps_table_name=code_maps_table or None,
-    )
-    if not impacts:
-        # Reader raised at module-import time, or the workspace scope
-        # / mutated list mismatched. Render an unavailable block so
-        # the reviewer knows the structural pass was attempted but
-        # couldn't complete.
-        return build_unavailable_block(base_sha=base_sha)
-
-    return build_impact_block(impacts, base_sha=base_sha)
 
 
 def _emit_pr_analyzed(

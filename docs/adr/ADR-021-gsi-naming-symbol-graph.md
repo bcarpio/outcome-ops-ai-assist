@@ -9,7 +9,7 @@ symbol-graph table — backed by two Global Secondary Indexes (GSIs):
 
 - `target-kind-index` — GSI1 partition by `<workspace_id>#<target_symbol_id>`,
   range by `<kind>#<repo>#<file_path>#<line>`. Powers the
-  caller / implementer / importer queries the chat, analyze-pr, and
+  caller / implementer / importer queries the chat, process-pr-check, and
   generate-code Lambdas issue against the graph.
 - `target-prefix-index` — GSI2 partition by `<workspace_id>#<package_head>`,
   range by `<subpath>#<kind>#<repo>#<file_path>#<line>`. Powers the
