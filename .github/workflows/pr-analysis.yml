@@ -30,6 +30,11 @@ jobs:
     name: Analyze PR
     runs-on: ubuntu-latest
     environment: prd
+    env:
+      # Spoke role ARN kept as a SECRET (masked in public logs) rather than a
+      # repo variable. Read via env so the optional-chain `if:` below is
+      # reliable -- secrets referenced directly in `if:` are flaky.
+      CI_SPOKE_ROLE_ARN: ${{ secrets.CI_SPOKE_ROLE_ARN }}
     steps:
       - name: Configure AWS credentials using OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -39,16 +44,16 @@ jobs:
           role-session-name: GitHubActions-PR-Analysis
 
       # Optional second assume for a hub/spoke identity: if the CI_SPOKE_ROLE_ARN
-      # repo/org variable is set, assume the workload-account role that can invoke
+      # repo SECRET is set, assume the workload-account role that can invoke
       # analyze-pr, using the credentials from the step above (role-chaining).
-      # Leave the variable unset for a single-account / direct-OIDC role, where the
+      # Leave the secret unset for a single-account / direct-OIDC role, where the
       # first assume already holds invoke rights. Keeps this workflow topology-
       # agnostic -- no hub/spoke assumptions baked in, it is pure config.
       - name: Assume workload CI role (hub/spoke)
-        if: ${{ vars.CI_SPOKE_ROLE_ARN != '' }}
+        if: ${{ env.CI_SPOKE_ROLE_ARN != '' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.CI_SPOKE_ROLE_ARN }}
+          role-to-assume: ${{ env.CI_SPOKE_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           role-chaining: true
           role-session-name: GitHubActions-PR-Analysis-Spoke

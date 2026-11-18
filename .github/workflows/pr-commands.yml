@@ -23,6 +23,11 @@ jobs:
       github.event.issue.pull_request &&
       startsWith(github.event.comment.body, 'outcomeops:')
 
+    env:
+      # Spoke role ARN kept as a SECRET (masked in public logs); read via env
+      # so the optional-chain `if:` below is reliable.
+      CI_SPOKE_ROLE_ARN: ${{ secrets.CI_SPOKE_ROLE_ARN }}
+
     steps:
       - name: Get PR details
         id: pr
@@ -49,10 +54,10 @@ jobs:
       # assume (direct/self-contained OIDC role). Keeps this workflow
       # topology-agnostic.
       - name: Assume workload CI role (hub/spoke)
-        if: ${{ vars.CI_SPOKE_ROLE_ARN != '' }}
+        if: ${{ env.CI_SPOKE_ROLE_ARN != '' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.CI_SPOKE_ROLE_ARN }}
+          role-to-assume: ${{ env.CI_SPOKE_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           role-chaining: true
           role-session-name: GitHubActions-PR-Commands-Spoke
