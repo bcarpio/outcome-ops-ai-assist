@@ -83,9 +83,11 @@ ci_oidc_github_subjects = ["repo:<org>/<repo>:pull_request"]
 - Onboarding is per-repo (add the workflow + grant invoke), not a single
   org-wide webhook. A repo without the workflow simply isn't analyzed.
 - The customer must stand up a CI->AWS identity (or enable the fallback role).
-- KB scoping: `analyze-pr` currently resolves the workspace from a
-  `PR_WORKSPACE_ID` env var, not per-repo; a repo->workspace lookup is a later
-  phase (see Implementation).
+- Workspace scoping is resolved per repo from the workspaces table: the PR
+  checks via `shared/pr_check_scope.py`, and `analyze-pr`'s symbol-graph
+  structural pass via the same `find_workspaces_for_repo` lookup. A repo that is
+  not connected to any workspace gets no structural-impact comment.
+  `PR_WORKSPACE_ID` remains only as an operator override.
 
 ## Implementation
 
@@ -99,9 +101,10 @@ ci_oidc_github_subjects = ["repo:<org>/<repo>:pull_request"]
 
 ### Next phases
 
-1. Per-repo -> workspace resolution so KB retrieval is scoped without a static
-   `PR_WORKSPACE_ID`.
-2. Optional org-wide onboarding tooling (templated workflow distribution).
+1. Optional org-wide onboarding tooling (templated workflow distribution).
+
+Done (v1.1): per-repo -> workspace resolution for the structural pass, replacing
+the static `PR_WORKSPACE_ID` (which was never set, so the pass never ran).
 
 ## Related ADRs
 
@@ -118,5 +121,7 @@ ci_oidc_github_subjects = ["repo:<org>/<repo>:pull_request"]
 Version History:
 
 - v1.0 (2026-10-06): Initial decision.
+- v1.1 (2026-11-18): analyze-pr resolves repo -> workspace for the structural
+  pass from the workspaces table; `PR_WORKSPACE_ID` is an override only.
 
 <!-- Confluence sync -->

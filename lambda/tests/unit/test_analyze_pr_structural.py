@@ -1151,3 +1151,89 @@ class TestHandlerStructuralGlue:
         assert "lib/caller.py:10" in out
         # Footer carries the explicit base SHA.
         assert "Graph as-of base SHA: basesh" in out
+
+
+# ===========================================================================
+# Repo -> workspace resolution for the structural pass
+# ===========================================================================
+
+
+WORKSPACES_TABLE = "test-workspaces"
+
+
+def _create_workspaces_table(rows):
+    ddb = boto3.resource("dynamodb", region_name="us-west-2")
+    table = ddb.create_table(
+        TableName=WORKSPACES_TABLE,
+        KeySchema=[
+            {"AttributeName": "PK", "KeyType": "HASH"},
+            {"AttributeName": "SK", "KeyType": "RANGE"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "PK", "AttributeType": "S"},
+            {"AttributeName": "SK", "AttributeType": "S"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    for row in rows:
+        table.put_item(Item=row)
+    return table
+
+
+def _repo_row(workspace_id, repo):
+    return {
+        "PK": f"WS#{workspace_id}",
+        "SK": f"GITHUB_REPO#{repo}",
+        "workspace_id": workspace_id,
+        "repo_name": repo,
+    }
+
+
+class TestResolveStructuralWorkspaceId:
+    @pytest.fixture
+    def handler(self, monkeypatch):
+        monkeypatch.delenv("PR_WORKSPACE_ID", raising=False)
+        monkeypatch.setenv("WORKSPACES_TABLE", WORKSPACES_TABLE)
+        mod = _load_handler()
+        # pr_check_scope caches its boto3 resource per container; drop it so
+        # each test binds to this test's moto backend.
+        import shared.pr_check_scope as scope
+
+        monkeypatch.setattr(scope, "_dynamodb", None)
+        return mod
+
+    def test_resolves_connected_repo(self, handler):
+        _create_workspaces_table([
+            _repo_row("ws-a", "owner/repo"),
+            _repo_row("ws-b", "owner/other"),
+        ])
+
+        assert handler._resolve_structural_workspace_id("owner/repo") == "ws-a"
+
+    def test_multiple_workspaces_picks_lowest_id(self, handler):
+        _create_workspaces_table([
+            _repo_row("ws-z", "owner/repo"),
+            _repo_row("ws-m", "owner/repo"),
+        ])
+
+        assert handler._resolve_structural_workspace_id("owner/repo") == "ws-m"
+
+    def test_unconnected_repo_returns_none(self, handler):
+        _create_workspaces_table([_repo_row("ws-a", "owner/other")])
+
+        assert handler._resolve_structural_workspace_id("owner/repo") is None
+
+    def test_env_override_wins_without_lookup(self, handler, monkeypatch):
+        monkeypatch.setenv("PR_WORKSPACE_ID", "ws-override")
+        # No table created: a lookup would raise, so this proves it is skipped.
+
+        assert handler._resolve_structural_workspace_id("owner/repo") == "ws-override"
+
+    def test_workspaces_disabled_returns_none(self, handler, monkeypatch):
+        monkeypatch.setenv("WORKSPACES_TABLE", "")
+
+        assert handler._resolve_structural_workspace_id("owner/repo") is None
+
+    def test_lookup_error_is_non_fatal(self, handler):
+        # Table does not exist -> ResourceNotFoundException inside the scan.
+        assert handler._resolve_structural_workspace_id("owner/repo") is None

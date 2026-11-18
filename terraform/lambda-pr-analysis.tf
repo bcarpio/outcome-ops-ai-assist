@@ -67,8 +67,9 @@ module "analyze_pr_lambda" {
   # GRAPH_RETRIEVAL_ENABLED is the platform-wide kill-switch (defaults
   # to "true" via the handler) so an operator can flip the flag without
   # redeploy via SSM-backed env override. PR_WORKSPACE_ID is NOT wired
-  # here -- analyze-pr resolves repo -> workspace at runtime; plumbed
-  # through handler.py via the env var only as a forward-compat seam.
+  # here -- the structural pass resolves repo -> workspace at runtime
+  # from WORKSPACES_TABLE (needs the dynamodb:Scan grant below); the env
+  # var is only an operator override.
   environment_variables = merge({
     ENV                     = var.environment
     APP_NAME                = var.app_name
@@ -204,6 +205,10 @@ module "analyze_pr_lambda" {
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",
           "dynamodb:Query",
+          # Scan for pr_check_scope.find_workspaces_for_repo: the
+          # structural-impact pass resolves the PR's repo -> workspace
+          # (filtered scan, once per PR).
+          "dynamodb:Scan",
         ]
         resources = [
           module.workspaces_table[0].dynamodb_table_arn,
