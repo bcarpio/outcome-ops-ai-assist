@@ -1,7 +1,6 @@
 # Copyright 2025-2026 OutcomeOps
 # SPDX-License-Identifier: Apache-2.0
-"""Round-trip integration test for the code-map batch splitting migration
-(chunks 01-06).
+"""Round-trip integration test for the code-map batch splitting migration.
 
 Unit tests in test_process_repo_summary_coverage.py and
 test_process_batch_summary.py cover each side of the message-shape

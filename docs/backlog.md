@@ -141,7 +141,7 @@ design.
    control plane to mint a new key and update SSM). Separate, larger
    effort; backlog this whole rotation-automation work as a follow-on.
 
-**Not blocking ADR-035 / chunk 03** — the platform code only needs to
+**Not blocking ADR-035** — the platform code only needs to
 read the SSM SecureString. Provisioning is a deploy-time step. But the
 moment the openai workspace's deploy README is customer-facing, this
 runbook must exist.

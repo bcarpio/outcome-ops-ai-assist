@@ -4,7 +4,7 @@
 # CloudWatch alarms -- estate coverage
 # ============================================================================
 #
-# of the fable-code-review remediation. Before this file, the
+# of a code-review remediation. Before this file, the
 # entire estate had five alarms: cloudwatch_symbol_graph.tf and four
 # replication-DLQ alarms in eventbridge-replication + lambda-replication-
 # applier. Nothing alarmed on integration sync DLQs, code-generation

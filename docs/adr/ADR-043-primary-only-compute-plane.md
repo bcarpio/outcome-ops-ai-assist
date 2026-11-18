@@ -125,8 +125,8 @@ current roadmap.
 
 ## Implementation
 
-Committed 2026-07-06 as part of the fable-code-review remediation plan
-(chunk 11). Terraform state changes: removes four SQS module blocks
+Committed 2026-07-06 as part of a code-review remediation
+Terraform state changes: removes four SQS module blocks
 (`pr_checks_dlq_secondary`, `pr_checks_queue_secondary`,
 `code_generation_dlq_secondary`, `code_generation_queue_secondary`) and
 their associated SSM URL parameters + outputs from `terraform/sqs.tf`.

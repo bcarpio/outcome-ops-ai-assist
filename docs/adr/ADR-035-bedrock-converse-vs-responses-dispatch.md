@@ -230,7 +230,7 @@ The unified client exposes BOTH `invoke()` (full response) and
 `invoke_stream()` (generator of `StreamEvent` objects) from day 1. Both
 backends implement both methods. The streaming translation surface is
 materially different from non-streaming and earns its own per-translator
-work in chunks 04 / 05 / 06, but it ships in the same foundation, not
+work in later phases, but it ships in the same foundation, not
 later.
 
 Concretely, streaming adds these unified events that BOTH backends must
@@ -308,7 +308,7 @@ that audit (ADR-026) and structural attribution (ADR-031, ADR-033) depend on.
   mid-number, or mid-escape. The accumulator must hold partial fragments
   per `tool_calls[].index` and only emit `ToolUseStop` once the terminal
   delta arrives. Bug surface area here is real; pin it with recorded SSE
-  traces (chunks 02 and 03) and round-trip fixtures (chunk 06).
+  traces and round-trip fixtures.
 - Embeddings stay on `bedrock-runtime` `InvokeModel` + Titan. Embedding swap
   is an architectural problem (different vector dimensions, schema-incompat)
   not solvable via this dispatch. Out of scope.

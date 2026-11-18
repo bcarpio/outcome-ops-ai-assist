@@ -102,7 +102,7 @@ module "workspace_management_lambda" {
     # Per-integration enablement manifest surfaced at
     # GET /api/config/integrations for the UI to decide which
     # integration sections to render. Each integration's TF file
-    # gates its actual resources on the same var (chunks 02-11).
+    # gates its actual resources on the same var.
     INTEGRATION_AZURE_DEVOPS_ENABLED        = tostring(var.enable_azure_devops_integration)
     INTEGRATION_AZURE_DEVOPS_BOARDS_ENABLED = tostring(var.enable_azure_devops_boards_integration)
     INTEGRATION_GITHUB_ENABLED              = tostring(var.enable_github_integration)

@@ -160,7 +160,7 @@ resource "aws_ssm_parameter" "atlassian_client_id" {
   existing deploy must add explicit `= true` lines to their tfvars for
   every integration they're currently using. Otherwise
   `terraform apply` destroys the resources. Mitigated for the
-  repo-owner's `prd` sandbox by chunks 02/03/05/11 which added the
+  repo-owner's `prd` sandbox by later phases which added the
   necessary lines. Customer deploys elsewhere require operator
   intervention on the flip.
 - **Shared SSM parameter gate expressions get long.** The 5-way OR for
@@ -178,7 +178,7 @@ resource "aws_ssm_parameter" "atlassian_client_id" {
 
 ## Implementation
 
-Shipped over 11 commits in July 2026 (chunks 01-11 of the per-
+Shipped over 11 commits in July 2026 (the per-
 integration-gating plan). Chunk 12 lands this ADR + owner tfvars
 sync + runbook updates.
 

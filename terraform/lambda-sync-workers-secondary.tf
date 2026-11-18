@@ -9,7 +9,7 @@
 # Idle until secondary becomes active and schedulers in secondary
 # fire and enqueue work. Data they produce (workspaces
 # updates, audit logs, S3 KB uploads) replicates back to primary via
-# dual_write (chunks 04/06a).
+# dual_write.
 #
 # All gated on var.enable_workspaces && var.secondary_region != "".
 #

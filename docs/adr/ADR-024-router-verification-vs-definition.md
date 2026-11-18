@@ -59,7 +59,7 @@ Split verification out of PATTERN in the router prompt.
 - **Versioned + flag-gated**: the prompt is selected by
   `CHAT_ROUTER_PROMPT_VERSION` (default `v2`, set `v1` for instant
   rollback without a redeploy if HYBRID over-fires). Read at call time.
-- **Defense-in-depth (ADR companion, chunk 02)**: a graph-fire backstop
+- **Defense-in-depth (ADR companion)**: a graph-fire backstop
   fires the graph whenever an extracted symbol resolves to a definition,
   regardless of intent — so a router misclassification still yields the
   graph answer.
@@ -80,7 +80,7 @@ Split verification out of PATTERN in the router prompt.
   symbol-graph lookup per turn. Mitigated by the rollback flag and by
   skip-reason telemetry (shipped first) so the intent-distribution shift
   is measurable.
-- LLM classification is never perfect; the backstop (chunk 02) covers
+- LLM classification is never perfect; the backstop covers
   residual misclassification.
 
 ## Implementation

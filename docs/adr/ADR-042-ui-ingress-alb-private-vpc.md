@@ -138,8 +138,8 @@ app.use((req, res, next) => {
 
 ## Implementation
 
-Committed 2026-07-06 as part of the fable-code-review remediation plan
-(chunk 01). No terraform resource changes — this ADR captures the standing
+Committed 2026-07-06 as part of a code-review remediation
+No terraform resource changes — this ADR captures the standing
 posture, does not alter it.
 
 ## Related ADRs

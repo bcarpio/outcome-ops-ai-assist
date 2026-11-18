@@ -1386,8 +1386,7 @@ def process_check_job(job: CheckJob) -> CheckResult:
     )
 
     # All 6 check handlers accept ``provider=azure_devops`` and dispatch
-    # source-fetching accordingly (chunks 03-04 of the AI-PR-Analyzer
-    # ADO parity plan). The -era short-circuit that stubbed
+    # source-fetching accordingly. The -era short-circuit that stubbed
     # ADO to a PASS with a "not yet implemented" comment was removed
     # in ; ADO jobs now run the same check pipeline GitHub
     # jobs do.

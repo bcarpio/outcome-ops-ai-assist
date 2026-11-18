@@ -212,7 +212,7 @@ function extractUser(req) {
         }
       }
 
-      // chunk 11a: the Entra `groups` claim drives group->workspace sync. Prefer
+      // the Entra `groups` claim drives group->workspace sync. Prefer
       // the UserInfo payload, but fall back to the access token -- for ALB+Azure
       // that is where the claim actually arrives (UserInfo omits it). For users
       // in >200 groups Azure emits `_claim_names`/`hasGroups` (the overage)
@@ -764,7 +764,7 @@ function handleMockWorkspaceRequest(req, res, method, path) {
 }
 
 // Helper to proxy workspace requests
-// chunk 11a: on-login group->workspace membership sync. Fire-and-forget from
+// on-login group->workspace membership sync. Fire-and-forget from
 // the proxy, at most once per user per hour (matching the ALB OIDC token
 // refresh cadence). Server-internal -- the React client never calls it. Skipped
 // on the >200-group overage: syncing with an empty group list would wrongly
@@ -838,7 +838,7 @@ async function proxyWorkspaceRequest(req, res, method, path) {
   const user = extractUser(req);
   console.log(`[proxy] Workspace ${method} ${path} for: ${user.email}`);
 
-  // chunk 11a: reconcile group-derived memberships on the first request per
+  // reconcile group-derived memberships on the first request per
   // user per hour. Fire-and-forget -- never awaited, never blocks this request.
   maybeSyncMemberships(req, user);
 
@@ -884,7 +884,7 @@ async function proxyWorkspaceRequest(req, res, method, path) {
   }
 }
 
-// HA region role (chunk 9a) — polled by UI PassiveRegionBanner
+// HA region role — polled by UI PassiveRegionBanner
 app.get("/api/region/role", (req, res) => proxyWorkspaceRequest(req, res, "GET", "/api/region/role"));
 
 // Enabled-integrations manifest — UI reads this to decide which integration
@@ -920,7 +920,7 @@ app.get("/api/workspaces/:id/bindable-groups", (req, res) => {
   return res.json({ groups, source: "token" });
 });
 
-// chunk 11a: Azure AD group -> workspace bindings (admin)
+// Azure AD group -> workspace bindings (admin)
 app.get("/api/workspaces/:id/group-bindings", (req, res) => proxyWorkspaceRequest(req, res, "GET", `/workspaces/${req.params.id}/group-bindings`));
 app.post("/api/workspaces/:id/group-bindings", (req, res) => proxyWorkspaceRequest(req, res, "POST", `/workspaces/${req.params.id}/group-bindings`));
 app.delete("/api/workspaces/:id/group-bindings/:gid", (req, res) => proxyWorkspaceRequest(req, res, "DELETE", `/workspaces/${req.params.id}/group-bindings/${encodeURIComponent(req.params.gid)}`));
@@ -1040,7 +1040,7 @@ app.get("/api/analytics/workspace/:id", (req, res) => {
 });
 
 // ============================================================================
-// Audit (chunk 05)
+// Audit
 // ============================================================================
 app.get("/api/audit/summary", (req, res) => {
   const params = new URLSearchParams();
@@ -1882,7 +1882,7 @@ app.post("/api/workspaces/:id/github/sync", (req, res) => {
 });
 
 // ============================================================================
-// Azure DevOps Integration Routes (chunk 08)
+// Azure DevOps Integration Routes
 //
 // Mirrors the GitHub proxy shape exactly -- same SigV4 IAM auth path
 // (signedAzureDevOpsFetch -> AZURE_DEVOPS_LAMBDA_URL), same error

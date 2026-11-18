@@ -278,8 +278,8 @@ ui_private_subnet_ids = ["subnet-REPLACE_ME_A", "subnet-REPLACE_ME_B"]   # REQUI
 #          FedRAMP-friendly posture the product is designed around.
 #   false = Public ALB, guarded solely by Azure AD OIDC at the Express
 #          layer. Intended for the OutcomeOps maintainer's sandbox and
-#          low-stakes PoCs. fable-scale chunk 09 flipped the variable
-#          default from `false` → `true`; customer deploys inherit the
+#          low-stakes PoCs. The variable default is `true`, so
+#          customer deploys inherit the
 #          safer posture automatically. Sandbox deploys must now
 #          explicitly set `ui_alb_internal = false`.
 # ui_alb_internal = true
@@ -597,7 +597,7 @@ audit_stream_export_enabled = true
 # {base}/api/v3, raw content routes through the contents API, and clone URLs
 # use the instance host. The GitHub App must be registered ON the GHES
 # instance (App IDs / keys / webhook secrets are per-instance). Configurable
-# but not yet certified against a live GHES -- see plan chunk 06.
+# but not yet certified against a live GHES.
 # github_base_url = ""
 
 # ============================================================================
@@ -648,7 +648,7 @@ audit_stream_export_enabled = true
 # tags = {}
 
 # ============================================================================
-# Enterprise / F500 deployment profile (fable-scale chunk 09)
+# Enterprise / F500 deployment profile
 # ----------------------------------------------------------------------------
 # Uncomment the block below for a 2000-engineer enterprise deploy behind a
 # private VPC + Transit Gateway + Zscaler + Infoblox. Every knob has a
@@ -661,7 +661,7 @@ audit_stream_export_enabled = true
 # ============================================================================
 
 # --- Network posture ---
-# ui_alb_internal              = true    # Default post-chunk-09; explicit here for clarity.
+# ui_alb_internal              = true    # Default; explicit here for clarity.
 # ui_fargate_assign_public_ip  = false   # Private subnets with NAT / TGW egress.
 # manage_dns_in_route53        = false   # Infoblox CNAME -> alb_dns_name.
 # ui_acm_certificate_arn       = "arn:aws:acm:us-west-2:...:certificate/..."
@@ -670,7 +670,7 @@ audit_stream_export_enabled = true
 # ]
 # enable_github_issue_integration = false  # No public API Gateway ingress.
 
-# --- Fargate autoscaling (fable-scale chunk 01) ---
+# --- Fargate autoscaling ---
 # ui_fargate_min_count           = 4
 # ui_fargate_max_count           = 40
 # mcp_server_min_count           = 4
@@ -689,11 +689,11 @@ audit_stream_export_enabled = true
 # mcp_sonarqube_cpu    = 512    # SonarQube MCP; low-traffic, halvable to 256/512
 # mcp_sonarqube_memory = 1024
 
-# --- Bedrock fairness (fable-scale chunk 05) ---
+# --- Bedrock fairness ---
 # pr_check_max_concurrency  = 40
 # chat_reserved_concurrency = 200
 
-# --- Ingestion throughput (fable-scale chunk 08) ---
+# --- Ingestion throughput ---
 # github_sync_max_conc              = 50
 # repo_summary_max_conc             = 100
 # batch_summary_max_conc            = 100

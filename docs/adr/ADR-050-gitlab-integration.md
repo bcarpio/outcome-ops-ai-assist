@@ -6,7 +6,7 @@
   GitHub and Azure DevOps (ADO), toggled per-env by `enable_gitlab_integration`.
   SaaS-first (gitlab.com). Mirrors the ADO design (ADR-036): OAuth auth, S3-first
   ingest, scheduled (no webhooks). Foundation (shared OAuth + API client + this
-  decision record) is chunk 01; the Lambda triad, read_source dispatch, UI, and
+  decision record); the Lambda triad, read_source dispatch, UI, and
   HA parity follow.
 - v1.1 (2026-07-19) — Token concurrency hardening (Decision 7). GitLab rotates
   the refresh token on EVERY refresh; concurrent consumers (two overlapping sync
@@ -14,7 +14,7 @@
   getting a 401 and persisting a dead token that poisoned the connection. Add a
   cached, single-flight access-token path so concurrent consumers reuse one token
   and refreshes run one-at-a-time. Written after a re-ingest stalled on 401s.
-- v1.2 (2026-07-20) — MR analysis parity (chunk 05) + OAuth scope widened to
+- v1.2 (2026-07-20) — MR analysis parity + OAuth scope widened to
   `api`. The six PR checks run on GitLab MRs with the same collapsed-`<details>`
   + upsert-in-place comment UX as GitHub/ADO (MR notes; note id stored in the
   same providerCommentId column). Scope consequence: the original
@@ -24,7 +24,7 @@
   action on existing deploys: add the `api` scope to the group-owned OAuth
   application's registration, and each connected user re-authorizes once
   (tokens minted under the old scopes remain read-only until reconnect).
-- v1.3 (2026-07-20) — HA parity (chunk 08). Secondary-region mirrors for the
+- v1.3 (2026-07-20) — HA parity. Secondary-region mirrors for the
   integration Lambda + Function URL, sync worker + SQS/DLQ + event source
   mapping, hourly scheduler, and the client-secret SSM placeholder (SSM is
   regional; `ha-list-secrets`/`ha-sync-secrets` carry the value). Chunk 05

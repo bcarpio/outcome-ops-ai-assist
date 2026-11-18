@@ -1,4 +1,4 @@
 requests>=2.28.0
 urllib3>=2.6.3
 pydantic>=2.0.0
-openai>=2.0.0  # ADR-035 chunk 03: Mantle Responses-API client
+openai>=2.0.0  # ADR-035: Mantle Responses-API client

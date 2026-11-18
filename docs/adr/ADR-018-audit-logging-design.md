@@ -112,7 +112,7 @@ Audit dashboard with a drill-into-user flow and CSV/JSON export.
 
 ### Schema (canonical row shapes)
 
-**Admin row** (chunk 02 / 03):
+**Admin row**:
 ```json
 {
   "PK": "WS#<workspace_id>",

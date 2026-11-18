@@ -280,7 +280,7 @@ class TestProcessTeamsFileBaseFlow:
 
 
 class TestTwoLayerDefensePayoff:
-    """integration: exercises chunks 02 and 03 together across
+    """integration: exercises ingestion and extraction together across
     the SQS boundary. Proves the pattern the whole plan was designed to
     close -- even when Graph's delta returns an unchanged item on a
     subsequent cycle (metadata-only save, permission edit, etc.), the

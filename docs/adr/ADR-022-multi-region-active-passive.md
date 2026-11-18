@@ -394,7 +394,7 @@ secondary_region != ""`. The publisher self-gates on
 - So emission is **exactly-once at the active region**: whichever
   region is active publishes to its local stream; the other region's
   publisher processes its DDB-stream records and returns early.
-- This is the same gate the publisher already had (chunk 9j); this
+- This is the same gate the publisher already had; this
   addendum only adds the secondary infrastructure
   (`terraform/audit-stream-export-secondary.tf`) and the
   secondary-region AppConfig env (`ha_scheduler_env_secondary`) the

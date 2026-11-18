@@ -1929,7 +1929,7 @@ class TestRunCheckProviderForwarding:
     """run_check() extracts provider context from CheckJob and forwards
     it to each handler. On a GitHub job (default provider) the handler
     behaves as before. On an ADO job, the handler receives the ADO context
-    and raises NotImplementedError (until chunks 03-04)."""
+    and raises NotImplementedError."""
 
     def _ado_job(self, check_type="ADR_COMPLIANCE"):
         return CheckJob(

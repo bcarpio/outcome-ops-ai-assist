@@ -168,7 +168,7 @@ in our portfolio and tell me which apps need to upgrade.
 **Expected output**:
 
 - No regression vs the existing manifest-layer answer (this query
-  succeeded pre-feature; chunk 08 must not break it).
+  succeeded pre-feature; this must not break it).
 - Bonus: if any consumer imports `react-router/ScrollRestoration` via
   subpath specifically, those consumers are listed separately.
 
@@ -359,7 +359,7 @@ If the alarm fires, investigate:
 
 1. DynamoDB throttling on `target-kind-index` or
    `target-prefix-index` (CloudWatch DDB metrics).
-2. Item-size regression in the writer (chunk 02) — large items
+2. Item-size regression in the writer — large items
    inflate per-page bytes.
 3. Cold-start spikes (per-Lambda CloudWatch logs filtered on
    `Init Duration`).
@@ -388,7 +388,7 @@ Affected Lambdas:
   skipped; greenfield path is unaffected by design.
 
 For backward compat (deploys that haven't been re-rolled with the
-chunk-08 variable name), the legacy `GRAPH_AUGMENT_ENABLED` is still
+the current variable name), the legacy `GRAPH_AUGMENT_ENABLED` is still
 honored as a fallback. The canonical var is the one above.
 
 **No data loss**: the symbol-graph data in DynamoDB stays in place
@@ -493,7 +493,7 @@ once, delete per `feedback_disposable_scripts.md`):
 #!/usr/bin/env python3
 """One-shot migration: symbol-graph table from per-SHA PK to (workspace, repo) PK.
 
-Run AFTER chunk-01's writer code is deployed. Idempotent.
+Run AFTER the writer code is deployed. Idempotent.
 
 Usage:
     ENVIRONMENT=prd python scripts/migrate-symbol-graph-v2.py
@@ -551,7 +551,7 @@ print(f"\nDone. migrated={migrated} skipped={skipped} errors={errors}")
 
 **Sequencing**:
 
-1. Land chunk 01's commit locally + push to `origin/main`.
+1. Land the writer commit locally + push to `origin/main`.
 2. Build images and `terraform apply` by hand.
 3. DO NOT trigger any sync yet.
 4. Run the script:

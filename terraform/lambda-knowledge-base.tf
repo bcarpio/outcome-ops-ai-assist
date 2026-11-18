@@ -88,7 +88,7 @@ module "process_batch_summary_lambda" {
     PII_REDACTION_ENABLED              = tostring(var.pii_redaction_enabled)
     COMPREHEND_PII_PRICE_PER_1M_CHARS  = tostring(var.comprehend_pii_price_per_1m_chars)
     PII_REDACTION_SKIP_TYPES           = join(",", var.pii_redaction_skip_types)
-    # Plan-gkg chunks 02 + 03 — symbol-graph regen + pointer-swap path.
+    # Symbol-graph regen + pointer-swap path.
     SYMBOL_GRAPH_TABLE = module.symbol_graph_table.dynamodb_table_id
     CODE_MAPS_TABLE    = module.code_maps_table.dynamodb_table_id
     # plan-git-truth SHA-truth ledger tables. process-batch-summary

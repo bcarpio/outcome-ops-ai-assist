@@ -4,7 +4,7 @@
 # Azure DevOps Boards Integration Lambda
 #
 # Handles Entra ID OAuth + connection / project management for ADO work items.
-# The sync worker + hourly scheduler are added in chunks 05-06 as separate
+# The sync worker + hourly scheduler are added as separate
 # resources in this file (mirroring the Repos integration file's layout).
 #
 # Notes worth keeping in mind when editing this file:

@@ -798,7 +798,7 @@ def list_workspaces(user_email: str) -> Dict:
       workspace (if org admin).
     - Every ``is_global=true`` workspace they don't already belong to,
       appended as read-only entries with ``role = "global_reader"``.
-      This is the enabler for chunks 03/04: the picker shows Security
+      This is the enabler: the picker shows Security
       / EA / Compliance workspaces so the user can add them to chat
       context, and PR-check scope can pull the same set server-side.
     """

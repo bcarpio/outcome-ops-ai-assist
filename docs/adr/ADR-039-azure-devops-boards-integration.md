@@ -49,7 +49,7 @@ section, its own DDB row family, its own Lambda functions.
   Repos's three Lambdas stay decoupled.
 - **Separate secondary-region deployment.** Every Boards Lambda
   duplicates under `aws.secondary` with the same both-MRK-ARN
-  KMS grant pattern used across ADR-030 v1.1, chunk-05 Boards
+  KMS grant pattern used across ADR-030 v1.1, the Boards
   primary, and the OAuth-KMS fix in commit `389c1e7`. See
   `terraform/lambda-azure-devops-boards-secondary.tf`.
 - **Separate workspace-settings UI section.** The Integrations tab
@@ -169,4 +169,4 @@ section, its own DDB row family, its own Lambda functions.
 
 Version History:
 
-- v1.0 (2026-07-04): Initial decision. All nine plan chunks shipped.
+- v1.0 (2026-07-04): Initial decision. All planned phases shipped.

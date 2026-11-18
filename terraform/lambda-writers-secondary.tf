@@ -462,7 +462,7 @@ module "process_batch_summary_lambda_secondary" {
       CODE_MAPS_TABLE                    = module.code_maps_table_secondary[0].dynamodb_table_id
       PENDING_WORK_TABLE                 = module.code_map_pending_work_table_secondary[0].dynamodb_table_id
       FAILED_FILES_TABLE                 = module.code_map_failed_files_table_secondary[0].dynamodb_table_id
-      # Splitter-pipeline mirror (chunks 02-07 + tuning). CODE_MAPS_QUEUE_URL
+      # Splitter-pipeline mirror. CODE_MAPS_QUEUE_URL
       # is FUNCTIONAL, not tuning: without it the merge fan-in cannot
       # requeue-with-delay ("CODE_MAPS_QUEUE_URL not configured") and every
       # sharded merge gives up on its first attempt post-failover.

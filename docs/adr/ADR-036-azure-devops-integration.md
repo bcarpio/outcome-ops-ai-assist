@@ -293,5 +293,5 @@ New shared primitives introduced by the parity work:
 No new customer prerequisites. No new IAM. No new tfvars. The
 parity work reuses every credential the initial ADR-036 shipment
 already established: the OAuth token at
-`AZDO_TOKEN#{connection_id}` from Repos plan chunks 01a + 02
-and the SSM read grant added in Repos plan chunk 07.
+`AZDO_TOKEN#{connection_id}` from the Repos integration
+and the SSM read grant added for the Repos integration.

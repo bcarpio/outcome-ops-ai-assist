@@ -148,7 +148,7 @@ documented SharePoint recovery pattern.
   is already implicit in the file-ingestion task role from
   put_object).
 
-- **Skip-rate is the eTag stability signal.** The plan's chunk 01
+- **Skip-rate is the eTag stability signal.** The initial implementation
   audit could not confirm from Graph docs alone whether the eTag
   changes on no-content-change saves. Live-verify measures the
   skip-rate in CloudWatch after two full sync cycles. Near-100%

@@ -138,7 +138,7 @@ The fix (v1.1):
 2. Consider porting the rules to ask-claude if drift/SAST misuse shows
    up on the synchronous RAG path.
 3. The SAST rule references "the full coverage checklist" — made
-   concrete by the audit-coverage checklist (chunk 05).
+   concrete by the audit-coverage checklist.
 
 ## Related ADRs
 

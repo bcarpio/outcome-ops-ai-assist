@@ -175,7 +175,7 @@ github_usernames_to_tag = "yourusername"
 
 # ALB Access Mode (see docs/adr/ADR-042 for the design rationale):
 #   true  = Internal ALB. Customer / enterprise recommendation.
-#          fable-scale chunk 09 made this the default.
+#          this is the default.
 #   false = Public ALB, guarded solely by Azure AD OIDC. Fine for dev
 #          / sandbox use where public reachability is convenient.
 # ui_alb_internal = false
@@ -423,7 +423,7 @@ github_usernames_to_tag = "yourusername"
 # {base}/api/v3, raw content routes through the contents API, and clone URLs
 # use the instance host. The GitHub App must be registered ON the GHES
 # instance (App IDs / keys / webhook secrets are per-instance). Configurable
-# but not yet certified against a live GHES -- see plan chunk 06.
+# but not yet certified against a live GHES.
 # github_base_url = ""
 
 # ============================================================================

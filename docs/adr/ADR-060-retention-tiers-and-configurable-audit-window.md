@@ -34,7 +34,7 @@ Three problems followed from this:
    their SIEM retains long-term. Changing it required a code change.
 
 3. **Chat conversations outlived their own messages ("ghost" conversations).**
-   The 90d TTL (fable-scale chunk 10) was applied to `MSG#` rows only. The
+   The 90d TTL was applied to `MSG#` rows only. The
    `METADATA` row (and `SHARE#` rows) carried no `expires_at`, so once the
    messages aged out, the conversation kept listing — with a stored
    `message_count` — but opened empty. Observed live on a 2026-08-01 conversation
@@ -128,7 +128,7 @@ rows are gone — DynamoDB TTL deletion is irreversible; there is no backfill.
   tier this ADR leans on.
 - ADR-022: multi-region active/passive (why the audit env wiring mirrors to the
   secondary).
-- fable-scale chunk 10 (`ee7fb0b`): introduced the chat message TTL + content cap
+- Commit `ee7fb0b` introduced the chat message TTL + content cap
   that this ADR completes (metadata parity) and reframes (bounded cache, not
   retention policy).
 

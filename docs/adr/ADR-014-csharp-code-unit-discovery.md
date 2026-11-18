@@ -155,7 +155,7 @@ Deep `Company.Product.Module.Submodule.Internal` directory hierarchies produced 
 
 ## Implementation
 
-See `lambda/process-repo-summary/backends/csharp_backend.py` (chunk-1).
+See `lambda/process-repo-summary/backends/csharp_backend.py`.
 
 Markers and boundary patterns are added in the C# backend file via `get_excluded_patterns()` and `get_boundary_patterns()` overrides — `base.py` is **not** modified, keeping it language-neutral. Build module markers specific to C# (`.csproj`, `.sln`, etc.) are checked in a backend-local override of `has_build_module_marker()`.
 

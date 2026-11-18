@@ -1,5 +1,5 @@
 boto3>=1.36.0
-openai>=2.0.0  # ADR-035 chunk 03: Mantle Responses-API client
+openai>=2.0.0  # ADR-035: Mantle Responses-API client
 botocore>=1.36.0
 urllib3>=2.6.3
 PyJWT[crypto]>=2.8.0

@@ -87,7 +87,7 @@ at SHA `7dcb098`.
 - Procedural ABAP still emits facts — no silent gap on regulated-
   customer Z-code that has not been migrated to classes.
 - The wire contract (the `Fact` dataclass) is identical across both
-  backends, so chunks 02–04 do not need to know which path produced
+  backends, so later stages do not need to know which path produced
   the facts.
 
 ### Tradeoffs
@@ -131,7 +131,7 @@ the regex backend or deliberately deferred.
 | Grammar node | Emits | Notes |
 |---|---|---|
 | `class_declaration` | `defines` (class) + `defines` (methods inside `public_section`/`private_section`/`protected_section`) | One `defines` per `method_declaration` child. |
-| `class_implementation` | `defines` (class) + `defines` (methods) | Class fact emitted again so both shapes show up; storage (chunk 02) dedupes on `(kind, source, target)`. |
+| `class_implementation` | `defines` (class) + `defines` (methods) | Class fact emitted again so both shapes show up; storage dedupes on `(kind, source, target)`. |
 | `method_implementation` | `defines` (namespaced to the class) + body walk | Body walk descends into `method_body` for calls / imports. |
 | `function_implementation` | `defines` (module-scoped) + body walk | Top-level `FUNCTION` declarations. |
 | `report_statement` | `defines` (the report name, module-scoped) | Top-level `REPORT z_foo.` |
@@ -149,7 +149,7 @@ the regex backend or deliberately deferred.
   node — neither the macro-include workaround nor any clean kind fires.
   The regex backend covers this when a file lacks any OO header; in
   pure-OO files using the legacy syntax we currently drop the call. If
-  this surfaces as a recall problem in chunk 04 query results, the fix
+  this surfaces as a recall problem in query results, the fix
   is to add an ERROR-recovery pass that pattern-matches the
   `call`/`METHOD`/`name`/`->`/`name` token sequence. Tracked, not in v1.
 - **Procedural-only constructs** (`FORM`, `FUNCTION-POOL`,

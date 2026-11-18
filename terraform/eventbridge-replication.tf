@@ -396,7 +396,7 @@ resource "aws_cloudwatch_metric_alarm" "replication_to_primary_dlq_depth" {
 
 # ----------------------------------------------------------------------------
 # Outputs / SSM mirror parameters
-# Lambdas in chunks 04 + 06 consume the local bus name as an env var.
+# Downstream Lambdas consume the local bus name as an env var.
 # Each region's SSM has its own bus name under the same path so a
 # Lambda running in either region resolves correctly.
 # ----------------------------------------------------------------------------
