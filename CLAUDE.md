@@ -75,17 +75,6 @@ The repo's `terraform/*.tfvars` map to environments, not customers:
 You are not poking a customer environment. Discuss truly destructive moves (DDB
 table delete, KMS key destroy) before acting, but ordinary triage is in-scope.
 
-**AWS credentials (Control Tower / Identity Center, since 2026-07-21):** the app
-account is enrolled in an AWS Organization (Control Tower + AFT + Identity
-Center). ALWAYS prefix AWS CLI and boto3/python invocations with
-`AWS_PROFILE=outcomeops-prd-readonly` — that is an SSO **read-only** role and
-the default for all troubleshooting. Do NOT use ambient/default credentials
-(the old long-lived IAM-user keys are being retired). When a task genuinely
-needs a WRITE (redrive, purge, DDB update, lambda invoke), **ask the operator
-for write access first** — name the exact actions/resources needed. If a
-read-only command fails with an SSO token expiry, ask the operator to run
-`aws sso login --profile outcomeops-prd-readonly`.
-
 ## Essential Workflow Rules
 
 ### Ask, Don't Guess
