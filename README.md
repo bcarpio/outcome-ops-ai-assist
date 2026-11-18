@@ -41,6 +41,31 @@ This is Context Engineering. This is OutcomeOps.
 
 ---
 
+## See It in Action
+
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <a href="https://www.youtube.com/watch?v=WwUy339C_q0">
+        <img src="https://img.youtube.com/vi/WwUy339C_q0/maxresdefault.jpg" alt="OutcomeOps Demo: Organizational Intelligence Across Your Codebase" width="100%">
+      </a>
+      <br>
+      <b>OutcomeOps Demo: Organizational Intelligence Across Your Codebase</b>
+    </td>
+    <td width="50%" align="center">
+      <a href="https://www.youtube.com/watch?v=RpCEbzA0_Zs">
+        <img src="https://img.youtube.com/vi/RpCEbzA0_Zs/maxresdefault.jpg" alt="Audit. Cost. Control. Why InfoSec Picks OutcomeOps" width="100%">
+      </a>
+      <br>
+      <b>Audit. Cost. Control. Why InfoSec Picks OutcomeOps</b>
+    </td>
+  </tr>
+</table>
+
+More walkthroughs on the [OutcomeOps YouTube channel](https://www.youtube.com/@OutcomeOps).
+
+---
+
 ## The Problem With AI Tools Today
 
 **Current AI coding tools:**
@@ -186,6 +211,7 @@ OutcomeOps applies the same playbook to AI-assisted development:
 **Ready to deploy OutcomeOps?**
 
 - **[Learn the Methodology](https://www.outcomeops.ai)** - Understand the OutcomeOps approach
+- **[YouTube Channel](https://www.youtube.com/@OutcomeOps)** - Demos and walkthroughs
 - **[Learn ADRs](docs/getting-started-with-adrs.md)** - New to Architecture Decision Records?
 - **[Technical Documentation](docs/getting-started.md)** - Deployment and implementation guide
 - **[Contributing](CONTRIBUTING.md)** - How to get involved
