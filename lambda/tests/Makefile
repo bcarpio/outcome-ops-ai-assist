@@ -22,9 +22,14 @@ test-unit:
 	@echo "Running unit tests..."
 	$(PYTHON) -m pytest unit/ -v
 
+# test-coverage excludes the symbol-graph latency benchmark (@pytest.mark.slow):
+# coverage instrumentation distorts timing, so its p50/p99 assertions are
+# meaningless and flaky under --cov (a loaded runner can even trip the per-test
+# timeout). The benchmark still runs un-instrumented via `make test-unit`;
+# production latency is policed by the CloudWatch alarm in terraform.
 test-coverage:
 	@echo "Running tests with coverage..."
-	$(PYTHON) -m pytest \
+	$(PYTHON) -m pytest -m "not slow" \
 		--cov=.. --cov-config=.coveragerc \
 		--cov-report=html --cov-report=term-missing --cov-report=xml:../coverage.xml --junitxml=../junit.xml
 	@echo "Coverage report generated in htmlcov/index.html"
