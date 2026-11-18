@@ -13,6 +13,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 from botocore.exceptions import ClientError
 
+# `databao_context_engine` is a proprietary package not shipped with the OSS
+# release; every import of it in the platform code is deferred so the module is
+# optional at runtime. Tests that exercise it run only where it is installed --
+# a clean clone or CI runner skips them instead of erroring on the import.
+databao_required = pytest.mark.skipif(
+    importlib.util.find_spec("databao_context_engine") is None,
+    reason="requires proprietary databao_context_engine (not in OSS release)",
+)
+
 
 # ============================================================================
 # Module loading
@@ -160,6 +169,7 @@ class TestCredentialManager:
 # ============================================================================
 
 
+@databao_required
 class TestIntrospectionHelpers:
 
     def test_validate_connection_raises_when_layer_unavailable(self):

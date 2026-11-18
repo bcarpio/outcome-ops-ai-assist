@@ -189,7 +189,7 @@ OutcomeOps applies the same playbook to AI-assisted development:
 - **[Learn ADRs](docs/getting-started-with-adrs.md)** - New to Architecture Decision Records?
 - **[Technical Documentation](docs/getting-started.md)** - Deployment and implementation guide
 - **[Contributing](CONTRIBUTING.md)** - How to get involved
-- **Questions & Support** - open an [issue or discussion](https://github.com/outcomeops/outcome-ops-ai-assist/issues)
+- **Questions & Support** - open an [issue or discussion](https://github.com/bcarpio/outcome-ops-ai-assist/issues)
 
 ---
 

@@ -11,6 +11,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 from botocore.exceptions import ClientError
 
+# `databao_context_engine` is a proprietary package not shipped with the OSS
+# release; every import of it in the platform code is deferred so the module is
+# optional at runtime. Tests that exercise it run only where it is installed --
+# a clean clone or CI runner skips them instead of erroring on the import.
+databao_required = pytest.mark.skipif(
+    importlib.util.find_spec("databao_context_engine") is None,
+    reason="requires proprietary databao_context_engine (not in OSS release)",
+)
+
 
 # ============================================================================
 # Module loading
@@ -299,6 +308,7 @@ class TestBuildTableChunkYaml:
             assert "top_values" not in col
 
 
+@databao_required
 class TestRunSchemaIntrospection:
     """End-to-end behavior of _run_schema_introspection with the
     introspector mocked. The function should filter to include_table_keys,
@@ -963,6 +973,7 @@ class TestLambdaHandlerDispatch:
 # ============================================================================
 
 
+@databao_required
 class TestListVisibleSchemas:
     """The cheap unrestricted introspect that powers schema-drift
     detection. Profiling + sampling are forced off; no IntrospectionScope
@@ -1107,6 +1118,7 @@ class TestListVisibleSchemas:
 # ============================================================================
 
 
+@databao_required
 class TestSchemaDriftDelta:
     """diff current available_schemas against the connection
     record's prior snapshot to produce schemas_added / schemas_removed
@@ -1309,6 +1321,7 @@ class TestSchemaDriftDelta:
 # ============================================================================
 
 
+@databao_required
 class TestDriftNotificationPublish:
     """Push-notification path. Topic ARN comes from env. Empty/unset
     arn = audit-only (no publish). Non-empty deltas trigger publish;

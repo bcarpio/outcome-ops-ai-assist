@@ -14,6 +14,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
+# `databao_context_engine` is a proprietary package not shipped with the OSS
+# release; every import of it in the platform code is deferred so the module is
+# optional at runtime. Tests that exercise it run only where it is installed --
+# a clean clone or CI runner skips them instead of erroring on the import.
+databao_required = pytest.mark.skipif(
+    importlib.util.find_spec("databao_context_engine") is None,
+    reason="requires proprietary databao_context_engine (not in OSS release)",
+)
+
 
 # ============================================================================
 # Module loading
@@ -155,6 +164,7 @@ class TestColumnStatsSQL:
 # ============================================================================
 
 
+@databao_required
 class TestRowToColumnStats:
 
     def test_full_plain_column(self):
@@ -278,6 +288,7 @@ class _StubScope:
         self.schemas = schemas
 
 
+@databao_required
 class TestCollectMssqlStats:
 
     @pytest.fixture
