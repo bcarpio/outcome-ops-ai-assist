@@ -26,7 +26,7 @@ test-coverage:
 	@echo "Running tests with coverage..."
 	$(PYTHON) -m pytest \
 		--cov=.. --cov-config=.coveragerc \
-		--cov-report=html --cov-report=term-missing
+		--cov-report=html --cov-report=term-missing --cov-report=xml:../coverage.xml --junitxml=../junit.xml
 	@echo "Coverage report generated in htmlcov/index.html"
 
 test-verbose:

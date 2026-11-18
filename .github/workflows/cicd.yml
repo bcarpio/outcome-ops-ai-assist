@@ -28,7 +28,7 @@ permissions:
 jobs:
 
   security-scans:
-    name: Run Talisman, Snyk
+    name: Run Talisman
     runs-on: ubuntu-latest
     environment: dev
     steps:
@@ -79,14 +79,6 @@ jobs:
           else
             echo "✅ No high severity issues detected by Talisman."
           fi
-
-      - name: Run Snyk to check for vulnerabilities
-        uses: snyk/actions/python@master
-        continue-on-error: true
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        with:
-          args: --all-projects --severity-threshold=high
 
   ui-tests:
     name: UI Tests
@@ -164,4 +156,48 @@ jobs:
       # at failover -- six modules had drifted when this check landed.
       - name: HA primary/secondary parity
         run: make check-ha-parity
+
+  sonarcloud:
+    name: SonarCloud Scan
+    runs-on: ubuntu-latest
+    needs: ui-tests
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Sonar needs full history for accurate new-code detection + blame.
+          fetch-depth: 0
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: make setup
+
+      - name: Run Python tests with coverage
+        # Produces lambda/coverage.xml + lambda/junit.xml consumed by
+        # sonar-project.properties (python.coverage.reportPaths / xunit).
+        run: |
+          source venv/bin/activate
+          make test-coverage
+
+      - name: Download UI coverage (lcov.info from the ui-tests job)
+        uses: actions/download-artifact@v4
+        with:
+          name: ui-coverage
+          path: ui/coverage
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      - name: SonarCloud Quality Gate
+        # Fails the job (and the PR status check) when the gate is red,
+        # e.g. new-code coverage below 80%.
+        uses: SonarSource/sonarqube-quality-gate-action@v1
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
