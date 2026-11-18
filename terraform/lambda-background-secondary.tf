@@ -132,6 +132,16 @@ module "audit_alert_lambda_secondary" {
       resources = [module.audit_logs_table_secondary[0].dynamodb_table_stream_arn]
     }
     },
+    # Secondary topics use the data-at-rest CMK when enable_cmk_encryption is
+    # set (alias/aws/sns otherwise, which needs no identity grant). Publishing
+    # to a CMK-encrypted topic needs GenerateDataKey + Decrypt on that key.
+    var.enable_cmk_encryption ? {
+      sns_kms = {
+        effect    = "Allow"
+        actions   = ["kms:GenerateDataKey*", "kms:Decrypt"]
+        resources = [local.data_cmk_arn_secondary]
+      }
+    } : {},
     local.ha_scheduler_iam_secondary,
   )
 
@@ -343,6 +353,14 @@ module "analytics_cost_alert_lambda_secondary" {
       resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
     }
     },
+    # See audit_alert_lambda_secondary above: CMK-encrypted topic publish.
+    var.enable_cmk_encryption ? {
+      sns_kms = {
+        effect    = "Allow"
+        actions   = ["kms:GenerateDataKey*", "kms:Decrypt"]
+        resources = [local.data_cmk_arn_secondary]
+      }
+    } : {},
     local.ha_scheduler_iam_secondary,
   )
 

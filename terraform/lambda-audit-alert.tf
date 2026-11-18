@@ -68,6 +68,21 @@ module "audit_alert_lambda" {
         ]
       }
 
+      # The alerts topic is encrypted with the sns_alerts CMK (sns.tf). A
+      # publisher to a CMK-encrypted topic needs GenerateDataKey + Decrypt on
+      # that key, and the key policy delegates to IAM, so without this the
+      # Publish call fails with KMSAccessDenied and no email is sent.
+      sns_kms = {
+        effect = "Allow"
+        actions = [
+          "kms:GenerateDataKey*",
+          "kms:Decrypt"
+        ]
+        resources = [
+          aws_kms_key.sns_alerts.arn
+        ]
+      }
+
       # DynamoDB Streams read (required for event source mapping)
       dynamodb_stream = {
         effect = "Allow"
