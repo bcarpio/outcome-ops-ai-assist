@@ -51,7 +51,7 @@ not read or written.
 
 ### Fact key uses the BARE repo name
 
-Symbol-graph facts key on the **bare repo name** (`outcome-ops-ai-assist-private`),
+Symbol-graph facts key on the **bare repo name** (`outcome-ops-ai-assist`),
 not `owner/repo`, in both the PK (`{workspace_id}#{repo}`) and the purge scope.
 This is deliberate (github-sync keeps the fact-store keys bare-named; flipping to
 `owner/repo` would orphan existing data). A regeneration MUST purge and write the

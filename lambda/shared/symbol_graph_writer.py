@@ -453,7 +453,7 @@ def _write_facts_batched(
     visitor under nested-scope traversal), which produces identical SKs.
     Dedupe to the last occurrence (semantically equivalent -- all
     duplicates carry the same content). Live evidence:
-    2026-05-15 re-extract of outcome-ops-ai-assist-private's
+    2026-05-15 re-extract of outcome-ops-ai-assist's
     workspace-management batch.
     """
 

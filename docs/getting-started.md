@@ -96,7 +96,7 @@ not, email [support@outcomeops.ai](mailto:support@outcomeops.ai) for access.
 
 ```bash
 git clone <your-outcomeops-repo-url>
-cd outcome-ops-ai-assist-private        # or whatever your repo is named
+cd outcome-ops-ai-assist        # or whatever your repo is named
 ```
 
 ### 2. Python environment

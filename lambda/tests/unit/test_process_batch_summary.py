@@ -1064,8 +1064,8 @@ class TestGitHubApiCallsUseFullRepoName:
         # would fail this test loudly.
         record = {
             "body": json.dumps({
-                "repo": "outcome-ops-ai-assist-private",  # short (fact-store key)
-                "repo_project": "bcarpio/outcome-ops-ai-assist-private",  # full (API arg)
+                "repo": "outcome-ops-ai-assist",  # short (fact-store key)
+                "repo_project": "bcarpio/outcome-ops-ai-assist",  # full (API arg)
                 "batch_type": "shared",
                 "group_name": "utils",
                 "file_paths": ["x.py"],
@@ -1093,11 +1093,11 @@ class TestGitHubApiCallsUseFullRepoName:
         # bare name. The bare name would 404 against GitHub, be swallowed,
         # and silently ignore the customer's .outcomeops.yaml config.
         mock_default_branch.assert_called_once_with(
-            "bcarpio/outcome-ops-ai-assist-private"
+            "bcarpio/outcome-ops-ai-assist"
         )
         mock_load_filter.assert_called_once()
         first_arg = mock_load_filter.call_args.args[0]
-        assert first_arg == "bcarpio/outcome-ops-ai-assist-private", (
+        assert first_arg == "bcarpio/outcome-ops-ai-assist", (
             "_load_symbol_graph_filter must receive owner/repo, not the "
             "bare short name (which 404s and silently drops per-repo "
             "ingestion.symbol_graph config)"
@@ -1108,9 +1108,9 @@ class TestGitHubApiCallsUseFullRepoName:
         # to update this assertion deliberately -- see the ADR note in
         # the fix commit.
         emit_kwargs = mock_emit_facts.call_args.kwargs
-        assert emit_kwargs["repo"] == "outcome-ops-ai-assist-private"
+        assert emit_kwargs["repo"] == "outcome-ops-ai-assist"
         mock_commit.assert_called_once_with(
-            "ws-graph", "outcome-ops-ai-assist-private", "deadbeef",
+            "ws-graph", "outcome-ops-ai-assist", "deadbeef",
         )
 
 

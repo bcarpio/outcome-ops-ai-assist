@@ -311,7 +311,7 @@ def test_commit_swap_idempotent_when_graph_sha_already_matches(code_maps_table):
     batch in a ~30-way concurrent regen logs a spurious WARNING and
     triggers abandon_swap in the caller, which would clear a valid
     pointer state. Live evidence: 2026-05-15 re-extract of
-    outcome-ops-ai-assist-private.
+    outcome-ops-ai-assist.
     """
     from shared.symbol_graph_pointer import (  # type: ignore
         begin_swap,

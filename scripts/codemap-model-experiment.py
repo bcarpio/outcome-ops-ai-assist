@@ -63,7 +63,7 @@ _prime_env()
 from shared.model_client import invoke  # noqa: E402
 from shared.prompts import CODE_MAP_LITERAL_DISCIPLINE  # noqa: E402
 
-REPO_NAME = "outcome-ops-ai-assist-private"
+REPO_NAME = "outcome-ops-ai-assist"
 
 # Verbatim copy of the "handler-group" template from
 # process-batch-summary/handler.py:_build_batch_prompt (line ~483). Keeping

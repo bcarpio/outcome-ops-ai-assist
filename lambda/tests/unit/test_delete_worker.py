@@ -1133,13 +1133,13 @@ class TestHandleDeletePrefix:
         handle_delete_prefix({
             "workspace_id": "B1MgdLzM1j0YeyAqCWbyxg",
             "source": "github",
-            "prefix": "bcarpio/outcome-ops-ai-assist-private/",
+            "prefix": "bcarpio/outcome-ops-ai-assist/",
         })
 
         called_prefixes = [c.args[0] for c in mock_del_vec_prefix.call_args_list]
         # The code-map prefix uses just the repo name (last segment)
         assert (
-            "B1MgdLzM1j0YeyAqCWbyxg#github#outcome-ops-ai-assist-private#"
+            "B1MgdLzM1j0YeyAqCWbyxg#github#outcome-ops-ai-assist#"
             in called_prefixes
         )
 

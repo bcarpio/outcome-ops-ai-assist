@@ -244,7 +244,7 @@ grep -rn 'ingest\|document\|process' lambda/github-sync/ \
 
 ## Validation 6 — PR review with signature change
 
-**Setup**: Open a PR against `outcome-ops-ai-assist-private` that
+**Setup**: Open a PR against `outcome-ops-ai-assist` that
 changes the signature of `log_audit_entry` (e.g., adds a new
 parameter).
 
@@ -322,7 +322,7 @@ called by something.
 ## Phase rollout sequence
 
 1. **Phase 1 — Dev validation**: run validations 1, 4, 5, 6, 7, 8
-   against the dev `outcome-ops-ai-assist-private` workspace after
+   against the dev `outcome-ops-ai-assist` workspace after
    the dev backfill completes. Validations 2 and 3 require the
    enterprise-subpath and lighthouse workspaces; defer to phase 3.
 

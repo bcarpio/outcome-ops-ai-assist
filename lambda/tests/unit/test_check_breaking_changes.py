@@ -793,7 +793,7 @@ class TestPlane1ScopeWidening:
             at_line=SimpleNamespace(target_symbol_id="python:lambda.shared.pr_metadata::fetch_pr_metadata"),
             callers_result=SimpleNamespace(
                 sites=[SimpleNamespace(
-                    repo="outcome-ops-ai-assist-private",
+                    repo="outcome-ops-ai-assist",
                     file_path=consumer_file, line=88,
                     source_symbol_id="python:lambda.process-pr-check.handler::run")],
                 complete=True),
@@ -807,7 +807,7 @@ class TestPlane1ScopeWidening:
         have early-returned PASS (no handler.py / .tf in the diff)."""
         reader = self._reader_with_caller("lambda/process-pr-check/handler.py")
         result = check_breaking_changes(
-            "BREAKING_CHANGES", 123, "bcarpio/outcome-ops-ai-assist-private",
+            "BREAKING_CHANGES", 123, "bcarpio/outcome-ops-ai-assist",
             ["lambda/shared/pr_metadata.py"], "query-kb-lambda",
             anchors={"lambda/shared/pr_metadata.py": [10, 25]},
             reader=reader,
@@ -830,7 +830,7 @@ class TestPlane1ScopeWidening:
             at_line=SimpleNamespace(target_symbol_id="python:lambda.shared.x::y"),
         )  # empty callers + importers
         result = check_breaking_changes(
-            "BREAKING_CHANGES", 123, "bcarpio/outcome-ops-ai-assist-private",
+            "BREAKING_CHANGES", 123, "bcarpio/outcome-ops-ai-assist",
             ["lambda/shared/x.py"], "query-kb-lambda",
             anchors={"lambda/shared/x.py": [5]},
             reader=reader,
@@ -847,7 +847,7 @@ class TestPlane1ScopeWidening:
         reader = TestSymbolGraphConsumers._FakeSGR(
             raise_exc=TestSymbolGraphConsumers._FakeSGR.SymbolGraphUnavailable("down"))
         result = check_breaking_changes(
-            "BREAKING_CHANGES", 123, "bcarpio/outcome-ops-ai-assist-private",
+            "BREAKING_CHANGES", 123, "bcarpio/outcome-ops-ai-assist",
             ["lambda/shared/x.py"], "query-kb-lambda",
             anchors={"lambda/shared/x.py": [5]},
             reader=reader,

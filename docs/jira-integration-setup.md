@@ -43,7 +43,7 @@ Each repository you want to enable for code generation needs a Jira component wi
 
 1. Go to **Project Settings** → **Components**
 2. Create a component with the exact GitHub repository path:
-   - Name: `owner/repo` (e.g., `bcarpio/outcome-ops-ai-assist-private`)
+   - Name: `owner/repo` (e.g., `bcarpio/outcome-ops-ai-assist`)
    - Description: Optional
 
 > **Important:** The component name MUST match the GitHub repository path exactly (case-sensitive).
