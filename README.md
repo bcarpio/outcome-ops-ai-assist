@@ -64,6 +64,18 @@ This is Context Engineering. This is OutcomeOps.
 
 More walkthroughs on the [OutcomeOps YouTube channel](https://www.youtube.com/@OutcomeOps).
 
+### Pull Request Review
+
+Every pull request to this repository is reviewed by OutcomeOps itself, against the repo's own ADRs:
+
+<p align="center">
+  <a href="https://github.com/bcarpio/outcome-ops-ai-assist/pull/19">
+    <img src="docs/images/pr-review-license-compliance.png" alt="OutcomeOps PR review: License Compliance check returns WARN, citing ADR-008" width="760">
+  </a>
+</p>
+
+A real review, quoted verbatim: the license check reads the repo's ADR-008 and decides a missing copyright header on a Markdown doc is a WARN, not a FAIL. [See the pull request](https://github.com/bcarpio/outcome-ops-ai-assist/pull/19).
+
 ---
 
 ## The Problem With AI Tools Today
