@@ -445,7 +445,7 @@ def queue_sync_job(workspace_id: str, repo_name: str, installation_id: str) -> N
             "workspace_id": workspace_id,
             "repo_name": repo_name,
             "installation_id": installation_id,
-            "triggered_by": "manual",
+            "trigger": "manual",
         }),
     )
     logger.info("Queued GitHub sync for %s/%s", workspace_id, repo_name)

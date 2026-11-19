@@ -2439,7 +2439,8 @@ export interface GitHubRepo {
   include_code_maps: boolean
   repo_type: GitHubRepoType
   last_sync_at: string | null
-  last_sync_status: 'needs_configuration' | 'queued' | 'in_progress' | 'success' | 'failed' | null
+  // up_to_date: a manual sync found nothing changed since the last completed build
+  last_sync_status: 'needs_configuration' | 'queued' | 'in_progress' | 'success' | 'up_to_date' | 'failed' | null
   last_sync_error: string | null
   last_commit_sha: string | null
   added_at: string

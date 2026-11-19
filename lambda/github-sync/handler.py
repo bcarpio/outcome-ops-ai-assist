@@ -57,6 +57,10 @@ _s3 = None
 # GitHub App config (cached)
 _github_config = None
 
+# Default for _process_application_repo(code_map_last_sha=...): use the
+# docs baseline. A sentinel, because None is meaningful (never completed).
+_SAME_AS_DOCS_BASELINE = object()
+
 
 def _github_api() -> str:
     """GHES-aware REST base (shared.github_base). SaaS default is
@@ -1068,6 +1072,9 @@ def _filter_docs_to_changed(
     """
     if not last_commit_sha or not all_doc_files:
         return all_doc_files
+    if last_commit_sha == current_sha:
+        # Docs already completed this commit; nothing changed.
+        return []
     changed_paths = fetch_changed_files(
         token, owner, repo_short, last_commit_sha, current_sha,
     )
@@ -1245,7 +1252,10 @@ def process_sync_request(message: Dict) -> Dict:
         Result dict with status and counts
     """
     sync_start = time.time()
-    trigger = message.get("trigger", "scheduled")
+    # The scheduler sends ``trigger``; the UI's manual sync
+    # (github-integration queue_sync_job) historically sent
+    # ``triggered_by``. Accept both so manual syncs are recognised.
+    trigger = message.get("trigger") or message.get("triggered_by") or "scheduled"
     workspace_id = message["workspace_id"]
     repo_name = message["repo_name"]
     installation_id = message["installation_id"]
@@ -1302,16 +1312,45 @@ def process_sync_request(message: Dict) -> Dict:
             last_attempted_sha=current_sha,
         )
 
-        # Check if already synced this commit
+        # Decide the incremental baseline for each pipeline.
+        #
+        # Scheduled syncs compare against last_commit_sha (the last SHA
+        # handed to the pipelines) -- unchanged behaviour.
+        #
+        # A manual "Sync now" compares against the last SHA each pipeline
+        # actually COMPLETED (last_docs_sha / last_code_map_sha).
+        # last_commit_sha is written at dispatch, so a run that failed
+        # after dispatch (GitHub API outage, DLQ) leaves it equal to HEAD
+        # and the scheduled sync skips that commit forever. Diffing from
+        # the completed SHA re-processes only the files changed since the
+        # last good build. If every pipeline is already at HEAD there is
+        # nothing to do -- never a blanket rebuild.
         last_sha = repo.get("last_commit_sha")
-        if last_sha == current_sha:
+        if trigger == "manual":
+            docs_baseline = repo.get("last_docs_sha")
+            code_map_baseline = (
+                current_sha if repo_type == "standards"
+                else repo.get("last_code_map_sha")
+            )
+            up_to_date = (
+                docs_baseline == current_sha
+                and code_map_baseline == current_sha
+            )
+        else:
+            docs_baseline = code_map_baseline = last_sha
+            up_to_date = last_sha == current_sha
+
+        if up_to_date:
             logger.info(f"No changes since last sync ({current_sha[:7]})")
             # No SQS dispatch happens, so no ledger row is opened. We
             # still keep last_commit_sha in sync as the legacy mirror,
             # but skip the per-pipeline columns since this path didn't
-            # actually re-run any pipeline.
+            # actually re-run any pipeline. A manual sync records
+            # "up_to_date" so the UI can tell the user nothing changed.
             update_sync_status(
-                workspace_id, repo_name, "success", commit_sha=current_sha
+                workspace_id, repo_name,
+                "up_to_date" if trigger == "manual" else "success",
+                commit_sha=current_sha,
             )
             log_source_sync(
                 audit_table_name=os.environ.get("AUDIT_TABLE", ""),
@@ -1347,7 +1386,7 @@ def process_sync_request(message: Dict) -> Dict:
                 owner=owner,
                 repo_short=repo_short,
                 default_branch=default_branch,
-                last_commit_sha=last_sha,
+                last_commit_sha=docs_baseline,
             )
         else:
             # Application repos: Discover code units and queue to repo-summaries queue
@@ -1363,7 +1402,8 @@ def process_sync_request(message: Dict) -> Dict:
                 tree=tree,
                 current_sha=current_sha,
                 current_commit_timestamp=current_commit_timestamp,
-                last_commit_sha=last_sha,
+                last_commit_sha=docs_baseline,
+                code_map_last_sha=code_map_baseline,
             )
 
         # Emit REPO_SYNCED parent audit row covering both repo types.
@@ -1551,6 +1591,7 @@ def _process_application_repo(
     current_sha: str,
     current_commit_timestamp: int,
     last_commit_sha: Optional[str] = None,
+    code_map_last_sha: Any = _SAME_AS_DOCS_BASELINE,
 ) -> Dict:
     """
     Process an application repo by uploading doc files to S3 for indexing
@@ -1562,7 +1603,14 @@ def _process_application_repo(
 
     Code unit discovery is handled by the process-repo-summary Lambda
     which has access to the backend abstractions.
+
+    ``last_commit_sha`` is the docs baseline; ``code_map_last_sha`` is the
+    code-map baseline (defaults to the same SHA). A manual sync passes each
+    pipeline's last completed SHA, so they can differ; a code-map baseline
+    already at ``current_sha`` means code maps have nothing to redo.
     """
+    if code_map_last_sha is _SAME_AS_DOCS_BASELINE:
+        code_map_last_sha = last_commit_sha
     # Fetch ingestion config for standards_paths classification
     standards_paths = fetch_ingestion_config(token, owner, repo_short, default_branch)
     logger.info(f"Standards paths for {repo_name}: {standards_paths}")
@@ -1642,6 +1690,24 @@ def _process_application_repo(
     current_doc_paths = [f["path"] for f in all_doc_files]
     _queue_orphan_detection(workspace_id, repo_name, current_doc_paths)
 
+    if code_map_last_sha == current_sha:
+        # Code maps already completed this commit (manual sync where only
+        # docs were behind). Nothing to dispatch.
+        update_sync_status(
+            workspace_id, repo_name, "success", commit_sha=current_sha,
+        )
+        logger.info(
+            f"Code maps already at {current_sha[:7]} for {repo_name}; "
+            f"{docs_uploaded} docs re-uploaded"
+        )
+        return {
+            "status": "success",
+            "repo_type": repo_type,
+            "files_queued": 0,
+            "docs_uploaded": docs_uploaded,
+            "commit_sha": current_sha,
+        }
+
     # plan-git-truth open the code_map_dispatch ledger row
     # BEFORE publishing the repo-summaries SQS message. If the
     # send_message fails, mark_unit_failed below closes it as failed
@@ -1656,7 +1722,7 @@ def _process_application_repo(
         repo_type=repo_type,
         installation_id=installation_id,
         all_files=tree,
-        last_commit_sha=last_commit_sha,
+        last_commit_sha=code_map_last_sha,
         current_commit_sha=current_sha,
         commit_timestamp=current_commit_timestamp,
     ):

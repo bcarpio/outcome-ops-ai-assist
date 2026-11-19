@@ -2582,6 +2582,24 @@ export default function WorkspaceSettings() {
       await triggerGitHubSync(workspaceId, repoName)
       setSuccess(repoName ? `Sync queued for ${repoName}` : 'Sync queued for all repos')
       loadGitHubData()
+      if (repoName) {
+        // The sync runs in the background; poll briefly so the result
+        // (including "nothing changed") shows without a manual refresh.
+        for (let i = 0; i < 20; i++) {
+          await new Promise(resolve => setTimeout(resolve, 3000))
+          const repos = await listGitHubRepos(workspaceId)
+          setGithubRepos(repos)
+          const status = repos.find(r => r.repo_name === repoName)?.last_sync_status
+          if (status && status !== 'queued' && status !== 'in_progress') {
+            if (status === 'up_to_date') {
+              setSuccess(`${repoName} is already up to date. Nothing changed since the last sync.`)
+            } else if (status === 'success') {
+              setSuccess(`Sync finished for ${repoName}`)
+            }
+            break
+          }
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to trigger sync')
     } finally {
@@ -3467,12 +3485,12 @@ export default function WorkspaceSettings() {
                                 {repo.last_sync_status ? (
                                   <>
                                     <span className={
-                                      repo.last_sync_status === 'success' ? 'text-green-600' :
+                                      repo.last_sync_status === 'success' || repo.last_sync_status === 'up_to_date' ? 'text-green-600' :
                                       repo.last_sync_status === 'failed' ? 'text-red-600' :
                                       repo.last_sync_status === 'in_progress' || repo.last_sync_status === 'queued' ? 'text-blue-600' :
                                       'text-gray-500'
                                     }>
-                                      {repo.last_sync_status}
+                                      {repo.last_sync_status === 'up_to_date' ? 'up to date' : repo.last_sync_status}
                                     </span>
                                     {repo.last_sync_at && <> | {new Date(repo.last_sync_at).toLocaleDateString()}</>}
                                   </>

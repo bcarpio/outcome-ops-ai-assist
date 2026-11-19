@@ -1269,6 +1269,60 @@ class TestProcessApplicationRepo:
         assert args == ("ws_test", "acme/my-repo", "success")
         assert kwargs.get("commit_sha") == "commit123"
 
+    @patch.object(handler_module, "_open_code_map_dispatch_ledger")
+    @patch.object(handler_module, "_queue_orphan_detection")
+    @patch.object(handler_module, "update_sync_status")
+    @patch.object(handler_module, "queue_repo_for_code_maps")
+    @patch.object(handler_module, "upload_file_to_s3")
+    @patch.object(handler_module, "get_file_content")
+    @patch.object(handler_module, "fetch_changed_files")
+    @patch.object(handler_module, "fetch_ingestion_config")
+    def test_code_maps_already_complete_skips_dispatch(
+        self,
+        mock_fetch_config,
+        mock_changed,
+        mock_get_content,
+        mock_upload,
+        mock_queue_code_maps,
+        mock_update_status,
+        _mock_orphans,
+        mock_open_ledger,
+    ):
+        """Manual retry where only docs lagged: the code-map baseline is
+        already HEAD, so no code-map work is dispatched; only the changed
+        docs since the docs baseline are re-uploaded."""
+        mock_fetch_config.return_value = []
+        mock_changed.return_value = {"README.md"}
+        mock_get_content.return_value = "# README"
+        mock_upload.return_value = "key"
+
+        tree = [
+            {"path": "README.md", "type": "blob", "sha": "aaa", "size": 500},
+            {"path": "src/main.py", "type": "blob", "sha": "bbb", "size": 1200},
+        ]
+        with patch.object(handler_module, "_open_docs_pending_batch"):
+            result = _process_application_repo(
+                workspace_id="ws_test",
+                repo_name="acme/my-repo",
+                repo_type="application",
+                installation_id="12345",
+                owner="acme",
+                repo_short="my-repo",
+                token="fake_token",
+                default_branch="main",
+                tree=tree,
+                current_sha="head_sha",
+                current_commit_timestamp=1700000000,
+                last_commit_sha="older_sha",
+                code_map_last_sha="head_sha",
+            )
+
+        assert result["status"] == "success"
+        assert result["files_queued"] == 0
+        assert result["docs_uploaded"] == 1
+        mock_queue_code_maps.assert_not_called()
+        mock_open_ledger.assert_not_called()
+
     @patch.object(handler_module, "update_sync_status")
     @patch.object(handler_module, "queue_repo_for_code_maps")
     @patch.object(handler_module, "upload_file_to_s3")
@@ -1636,6 +1690,101 @@ class TestProcessSyncRequest:
 
         assert result["status"] == "no_changes"
         assert result["commit_sha"] == "same_sha_123"
+
+    def _manual_sync(self, repo_row, trigger_key="trigger"):
+        """Run process_sync_request as a manual sync at HEAD=head_sha with
+        the given repo row; returns (result, update_sync_status mock,
+        _process_application_repo mock)."""
+        with patch.object(handler_module, "get_repo", return_value=repo_row), \
+                patch.object(handler_module, "update_sync_status") as status, \
+                patch.object(handler_module, "get_installation_token",
+                             return_value="tok"), \
+                patch.object(handler_module, "get_default_branch",
+                             return_value="main"), \
+                patch.object(handler_module, "get_latest_commit",
+                             return_value=("head_sha", 1700000000)), \
+                patch.object(handler_module, "get_repo_tree", return_value=[]), \
+                patch.object(handler_module, "_process_application_repo",
+                             return_value={"status": "success"}) as process_app:
+            result = process_sync_request({
+                "workspace_id": "ws_test",
+                "repo_name": "acme/my-repo",
+                "installation_id": "12345",
+                trigger_key: "manual",
+            })
+        return result, status, process_app
+
+    @pytest.mark.parametrize("trigger_key", ["trigger", "triggered_by"])
+    def test_manual_sync_up_to_date_reports_nothing_changed(self, trigger_key):
+        """Every pipeline already completed HEAD: a manual sync does no work
+        and records up_to_date so the UI can say nothing changed. Both the
+        current and the legacy message key are recognised as manual."""
+        result, status, process_app = self._manual_sync({
+            "repo_type": "application",
+            "include_code_maps": True,
+            "last_commit_sha": "head_sha",
+            "last_docs_sha": "head_sha",
+            "last_code_map_sha": "head_sha",
+        }, trigger_key)
+
+        assert result["status"] == "no_changes"
+        process_app.assert_not_called()
+        assert status.call_args.args[2] == "up_to_date"
+
+    def test_manual_sync_retries_from_last_completed_sha(self):
+        """A run dispatched HEAD but code maps never completed (e.g. GitHub
+        outage -> DLQ). last_commit_sha == HEAD, so the scheduled sync skips
+        it; a manual sync re-processes code maps from the last COMPLETED SHA
+        only, and leaves docs (already at HEAD) alone."""
+        result, _status, process_app = self._manual_sync({
+            "repo_type": "application",
+            "include_code_maps": True,
+            "last_commit_sha": "head_sha",
+            "last_docs_sha": "head_sha",
+            "last_code_map_sha": "older_sha",
+        })
+
+        assert result["status"] == "success"
+        kwargs = process_app.call_args.kwargs
+        assert kwargs["last_commit_sha"] == "head_sha"      # docs: nothing to do
+        assert kwargs["code_map_last_sha"] == "older_sha"   # code maps: the gap
+        assert kwargs["current_sha"] == "head_sha"
+
+    def test_scheduled_sync_still_skips_on_dispatched_sha(self):
+        """Scheduled behaviour is unchanged: last_commit_sha == HEAD skips,
+        and the status stays success (not up_to_date)."""
+        with patch.object(handler_module, "get_repo", return_value={
+                    "repo_type": "application",
+                    "include_code_maps": True,
+                    "last_commit_sha": "head_sha",
+                    "last_code_map_sha": "older_sha",
+                }), \
+                patch.object(handler_module, "update_sync_status") as status, \
+                patch.object(handler_module, "get_installation_token",
+                             return_value="tok"), \
+                patch.object(handler_module, "get_default_branch",
+                             return_value="main"), \
+                patch.object(handler_module, "get_latest_commit",
+                             return_value=("head_sha", 1700000000)), \
+                patch.object(handler_module, "_process_application_repo") as process_app:
+            result = process_sync_request({
+                "workspace_id": "ws_test",
+                "repo_name": "acme/my-repo",
+                "installation_id": "12345",
+                "trigger": "scheduled",
+            })
+        assert result["status"] == "no_changes"
+        process_app.assert_not_called()
+        assert status.call_args.args[2] == "success"
+
+    def test_filter_docs_same_sha_returns_nothing(self):
+        """Docs baseline already at HEAD: no compare call, nothing to redo."""
+        with patch.object(handler_module, "fetch_changed_files") as compare:
+            out = handler_module._filter_docs_to_changed(
+                "tok", "acme", "my-repo", [{"path": "README.md"}],
+                "head_sha", "head_sha")
+        assert out == []
+        compare.assert_not_called()
 
     @patch.object(handler_module, "get_installation_token")
     @patch.object(handler_module, "update_sync_status")

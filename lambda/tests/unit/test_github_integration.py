@@ -654,7 +654,7 @@ class TestSqsOperations:
         assert msg_body["workspace_id"] == "ws_test"
         assert msg_body["repo_name"] == "test-org/my-repo"
         assert msg_body["installation_id"] == "12345"
-        assert msg_body["triggered_by"] == "manual"
+        assert msg_body["trigger"] == "manual"
 
     def test_queue_sync_job_no_queue_configured(self):
         """Test no-op when sync queue not configured."""
