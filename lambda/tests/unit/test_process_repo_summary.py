@@ -847,3 +847,35 @@ class TestZeroChangedUnitsAdvancesCodeMapSha:
         # GITHUB_REPO# columns.
         send, advance = self._run(["README.md"], provider="gitlab")
         advance.assert_not_called()
+
+
+class TestAdvanceCodeMapWithoutWork:
+    """The helper itself: close the dispatch stage, then advance both the
+    code_map and gkg columns. Best-effort, so a ledger failure never fails
+    the sync."""
+
+    def test_closes_dispatch_and_advances_both_pipelines(self):
+        from shared import sha_truth  # type: ignore
+
+        ok = sha_truth.AdvanceResult(True, "ok")
+        with patch.object(sha_truth, "mark_unit_complete") as mark, \
+                patch.object(sha_truth, "advance_sha_without_work",
+                             return_value=ok) as advance:
+            repo_summary_handler._advance_code_map_without_work(
+                "ws_eng", "acme/my-repo", "b" * 40, 1700000000)
+
+        mark.assert_called_once_with(
+            "ws_eng", "acme/my-repo", "code_map_dispatch", "b" * 40)
+        assert [c.args[2] for c in advance.call_args_list] == ["code_map", "gkg"]
+        for call in advance.call_args_list:
+            assert call.args[3:] == ("b" * 40, 1700000000)
+
+    def test_ledger_failure_is_swallowed(self):
+        from shared import sha_truth  # type: ignore
+
+        with patch.object(sha_truth, "mark_unit_complete",
+                          side_effect=RuntimeError("ddb down")), \
+                patch.object(sha_truth, "advance_sha_without_work") as advance:
+            repo_summary_handler._advance_code_map_without_work(
+                "ws_eng", "acme/my-repo", "b" * 40, 1700000000)
+        advance.assert_not_called()

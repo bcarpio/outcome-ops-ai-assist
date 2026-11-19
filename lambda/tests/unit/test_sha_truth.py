@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import boto3
 import pytest
@@ -445,6 +446,24 @@ def test_advance_sha_without_work_does_not_recreate_removed_repo(tables):
         WORKSPACE_ID, REPO, "code_map", SHA_A, COMMIT_TS_NEW)
     assert (result.advanced, result.reason) == (False, "repo_removed")
     assert "Item" not in tables.Table(WORKSPACES_TABLE).get_item(Key=key)
+
+
+def test_advance_sha_without_work_reraises_other_errors(tables):
+    """Only a failed condition is an expected outcome; anything else
+    (throttling, permissions) must surface to the caller."""
+    from botocore.exceptions import ClientError
+
+    from shared import sha_truth  # type: ignore
+
+    err = ClientError(
+        {"Error": {"Code": "ProvisionedThroughputExceededException",
+                   "Message": "slow down"}},
+        "UpdateItem",
+    )
+    with patch.object(sha_truth.dual_write, "ddb_update_item", side_effect=err):
+        with pytest.raises(ClientError):
+            sha_truth.advance_sha_without_work(
+                WORKSPACE_ID, REPO, "code_map", SHA_A, COMMIT_TS_NEW)
 
 
 def test_try_advance_monotonic_blocks_older_sha(tables):

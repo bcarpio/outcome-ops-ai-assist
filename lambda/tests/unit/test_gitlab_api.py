@@ -276,6 +276,36 @@ class TestRateLimitRetry:
             self._run(outcomes)
         assert exc.value.code == 429
 
+    def test_non_numeric_retry_after_falls_back_to_backoff(self):
+        """GitLab may send Retry-After as an HTTP-date; that is not a number
+        of seconds, so the exponential backoff applies instead."""
+        ok = _UrlopenResp(body=b'{"id": 1}')
+        _, n, sleeps = self._run(
+            [self._429("Wed, 21 Oct 2026 07:28:00 GMT"), ok])
+        assert n == 2
+        assert sleeps == [1.0]
+
+    def test_get_requests_retry_429_too(self):
+        """Reads go through the same retry as writes."""
+        ok = _UrlopenResp(body=b'{"iid": 7}')
+        ok.headers = {}
+        outcomes = [self._429("1"), ok]
+        calls = {"n": 0}
+
+        def fake_urlopen(req, timeout=None):
+            outcome = outcomes[calls["n"]]
+            calls["n"] += 1
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        with patch.object(gitlab_api.urllib.request, "urlopen", fake_urlopen), \
+                patch.object(gitlab_api.time, "sleep", lambda s: None):
+            result = gitlab_api.get_merge_request(
+                "at", "g/p", 7, base_url=self._BASE)
+        assert result == {"iid": 7}
+        assert calls["n"] == 2
+
     def test_non_429_errors_are_not_retried(self):
         import email.message
         import urllib.error

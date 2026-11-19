@@ -1297,6 +1297,47 @@ describe('WorkspaceSettings', () => {
     })
   })
 
+  it.each([
+    ['up_to_date', 'my-org/my-repo is already up to date. Nothing changed since the last sync.'],
+    ['success', 'Sync finished for my-org/my-repo'],
+  ])('polls a single-repo sync and reports %s', async (finalStatus, message) => {
+    const repo = { repo_name: 'my-org/my-repo', workspace_id: 'ws-1', installation_id: 'inst-1', enabled: true, include_code_maps: true, repo_type: 'application' as const, last_sync_at: null, last_sync_status: null, last_sync_error: null, last_commit_sha: null, added_at: '2024-01-01', added_by: 'user@test.com' }
+    mockListGitHubInstallations.mockResolvedValue([
+      { installation_id: 'inst-1', workspace_id: 'ws-1', account_login: 'my-org', account_type: 'Organization', permissions: { contents: 'read' }, created_by: 'user@test.com', created_at: '2024-01-01' },
+    ])
+    mockListGitHubRepos.mockResolvedValue([repo])
+    mockTriggerGitHubSync.mockResolvedValue(undefined)
+    renderSettings('integrations')
+
+    await waitFor(() => {
+      expect(screen.getByText('my-org/my-repo')).toBeInTheDocument()
+    })
+
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      // First poll still in progress, second poll has the final status.
+      mockListGitHubRepos.mockResolvedValue([{ ...repo, last_sync_status: 'in_progress' }])
+      const syncBtn = screen.getAllByTitle('Sync now')
+      await user.click(syncBtn[syncBtn.length - 1])
+      await waitFor(() => {
+        expect(mockTriggerGitHubSync).toHaveBeenCalledWith('ws-1', 'my-org/my-repo')
+      })
+      await vi.advanceTimersByTimeAsync(3000)
+      mockListGitHubRepos.mockResolvedValue([{ ...repo, last_sync_status: finalStatus }])
+      await vi.advanceTimersByTimeAsync(3000)
+
+      await waitFor(() => {
+        expect(screen.getByText(message)).toBeInTheDocument()
+      })
+      if (finalStatus === 'up_to_date') {
+        expect(screen.getByText('up to date')).toBeInTheDocument()
+      }
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   // Error handling tests
   it('shows and dismisses error messages', async () => {
     mockUpdateWorkspace.mockRejectedValue(new Error('Update failed'))
