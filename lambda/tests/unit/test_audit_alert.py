@@ -53,7 +53,9 @@ handler = handler_module.handler
 @pytest.fixture(autouse=True)
 def reset_mocks():
     """Reset mocks between tests."""
-    mock_sns_client.reset_mock()
+    # side_effect=True: the error-handling tests set a raising side_effect,
+    # which reset_mock() alone keeps and would leak into later tests.
+    mock_sns_client.reset_mock(side_effect=True)
     handler_module.SNS_TOPIC_ARN = "arn:aws:sns:us-east-1:123456789012:test-topic"
     yield
 
@@ -680,139 +682,47 @@ class TestDefaultFieldValues:
 class TestErrorHandling:
     """Test handler resilience to errors during processing."""
 
-    def test_handler_continues_after_sns_publish_error(self):
-        """Handler catches SNS error and continues to next record."""
-        mock_sns_client.publish.side_effect = [
-            ClientError(
-                {"Error": {"Code": "InvalidParameter", "Message": "Bad topic"}},
-                "Publish",
-            ),
-            {"MessageId": "msg-002"},
-        ]
-
-        event = {
-            "Records": [
-                {
-                    "eventName": "INSERT",
-                    "dynamodb": {
-                        "NewImage": {
-                            "status": {"S": "refusal"},
-                            "lambda_name": {"S": "lambda-1"},
-                            "model_id": {"S": "model"},
-                            "flagged_reason": {"S": "reason"},
-                            "user_email": {"S": ""},
-                            "workspace_id": {"S": ""},
-                            "timestamp": {"S": ""},
-                            "request_id": {"S": ""},
-                            "input_text": {"S": ""},
-                            "output_text": {"S": ""},
-                        }
-                    },
-                },
-                {
-                    "eventName": "INSERT",
-                    "dynamodb": {
-                        "NewImage": {
-                            "status": {"S": "refusal"},
-                            "lambda_name": {"S": "lambda-2"},
-                            "model_id": {"S": "model"},
-                            "flagged_reason": {"S": "reason"},
-                            "user_email": {"S": ""},
-                            "workspace_id": {"S": ""},
-                            "timestamp": {"S": ""},
-                            "request_id": {"S": ""},
-                            "input_text": {"S": ""},
-                            "output_text": {"S": ""},
-                        }
-                    },
-                },
-            ]
+    @staticmethod
+    def _refusal(name):
+        return {
+            "eventName": "INSERT",
+            "dynamodb": {
+                "NewImage": {
+                    "status": {"S": "refusal"},
+                    "lambda_name": {"S": name},
+                    "request_id": {"S": f"req-{name}"},
+                }
+            },
         }
 
-        result = handler(event, None)
+    def test_handler_raises_on_sns_publish_error(self):
+        """A failed publish must fail the invocation so the stream retries,
+        the on_failure destination fires, and the Errors alarm sees it."""
+        mock_sns_client.publish.side_effect = ClientError(
+            {"Error": {"Code": "KMSAccessDenied", "Message": "denied"}},
+            "Publish",
+        )
 
-        assert result["statusCode"] == 200
-        assert result["body"] == "Processed"
-        assert mock_sns_client.publish.call_count == 2
+        with pytest.raises(ClientError):
+            handler({"Records": [self._refusal("chat")]}, None)
 
-    def test_handler_catches_unexpected_exception(self):
-        """Handler catches unexpected errors without crashing."""
+    def test_handler_raises_on_unexpected_publish_exception(self):
+        """Non-ClientError failures propagate too."""
         mock_sns_client.publish.side_effect = RuntimeError("Unexpected failure")
 
-        event = {
-            "Records": [
-                {
-                    "eventName": "INSERT",
-                    "dynamodb": {
-                        "NewImage": {
-                            "status": {"S": "refusal"},
-                            "lambda_name": {"S": "chat-handler"},
-                            "model_id": {"S": "model"},
-                            "flagged_reason": {"S": "reason"},
-                            "user_email": {"S": ""},
-                            "workspace_id": {"S": ""},
-                            "timestamp": {"S": ""},
-                            "request_id": {"S": ""},
-                            "input_text": {"S": ""},
-                            "output_text": {"S": ""},
-                        }
-                    },
-                }
-            ]
-        }
+        with pytest.raises(RuntimeError):
+            handler({"Records": [self._refusal("chat")]}, None)
 
-        result = handler(event, None)
-
-        assert result["statusCode"] == 200
-        assert result["body"] == "Processed"
-
-    def test_handler_returns_processed_even_when_all_records_fail(self):
-        """Handler returns Processed even if every record raises an error."""
+    def test_handler_stops_at_first_failed_record(self):
+        """Records after a failed publish are not sent in this invocation;
+        the stream retry delivers them."""
         mock_sns_client.publish.side_effect = Exception("Total failure")
 
-        event = {
-            "Records": [
-                {
-                    "eventName": "INSERT",
-                    "dynamodb": {
-                        "NewImage": {
-                            "status": {"S": "refusal"},
-                            "lambda_name": {"S": "handler-a"},
-                            "model_id": {"S": "model"},
-                            "flagged_reason": {"S": "reason"},
-                            "user_email": {"S": ""},
-                            "workspace_id": {"S": ""},
-                            "timestamp": {"S": ""},
-                            "request_id": {"S": ""},
-                            "input_text": {"S": ""},
-                            "output_text": {"S": ""},
-                        }
-                    },
-                },
-                {
-                    "eventName": "INSERT",
-                    "dynamodb": {
-                        "NewImage": {
-                            "status": {"S": "refusal"},
-                            "lambda_name": {"S": "handler-b"},
-                            "model_id": {"S": "model"},
-                            "flagged_reason": {"S": "reason"},
-                            "user_email": {"S": ""},
-                            "workspace_id": {"S": ""},
-                            "timestamp": {"S": ""},
-                            "request_id": {"S": ""},
-                            "input_text": {"S": ""},
-                            "output_text": {"S": ""},
-                        }
-                    },
-                },
-            ]
-        }
-
-        result = handler(event, None)
-
-        assert result["statusCode"] == 200
-        assert result["body"] == "Processed"
+        with pytest.raises(Exception, match="Total failure"):
+            handler(
+                {"Records": [self._refusal("a"), self._refusal("b")]}, None
+            )
+        assert mock_sns_client.publish.call_count == 1
 
 
 # ============================================================================

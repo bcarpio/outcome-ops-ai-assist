@@ -112,8 +112,11 @@ resource "aws_lambda_event_source_mapping" "audit_logs_stream" {
   event_source_arn  = module.audit_logs_table.dynamodb_table_stream_arn
   function_name     = module.audit_alert_lambda.lambda_function_name
   starting_position = "LATEST"
-  batch_size        = 10
-  enabled           = true
+  # batch_size = 1: the handler raises on a failed publish so the stream
+  # retries; one record per batch means a retry cannot re-send alerts for
+  # records that already went out. Refusals are rare, so throughput is moot.
+  batch_size = 1
+  enabled    = true
 
   # Limit retries to prevent infinite loops on persistent failures
   maximum_retry_attempts        = 3

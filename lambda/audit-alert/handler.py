@@ -51,65 +51,74 @@ def handler(event, context):
         return {"statusCode": 200, "body": "No SNS topic configured"}
 
     for record in event.get("Records", []):
+        if record.get("eventName") != "INSERT":
+            continue
+
+        new_image = record.get("dynamodb", {}).get("NewImage", {})
+        if not new_image:
+            continue
+
+        # Extract fields from DynamoDB stream record (typed attribute values)
+        status = new_image.get("status", {}).get("S", "")
+        if status != "refusal":
+            continue
+
+        lambda_name = new_image.get("lambda_name", {}).get("S", "unknown")
+        model_id = new_image.get("model_id", {}).get("S", "unknown")
+        flagged_reason = new_image.get("flagged_reason", {}).get("S", "")
+        user_email = new_image.get("user_email", {}).get("S", "")
+        workspace_id = new_image.get("workspace_id", {}).get("S", "")
+        timestamp = new_image.get("timestamp", {}).get("S", "")
+        request_id = new_image.get("request_id", {}).get("S", "")
+        input_text = new_image.get("input_text", {}).get("S", "")
+        output_text = new_image.get("output_text", {}).get("S", "")
+
+        env = os.environ.get("ENV", "unknown")
+
+        if flagged_reason == "test_refusal_trigger":
+            subject = f"[TEST] AI Refusal Alert - {env.upper()}"
+        else:
+            subject = f"[{env.upper()}] AI Refusal Alert - {lambda_name}"
+
+        message = (
+            f"AI Refusal Detected\n"
+            f"{'=' * 50}\n\n"
+            f"Environment: {env}\n"
+            f"Lambda: {lambda_name}\n"
+            f"Model: {model_id}\n"
+            f"Timestamp: {timestamp}\n"
+            f"Request ID: {request_id}\n"
+            f"User: {user_email or 'N/A (pipeline)'}\n"
+            f"Workspace: {workspace_id or 'N/A'}\n"
+            f"Flagged Reason: {flagged_reason}\n\n"
+            f"Input (first 500 chars):\n"
+            f"{input_text[:500]}\n\n"
+            f"Output (first 500 chars):\n"
+            f"{output_text[:500]}\n"
+        )
+
+        # Let a publish failure raise. Swallowing it (as this handler used to)
+        # made the invocation succeed, so the stream never retried, the
+        # on_failure destination never fired, and the Errors alarm never saw
+        # it -- a KMS denial on this publish went unnoticed for four months.
+        # The event source mapping uses batch_size = 1, so a retry re-sends
+        # only this record and cannot duplicate alerts for its neighbours.
         try:
-            if record.get("eventName") != "INSERT":
-                continue
-
-            new_image = record.get("dynamodb", {}).get("NewImage", {})
-            if not new_image:
-                continue
-
-            # Extract fields from DynamoDB stream record (typed attribute values)
-            status = new_image.get("status", {}).get("S", "")
-            if status != "refusal":
-                continue
-
-            lambda_name = new_image.get("lambda_name", {}).get("S", "unknown")
-            model_id = new_image.get("model_id", {}).get("S", "unknown")
-            flagged_reason = new_image.get("flagged_reason", {}).get("S", "")
-            user_email = new_image.get("user_email", {}).get("S", "")
-            workspace_id = new_image.get("workspace_id", {}).get("S", "")
-            timestamp = new_image.get("timestamp", {}).get("S", "")
-            request_id = new_image.get("request_id", {}).get("S", "")
-            input_text = new_image.get("input_text", {}).get("S", "")
-            output_text = new_image.get("output_text", {}).get("S", "")
-
-            env = os.environ.get("ENV", "unknown")
-
-            if flagged_reason == "test_refusal_trigger":
-                subject = f"[TEST] AI Refusal Alert - {env.upper()}"
-            else:
-                subject = f"[{env.upper()}] AI Refusal Alert - {lambda_name}"
-
-            message = (
-                f"AI Refusal Detected\n"
-                f"{'=' * 50}\n\n"
-                f"Environment: {env}\n"
-                f"Lambda: {lambda_name}\n"
-                f"Model: {model_id}\n"
-                f"Timestamp: {timestamp}\n"
-                f"Request ID: {request_id}\n"
-                f"User: {user_email or 'N/A (pipeline)'}\n"
-                f"Workspace: {workspace_id or 'N/A'}\n"
-                f"Flagged Reason: {flagged_reason}\n\n"
-                f"Input (first 500 chars):\n"
-                f"{input_text[:500]}\n\n"
-                f"Output (first 500 chars):\n"
-                f"{output_text[:500]}\n"
-            )
-
             sns_client.publish(
                 TopicArn=SNS_TOPIC_ARN,
                 Subject=subject[:100],  # SNS subject max 100 chars
                 Message=message,
             )
-
-            logger.info(
-                f"[audit-alert] Sent refusal alert for {lambda_name} "
-                f"(request_id={request_id})"
+        except Exception:
+            logger.exception(
+                f"[audit-alert] Failed to publish refusal alert for "
+                f"{lambda_name} (request_id={request_id})"
             )
+            raise
 
-        except Exception as e:
-            logger.error(f"[audit-alert] Failed to process record: {e}")
+        logger.info(
+            f"[audit-alert] Sent refusal alert for {lambda_name} "
+            f"(request_id={request_id})"
+        )
 
     return {"statusCode": 200, "body": "Processed"}

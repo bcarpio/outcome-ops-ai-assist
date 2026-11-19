@@ -62,6 +62,10 @@ locals {
     "${var.environment}-${var.app_name}-salesforce-integration",
     "${var.environment}-${var.app_name}-salesforce-sync",
     "${var.environment}-${var.app_name}-salesforce-scheduler",
+    # Alert senders: if these fail, the alert email itself is what's lost,
+    # so the failure has to surface through a separate (CloudWatch) path.
+    "${var.environment}-${var.app_name}-audit-alert",
+    "${var.environment}-${var.app_name}-analytics-cost-alert",
   ]
 }
 
