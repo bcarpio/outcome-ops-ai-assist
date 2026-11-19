@@ -1,4 +1,4 @@
-.PHONY: help setup install fmt lint validate check-ha-parity test test-unit test-coverage test-ui audit build-run-tests-image build-ui-image build-mcp-server-image build-snyk-image build-database-images build-runtime-layer build-terraform-layer build-all-layers build-platform-layer build-all-images _ensure-image-tag-params pre-deploy deliver clean all ha-status ha-replay-dlq ha-list-secrets ha-sync-secrets ha-bootstrap ha-kms-migrate _ha-env-check
+.PHONY: help setup install fmt lint validate check-ha-parity test test-unit test-coverage coverage-new test-ui audit build-run-tests-image build-ui-image build-mcp-server-image build-snyk-image build-database-images build-runtime-layer build-terraform-layer build-all-layers build-platform-layer build-all-images _ensure-image-tag-params pre-deploy deliver clean all ha-status ha-replay-dlq ha-list-secrets ha-sync-secrets ha-bootstrap ha-kms-migrate _ha-env-check
 
 APP_NAME ?= outcome-ops-ai-assist
 AWS_REGION ?= us-west-2
@@ -22,6 +22,7 @@ help:
 	@echo "  make test             Run all Lambda function tests"
 	@echo "  make test-unit        Run only unit tests"
 	@echo "  make test-coverage    Run tests with coverage report"
+	@echo "  make coverage-new     Check the Sonar gate locally: >=80% coverage on changed lines"
 	@echo "  make test-ui          Run UI tests (React/Vitest)"
 	@echo ""
 	@echo "Security:"
@@ -178,6 +179,24 @@ test-unit:
 test-coverage:
 	@echo "Running tests with coverage report..."
 	$(MAKE) -C lambda/tests test-coverage
+
+# coverage-new mirrors the SonarCloud quality gate locally: at least 80% of
+# the lines changed since COVERAGE_BASE (default origin/main, i.e. what is not
+# pushed yet) must be covered. Total coverage can look healthy while new lines
+# are not, which is exactly what the gate fails on. diff-cover cannot mix XML
+# and lcov reports, so Python and UI are checked separately; the UI check runs
+# from ui/ because lcov paths are relative to it. Needs Node 20+ for UI coverage.
+COVERAGE_BASE ?= origin/main
+COVERAGE_MIN ?= 80
+DIFF_COVER_VERSION := 11.0.4
+
+coverage-new: test-coverage
+	@test -x venv/bin/diff-cover || venv/bin/pip install -q "diff-cover==$(DIFF_COVER_VERSION)"
+	@echo "Python: coverage of lines changed since $(COVERAGE_BASE)..."
+	venv/bin/diff-cover lambda/coverage.xml --compare-branch=$(COVERAGE_BASE) --fail-under=$(COVERAGE_MIN)
+	@echo "UI: coverage of lines changed since $(COVERAGE_BASE)..."
+	cd ui && npm run test:coverage --silent >/dev/null
+	cd ui && ../venv/bin/diff-cover coverage/lcov.info --compare-branch=$(COVERAGE_BASE) --fail-under=$(COVERAGE_MIN)
 
 test-ui:
 	@echo "Running UI tests..."

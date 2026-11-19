@@ -246,6 +246,13 @@ make test-ui
 # When adding new API functions or modifying component props, update the
 # vi.mock() blocks in the corresponding test files to include new exports.
 
+# 2b. Check coverage of the lines you changed (if any .py or ui/ files changed)
+make coverage-new
+# SonarCloud fails the quality gate when less than 80% of NEW code is
+# covered, even if total coverage is fine. This runs the same check locally
+# with diff-cover against origin/main. A green test run is not enough: an
+# untested new branch passes `make test-unit` and still fails the gate.
+
 # 3. Format and validate Terraform (if any .tf files changed)
 make fmt
 make validate-tf
