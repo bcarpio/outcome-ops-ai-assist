@@ -73,8 +73,9 @@ s3vectors_client = boto3.client("s3vectors")
 # ADR-035: bedrock_client is embeddings-only here (Titan via
 # invoke_model at line ~114). LLM-completion synthesis is delegated to
 # the ask-claude Lambda (which routes through shared.model_client per
-# ). bedrock_agent_runtime_client is for Bedrock Knowledge
-# Bases -- separate API, separate concern, also out-of-scope per ADR-035.
+# ). bedrock_agent_runtime_client is used only for the Bedrock Rerank
+# API (Cohere Rerank, ADR-023/033), which lives in that SDK client. The
+# platform does not use Bedrock Knowledge Bases; vectors are in S3 Vectors.
 bedrock_client = boto3.client("bedrock-runtime")
 bedrock_agent_runtime_client = boto3.client("bedrock-agent-runtime")
 
