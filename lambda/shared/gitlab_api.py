@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -51,10 +52,49 @@ def _enc(project_path: str) -> str:
     return urllib.parse.quote(project_path, safe="")
 
 
+# GitLab rate limits (429) are short-lived; retry in place rather than failing
+# the whole caller. Without this a 429 on a PR-check note post failed the SQS
+# message, which re-ran the entire check (LLM analysis included) 12 minutes
+# later just to post a comment. A 429 means GitLab rejected the request
+# without acting on it, so retrying a POST/PUT/DELETE is safe.
+_RATE_LIMIT_RETRIES = 3
+_RATE_LIMIT_MAX_SLEEP_S = 10.0
+
+
+def _retry_after_seconds(err: urllib.error.HTTPError, attempt: int) -> float:
+    """Seconds to wait before retrying a 429: GitLab's ``Retry-After`` when
+    present and numeric, else exponential backoff (1, 2, 4 ...). Capped so a
+    long reset window cannot eat the Lambda's timeout; the caller's own retry
+    (SQS redelivery) covers anything longer."""
+    header = err.headers.get("Retry-After") if err.headers else None
+    try:
+        wait = float(header) if header is not None else float(2 ** attempt)
+    except ValueError:
+        wait = float(2 ** attempt)
+    return max(0.0, min(wait, _RATE_LIMIT_MAX_SLEEP_S))
+
+
+def _urlopen(req: urllib.request.Request):
+    """``urllib.request.urlopen`` with in-place retry on HTTP 429.
+
+    Returns the open response (use it as a context manager). Any other error,
+    or a 429 that persists past ``_RATE_LIMIT_RETRIES``, propagates.
+    """
+    attempt = 0
+    while True:
+        try:
+            return urllib.request.urlopen(req, timeout=20)
+        except urllib.error.HTTPError as err:
+            if err.code != 429 or attempt >= _RATE_LIMIT_RETRIES:
+                raise
+            time.sleep(_retry_after_seconds(err, attempt))
+            attempt += 1
+
+
 def _request(access_token: str, url: str, raw: bool = False):
     req = urllib.request.Request(
         url, headers={"Authorization": f"Bearer {access_token}"})
-    with urllib.request.urlopen(req, timeout=20) as resp:
+    with _urlopen(req) as resp:
         body = resp.read()
         headers = resp.headers
     if raw:
@@ -188,7 +228,7 @@ def _send(access_token: str, path: str, payload: Dict, method: str,
         },
         method=method,
     )
-    with urllib.request.urlopen(req, timeout=20) as resp:
+    with _urlopen(req) as resp:
         return json.loads(resp.read())
 
 
@@ -309,5 +349,5 @@ def delete_merge_request_discussion_note(access_token: str, project_path: str,
         headers={"Authorization": f"Bearer {access_token}"},
         method="DELETE",
     )
-    with urllib.request.urlopen(req, timeout=20):
+    with _urlopen(req):
         return None

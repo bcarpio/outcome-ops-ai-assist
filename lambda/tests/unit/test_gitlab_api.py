@@ -211,3 +211,86 @@ class TestDiscussionNotes:
         assert req.full_url.endswith(
             "/merge_requests/7/discussions/disc-1/notes/55")
         assert "group%2Fsub%2Fproject" in req.full_url
+
+
+class TestRateLimitRetry:
+    """HTTP 429 is retried in place (Retry-After honoured, capped) instead of
+    failing the caller -- a failed PR-check note post used to re-run the whole
+    check via SQS redelivery."""
+
+    _BASE = "https://gitlab.example.com"
+
+    @staticmethod
+    def _429(retry_after=None):
+        import email.message
+        import urllib.error
+
+        headers = email.message.Message()
+        if retry_after is not None:
+            headers["Retry-After"] = retry_after
+        return urllib.error.HTTPError(
+            "https://gitlab.example.com/x", 429, "Too Many Requests", headers, None)
+
+    def _run(self, outcomes):
+        """Patch urlopen to raise/return ``outcomes`` in order; return
+        (result, urlopen call count, sleeps)."""
+        calls = {"n": 0}
+        sleeps = []
+
+        def fake_urlopen(req, timeout=None):
+            outcome = outcomes[calls["n"]]
+            calls["n"] += 1
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        with patch.object(gitlab_api.urllib.request, "urlopen", fake_urlopen), \
+                patch.object(gitlab_api.time, "sleep", sleeps.append):
+            result = gitlab_api.post_merge_request_note(
+                "at", "g/p", 7, "body", base_url=self._BASE)
+        return result, calls["n"], sleeps
+
+    def test_retries_429_then_succeeds_honouring_retry_after(self):
+        ok = _UrlopenResp(body=b'{"id": 1}')
+        result, n, sleeps = self._run([self._429("2"), ok])
+        assert result == {"id": 1}
+        assert n == 2
+        assert sleeps == [2.0]
+
+    def test_backoff_when_no_retry_after(self):
+        ok = _UrlopenResp(body=b'{"id": 1}')
+        _, n, sleeps = self._run([self._429(), self._429(), ok])
+        assert n == 3
+        assert sleeps == [1.0, 2.0]
+
+    def test_retry_after_is_capped(self):
+        ok = _UrlopenResp(body=b'{"id": 1}')
+        _, _, sleeps = self._run([self._429("3600"), ok])
+        assert sleeps == [gitlab_api._RATE_LIMIT_MAX_SLEEP_S]
+
+    def test_gives_up_after_max_retries(self):
+        import urllib.error
+
+        outcomes = [self._429("1")] * (gitlab_api._RATE_LIMIT_RETRIES + 1)
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            self._run(outcomes)
+        assert exc.value.code == 429
+
+    def test_non_429_errors_are_not_retried(self):
+        import email.message
+        import urllib.error
+
+        err = urllib.error.HTTPError(
+            "https://gitlab.example.com/x", 500, "boom", email.message.Message(), None)
+        calls = {"n": 0}
+
+        def fake_urlopen(req, timeout=None):
+            calls["n"] += 1
+            raise err
+
+        with patch.object(gitlab_api.urllib.request, "urlopen", fake_urlopen), \
+                patch.object(gitlab_api.time, "sleep", lambda s: None):
+            with pytest.raises(urllib.error.HTTPError):
+                gitlab_api.post_merge_request_note(
+                    "at", "g/p", 7, "body", base_url=self._BASE)
+        assert calls["n"] == 1
