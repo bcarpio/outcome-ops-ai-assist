@@ -483,10 +483,57 @@ def try_advance_sha(
         raise
 
 
+def advance_sha_without_work(
+    workspace_id: str,
+    repo: str,
+    pipeline: str,
+    target_sha: str,
+    target_commit_timestamp: int,
+) -> AdvanceResult:
+    """Advance ``last_{pipeline}_sha`` for a commit that needed no work.
+
+    For a commit that changed nothing this pipeline tracks (for example a
+    docs- or lockfile-only commit leaves zero code units to rebuild), no
+    ledger row is ever opened, so ``try_advance_sha`` can never fire and
+    the column would stay on the previous SHA -- indistinguishable from a
+    real failure. This writes the column directly, with the same guards as
+    ``try_advance_sha``: the repo row must still exist, and the commit
+    timestamp must be newer than the stored one.
+
+    ``pipeline`` is the column stem: ``code_map``, ``docs`` or ``gkg``.
+    """
+
+    column = f"last_{pipeline}_sha"
+    ts_column = f"last_{pipeline}_sha_ts"
+    try:
+        dual_write.ddb_update_item(
+            os.environ["WORKSPACES_TABLE"],
+            {"PK": _ws_pk(workspace_id), "SK": _ws_sk(repo)},
+            UpdateExpression=f"SET {column} = :sha, {ts_column} = :ts",
+            ConditionExpression=(
+                f"attribute_exists(PK) AND "
+                f"(attribute_not_exists({ts_column}) OR {ts_column} < :ts)"
+            ),
+            ExpressionAttributeValues={
+                ":sha": target_sha,
+                ":ts": int(target_commit_timestamp),
+            },
+            ReturnValuesOnConditionCheckFailure="ALL_OLD",
+        )
+        return AdvanceResult(True, "ok")
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            if not exc.response.get("Item"):
+                return AdvanceResult(False, "repo_removed")
+            return AdvanceResult(False, "stale_sha")
+        raise
+
+
 __all__ = (
     "AdvanceResult",
     "PendingBatch",
     "Pipeline",
+    "advance_sha_without_work",
     "mark_unit_complete",
     "mark_unit_failed",
     "open_pending_batch",

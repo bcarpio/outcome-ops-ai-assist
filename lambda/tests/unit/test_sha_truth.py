@@ -407,6 +407,46 @@ def test_try_advance_does_not_recreate_removed_repo(tables):
     assert "Item" not in ws_table.get_item(Key=key)
 
 
+def test_advance_sha_without_work_writes_column(tables):
+    """A commit with nothing to rebuild advances the column directly."""
+    from shared.sha_truth import advance_sha_without_work  # type: ignore
+
+    result = advance_sha_without_work(
+        WORKSPACE_ID, REPO, "code_map", SHA_A, COMMIT_TS_NEW)
+    assert (result.advanced, result.reason) == (True, "ok")
+
+    item = tables.Table(WORKSPACES_TABLE).get_item(
+        Key={"PK": f"WS#{WORKSPACE_ID}", "SK": f"GITHUB_REPO#{REPO}"}
+    )["Item"]
+    assert item["last_code_map_sha"] == SHA_A
+    assert int(item["last_code_map_sha_ts"]) == COMMIT_TS_NEW
+
+
+def test_advance_sha_without_work_is_monotonic(tables):
+    from shared.sha_truth import advance_sha_without_work  # type: ignore
+
+    advance_sha_without_work(WORKSPACE_ID, REPO, "gkg", SHA_B, COMMIT_TS_NEW)
+    result = advance_sha_without_work(
+        WORKSPACE_ID, REPO, "gkg", SHA_A, COMMIT_TS_OLD)
+    assert (result.advanced, result.reason) == (False, "stale_sha")
+
+    item = tables.Table(WORKSPACES_TABLE).get_item(
+        Key={"PK": f"WS#{WORKSPACE_ID}", "SK": f"GITHUB_REPO#{REPO}"}
+    )["Item"]
+    assert item["last_gkg_sha"] == SHA_B
+
+
+def test_advance_sha_without_work_does_not_recreate_removed_repo(tables):
+    from shared.sha_truth import advance_sha_without_work  # type: ignore
+
+    key = {"PK": f"WS#{WORKSPACE_ID}", "SK": f"GITHUB_REPO#{REPO}"}
+    tables.Table(WORKSPACES_TABLE).delete_item(Key=key)
+    result = advance_sha_without_work(
+        WORKSPACE_ID, REPO, "code_map", SHA_A, COMMIT_TS_NEW)
+    assert (result.advanced, result.reason) == (False, "repo_removed")
+    assert "Item" not in tables.Table(WORKSPACES_TABLE).get_item(Key=key)
+
+
 def test_try_advance_monotonic_blocks_older_sha(tables):
     """An older SHA (lower commit_timestamp) must NOT advance past a
     newer one. Commit timestamps are the monotonic ordering — SHAs

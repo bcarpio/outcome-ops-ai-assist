@@ -772,3 +772,78 @@ class TestArchSummaryWorkspaceAttribution:
             )
 
         assert mock_audit.call_args.kwargs["workspace_id"] == ""
+
+
+class TestZeroChangedUnitsAdvancesCodeMapSha:
+    """A GitHub commit whose incremental filter matches zero code units
+    (docs/lockfile-only) has no work to wait on, so last_code_map_sha and
+    last_gkg_sha must advance directly instead of staying on the previous
+    SHA (which looked identical to a failed regen)."""
+
+    _UNIT = {
+        "name": "api", "group_name": "api", "batch_type": "handler-group",
+        "storage_key": "api", "file_paths": ["src/api.py"],
+    }
+
+    def _event(self, **overrides):
+        body = {
+            "repo": "my-repo",
+            "repo_project": "acme/my-repo",
+            "repo_type": "application",
+            "all_files": ["src/api.py", "README.md"],
+            "workspace_id": "ws_eng",
+            "installation_id": "123",
+            "discover_code_units": True,
+            "last_commit_sha": "a" * 40,
+            "current_commit_sha": "b" * 40,
+            "commit_timestamp": 1700000000,
+        }
+        body.update(overrides)
+        return {"Records": [{"messageId": "m1", "receiptHandle": "h1",
+                             "body": json.dumps(body)}]}
+
+    def _run(self, changed_files, **overrides):
+        backend = MagicMock()
+        backend.detect_changes.return_value = MagicMock(changed_files=changed_files)
+        with patch.object(repo_summary_handler, "load_config"), \
+                patch.object(repo_summary_handler, "generate_architectural_summary",
+                             return_value="summary"), \
+                patch.object(repo_summary_handler, "generate_embedding",
+                             return_value=[0.1] * 1024), \
+                patch.object(repo_summary_handler, "store_code_map_embedding"), \
+                patch.object(repo_summary_handler, "s3_client"), \
+                patch.object(repo_summary_handler, "get_installation_token",
+                             return_value="tok"), \
+                patch.object(repo_summary_handler, "discover_code_units",
+                             return_value=[dict(self._UNIT)]), \
+                patch.object(repo_summary_handler, "fetch_repo_config", return_value={}), \
+                patch.object(repo_summary_handler, "get_backend_for_repo",
+                             return_value=backend), \
+                patch.object(repo_summary_handler, "_queue_orphan_code_map_cleanup"), \
+                patch.object(repo_summary_handler, "_expected_code_map_vector_keys",
+                             return_value=[]), \
+                patch.object(repo_summary_handler, "_open_code_map_units_ledger"), \
+                patch.object(repo_summary_handler, "_close_code_map_dispatch_ledger"), \
+                patch.object(repo_summary_handler, "send_code_units_to_sqs") as send, \
+                patch.object(repo_summary_handler,
+                             "_advance_code_map_without_work") as advance:
+            result = repo_summary_handler.handler(self._event(**overrides), None)
+        assert result["batchItemFailures"] == []
+        return send, advance
+
+    def test_zero_changed_units_advances_without_dispatch(self):
+        send, advance = self._run(["README.md"])
+        send.assert_not_called()
+        advance.assert_called_once_with(
+            "ws_eng", "acme/my-repo", "b" * 40, 1700000000)
+
+    def test_changed_unit_dispatches_and_does_not_shortcut(self):
+        send, advance = self._run(["src/api.py"])
+        send.assert_called_once()
+        advance.assert_not_called()
+
+    def test_non_github_provider_never_shortcuts(self):
+        # The SHA ledger is GitHub-only; other providers must not write
+        # GITHUB_REPO# columns.
+        send, advance = self._run(["README.md"], provider="gitlab")
+        advance.assert_not_called()

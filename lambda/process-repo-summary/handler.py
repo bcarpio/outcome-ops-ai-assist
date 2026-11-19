@@ -935,6 +935,49 @@ def _open_code_map_units_ledger(
         )
 
 
+def _advance_code_map_without_work(
+    workspace_id: str,
+    repo: str,
+    commit_sha: str,
+    commit_timestamp: int,
+) -> None:
+    """Close the dispatch ledger and advance ``last_code_map_sha`` and
+    ``last_gkg_sha`` for a commit whose incremental filter matched zero
+    code units. Best-effort, like the other ledger helpers here: a failure
+    leaves the columns on the previous SHA (the old behaviour), never
+    blocks the sync."""
+    try:
+        from shared.sha_truth import (  # type: ignore
+            advance_sha_without_work,
+            mark_unit_complete,
+        )
+    except Exception as exc:  # pragma: no cover - import-failure path
+        logger.warning(
+            "[process-repo-summary] sha_truth import failed: %s",
+            exc,
+        )
+        return
+    try:
+        # Close the single-unit dispatch stage github-sync opened, so the
+        # ledger row reads completed rather than lingering open until TTL.
+        mark_unit_complete(workspace_id, repo, "code_map_dispatch", commit_sha)
+        for pipeline in ("code_map", "gkg"):
+            result = advance_sha_without_work(
+                workspace_id, repo, pipeline, commit_sha, commit_timestamp,
+            )
+            logger.info(
+                "[process-repo-summary] zero code units changed for %s@%s; "
+                "%s advance: %s",
+                repo, commit_sha[:7], pipeline, result.reason,
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "[process-repo-summary] no-work code-map advance failed for "
+            "%s@%s: %s",
+            repo, commit_sha, exc,
+        )
+
+
 def _close_code_map_dispatch_ledger(
     workspace_id: str,
     repo: str,
@@ -1633,6 +1676,25 @@ def handler(event, context):
                     full_regen=full_regen,
                 )
                 logger.info(f"Queued {len(code_units)} code units for {repo}")
+            elif (
+                full_code_units
+                and provider == "github"
+                and workspace_id
+                and current_commit_sha
+                and current_commit_timestamp is not None
+            ):
+                # The incremental filter matched zero code units: this
+                # commit changed nothing code maps track (docs, lockfiles,
+                # CI config). There is no work to wait on, so close the
+                # dispatch stage and advance last_code_map_sha /
+                # last_gkg_sha directly. Without this the columns stayed on
+                # the previous SHA forever, which looked exactly like a
+                # failed regen. Gated on full_code_units being non-empty so
+                # a failed discovery (empty tree) never advances anything.
+                _advance_code_map_without_work(
+                    workspace_id, repo_project, current_commit_sha,
+                    int(current_commit_timestamp),
+                )
 
             # plan-git-truth close the dispatch-stage ledger
             # AFTER opening the units-stage. The dispatch close fires
