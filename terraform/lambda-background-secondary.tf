@@ -31,7 +31,72 @@
 # Secondary-region SNS topics
 # ----------------------------------------------------------------------------
 
-# trivy:ignore:AVD-AWS-0136 -- CMK encryption is optional via enable_cmk_encryption toggle
+# Secondary-region mirror of aws_kms_key.sns_alerts (sns.tf). CloudWatch
+# alarms cannot publish to a topic encrypted with alias/aws/sns (the
+# cloudwatch.amazonaws.com principal has no grant on the AWS-managed key), so
+# the secondary alert topics need the same dedicated, CloudWatch-compatible CMK
+# as the primary, independent of enable_cmk_encryption. Without it a failover
+# leaves secondary alarms going to ALARM with no email delivered.
+resource "aws_kms_key" "sns_alerts_secondary" {
+  count    = var.secondary_region != "" ? 1 : 0
+  provider = aws.secondary
+
+  description             = "CMK for ${var.environment}-${var.app_name} alerts SNS topics (CloudWatch-alarm compatible, secondary)"
+  deletion_window_in_days = 7
+  enable_key_rotation     = true
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowAccountAdmin"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowCloudWatchAlarmsToUseKey"
+        Effect = "Allow"
+        Principal = {
+          Service = "cloudwatch.amazonaws.com"
+        }
+        Action = [
+          "kms:GenerateDataKey*",
+          "kms:Decrypt",
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowEventBridgeToUseKey"
+        Effect = "Allow"
+        Principal = {
+          Service = "events.amazonaws.com"
+        }
+        Action = [
+          "kms:GenerateDataKey*",
+          "kms:Decrypt",
+        ]
+        Resource = "*"
+      },
+    ]
+  })
+
+  tags = {
+    Purpose = "sns-alerts"
+  }
+}
+
+resource "aws_kms_alias" "sns_alerts_secondary" {
+  count    = var.secondary_region != "" ? 1 : 0
+  provider = aws.secondary
+
+  name          = "alias/${var.environment}-${var.app_name}-sns-alerts"
+  target_key_id = aws_kms_key.sns_alerts_secondary[0].key_id
+}
+
 module "audit_alerts_sns_secondary" {
   source  = "terraform-aws-modules/sns/aws"
   version = "7.1.0"
@@ -43,7 +108,7 @@ module "audit_alerts_sns_secondary" {
   }
 
   name              = "${var.environment}-${var.app_name}-audit-alerts"
-  kms_master_key_id = var.enable_cmk_encryption ? aws_kms_key.data_at_rest_secondary[0].arn : "alias/aws/sns"
+  kms_master_key_id = aws_kms_key.sns_alerts_secondary[0].arn
 
   subscriptions = var.audit_alert_email != "" ? {
     email = {
@@ -55,7 +120,6 @@ module "audit_alerts_sns_secondary" {
   tags = { Purpose = "audit-alerts" }
 }
 
-# trivy:ignore:AVD-AWS-0136 -- CMK encryption is optional via enable_cmk_encryption toggle
 module "cost_alerts_sns_secondary" {
   source  = "terraform-aws-modules/sns/aws"
   version = "7.1.0"
@@ -67,7 +131,7 @@ module "cost_alerts_sns_secondary" {
   }
 
   name              = "${var.environment}-${var.app_name}-cost-alerts"
-  kms_master_key_id = var.enable_cmk_encryption ? aws_kms_key.data_at_rest_secondary[0].arn : "alias/aws/sns"
+  kms_master_key_id = aws_kms_key.sns_alerts_secondary[0].arn
 
   subscriptions = var.cost_alert_email != "" ? {
     email = {
@@ -131,17 +195,15 @@ module "audit_alert_lambda_secondary" {
       actions   = ["dynamodb:GetRecords", "dynamodb:GetShardIterator", "dynamodb:DescribeStream", "dynamodb:ListStreams"]
       resources = [module.audit_logs_table_secondary[0].dynamodb_table_stream_arn]
     }
+    # The alerts topic is encrypted with the sns_alerts_secondary CMK. A
+    # publisher needs GenerateDataKey + Decrypt on it (key policy delegates
+    # to IAM), mirroring the primary audit_alert_lambda grant.
+    sns_kms = {
+      effect    = "Allow"
+      actions   = ["kms:GenerateDataKey*", "kms:Decrypt"]
+      resources = [aws_kms_key.sns_alerts_secondary[0].arn]
+    }
     },
-    # Secondary topics use the data-at-rest CMK when enable_cmk_encryption is
-    # set (alias/aws/sns otherwise, which needs no identity grant). Publishing
-    # to a CMK-encrypted topic needs GenerateDataKey + Decrypt on that key.
-    var.enable_cmk_encryption ? {
-      sns_kms = {
-        effect    = "Allow"
-        actions   = ["kms:GenerateDataKey*", "kms:Decrypt"]
-        resources = [local.data_cmk_arn_secondary]
-      }
-    } : {},
     local.ha_scheduler_iam_secondary,
   )
 
@@ -352,15 +414,13 @@ module "analytics_cost_alert_lambda_secondary" {
       actions   = ["dynamodb:PutItem"]
       resources = [module.audit_logs_table_secondary[0].dynamodb_table_arn]
     }
-    },
     # See audit_alert_lambda_secondary above: CMK-encrypted topic publish.
-    var.enable_cmk_encryption ? {
-      sns_kms = {
-        effect    = "Allow"
-        actions   = ["kms:GenerateDataKey*", "kms:Decrypt"]
-        resources = [local.data_cmk_arn_secondary]
-      }
-    } : {},
+    sns_kms = {
+      effect    = "Allow"
+      actions   = ["kms:GenerateDataKey*", "kms:Decrypt"]
+      resources = [aws_kms_key.sns_alerts_secondary[0].arn]
+    }
+    },
     local.ha_scheduler_iam_secondary,
   )
 

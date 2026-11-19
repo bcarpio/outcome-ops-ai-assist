@@ -307,7 +307,10 @@ runtime resource.
   per-region.
 - **Regional SNS topics** for audit + cost alerts. Same subscription
   emails reconfigured by terraform — operators will see double-sub
-  confirmations during initial apply.
+  confirmations during initial apply. Each region encrypts its alert
+  topics with its own `sns-alerts` CMK (not `alias/aws/sns`, which
+  CloudWatch alarms cannot publish through), so alarm emails still
+  deliver after a failover.
 
 ### What is intentionally primary-only (ADR-043)
 
