@@ -61,6 +61,7 @@ handler_module = _load_handler_module()
 lambda_handler = handler_module.lambda_handler
 scan_github_repos_for_sync = handler_module.scan_github_repos_for_sync
 queue_sync_job = handler_module.queue_sync_job
+select_heal_slots = handler_module.select_heal_slots
 
 
 # ============================================================================
@@ -543,7 +544,9 @@ class TestLambdaHandler:
         mock_queue.return_value = True
 
         lambda_handler({}, None)
-        mock_queue.assert_called_once_with("ws_abc", "org/my-repo", "inst_xyz")
+        mock_queue.assert_called_once_with(
+            "ws_abc", "org/my-repo", "inst_xyz", heal_allowed=False,
+        )
 
     @patch.dict(os.environ, {"GITHUB_SCHEDULER_PARALLEL_WORKERS": "1"})
     @patch.object(handler_module, 'queue_sync_job')
@@ -723,6 +726,285 @@ class TestLambdaHandler:
         assert body["repos_scanned"] == 1
         assert body["repos_queued"] == 1
         assert body["repos_failed"] == 0
+
+
+# ============================================================================
+# Heal slots
+# ============================================================================
+
+NOW = 1_800_000_000.0
+
+
+def _repo(name, ws="ws_1", **overrides):
+    """Repo dict as returned by scan_github_repos_for_sync."""
+    base = {
+        "workspace_id": ws,
+        "repo_name": name,
+        "installation_id": "inst_1",
+        "last_sync_at": None,
+        "last_sync_status": "success",
+        "repo_type": "application",
+        "last_commit_sha": "head",
+        "last_docs_sha": "head",
+        "last_code_map_sha": "head",
+        "heal_next_at": None,
+    }
+    base.update(overrides)
+    return base
+
+
+class TestSelectHealSlots:
+    """Heal-candidate rules, ordering and cap."""
+
+    def test_select_heal_slots_docs_behind_is_candidate(self):
+        repos = [_repo("o/a", last_docs_sha="old")]
+        assert select_heal_slots(repos, NOW, 5) == {("ws_1", "o/a")}
+
+    def test_select_heal_slots_code_map_behind_is_candidate(self):
+        repos = [_repo("o/a", last_code_map_sha="old")]
+        assert select_heal_slots(repos, NOW, 5) == {("ws_1", "o/a")}
+
+    def test_select_heal_slots_all_caught_up_not_candidate(self):
+        assert select_heal_slots([_repo("o/a")], NOW, 5) == set()
+
+    def test_select_heal_slots_standards_repo_ignores_code_map(self):
+        repos = [_repo("o/a", repo_type="standards", last_code_map_sha="old")]
+        assert select_heal_slots(repos, NOW, 5) == set()
+
+    def test_select_heal_slots_standards_repo_docs_behind_is_candidate(self):
+        repos = [_repo("o/a", repo_type="standards", last_docs_sha="old",
+                       last_code_map_sha=None)]
+        assert select_heal_slots(repos, NOW, 5) == {("ws_1", "o/a")}
+
+    def test_select_heal_slots_legacy_row_without_columns_excluded(self):
+        repos = [_repo("o/a", last_docs_sha=None, last_code_map_sha=None)]
+        assert select_heal_slots(repos, NOW, 5) == set()
+
+    def test_select_heal_slots_missing_keys_excluded(self):
+        repos = [{"workspace_id": "ws_1", "repo_name": "o/a",
+                  "installation_id": "i", "last_sync_at": None,
+                  "last_sync_status": None}]
+        assert select_heal_slots(repos, NOW, 5) == set()
+
+    def test_select_heal_slots_no_commit_sha_excluded(self):
+        repos = [_repo("o/a", last_commit_sha=None, last_docs_sha="old")]
+        assert select_heal_slots(repos, NOW, 5) == set()
+
+    def test_select_heal_slots_stalled_excluded(self):
+        repos = [_repo("o/a", last_docs_sha="old", last_sync_status="stalled")]
+        assert select_heal_slots(repos, NOW, 5) == set()
+
+    def test_select_heal_slots_future_heal_next_at_excluded(self):
+        repos = [_repo("o/a", last_docs_sha="old", heal_next_at=NOW + 1)]
+        assert select_heal_slots(repos, NOW, 5) == set()
+
+    def test_select_heal_slots_heal_next_at_equal_now_included(self):
+        repos = [_repo("o/a", last_docs_sha="old", heal_next_at=NOW)]
+        assert select_heal_slots(repos, NOW, 5) == {("ws_1", "o/a")}
+
+    def test_select_heal_slots_decimal_heal_next_at_supported(self):
+        from decimal import Decimal
+        repos = [_repo("o/a", last_docs_sha="old",
+                       heal_next_at=Decimal(str(int(NOW - 10))))]
+        assert select_heal_slots(repos, NOW, 5) == {("ws_1", "o/a")}
+
+    def test_select_heal_slots_orders_absent_first_then_oldest_then_name(self):
+        repos = [
+            _repo("o/d", last_docs_sha="old", heal_next_at=NOW - 10),
+            _repo("o/c", last_docs_sha="old", heal_next_at=NOW - 100),
+            _repo("o/b", last_docs_sha="old"),
+            _repo("o/a", last_docs_sha="old"),
+        ]
+        assert select_heal_slots(repos, NOW, 1) == {("ws_1", "o/a")}
+        assert select_heal_slots(repos, NOW, 2) == {
+            ("ws_1", "o/a"), ("ws_1", "o/b"),
+        }
+        assert select_heal_slots(repos, NOW, 3) == {
+            ("ws_1", "o/a"), ("ws_1", "o/b"), ("ws_1", "o/c"),
+        }
+
+    def test_select_heal_slots_cap_limits_result(self):
+        repos = [_repo(f"o/r{i:02d}", last_docs_sha="old") for i in range(10)]
+        result = select_heal_slots(repos, NOW, 3)
+        assert result == {("ws_1", "o/r00"), ("ws_1", "o/r01"), ("ws_1", "o/r02")}
+
+    def test_select_heal_slots_cap_zero_grants_none(self):
+        repos = [_repo("o/a", last_docs_sha="old")]
+        assert select_heal_slots(repos, NOW, 0) == set()
+
+    def test_select_heal_slots_empty_repos_returns_empty(self):
+        assert select_heal_slots([], NOW, 20) == set()
+
+    def test_select_heal_slots_same_repo_name_different_workspaces(self):
+        repos = [
+            _repo("o/a", ws="ws_1", last_docs_sha="old"),
+            _repo("o/a", ws="ws_2", last_code_map_sha="old"),
+        ]
+        assert select_heal_slots(repos, NOW, 5) == {
+            ("ws_1", "o/a"), ("ws_2", "o/a"),
+        }
+
+
+class TestQueueSyncJobHealAllowed:
+    """heal_allowed appears on the message only when granted."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_side_effect(self):
+        # reset_mock() keeps side_effect set by earlier error-path tests.
+        mock_sqs_client.send_message.side_effect = None
+
+    def test_queue_sync_job_heal_allowed_true_adds_key(self):
+        assert queue_sync_job("ws", "o/r", "i", heal_allowed=True) is True
+        body = json.loads(mock_sqs_client.send_message.call_args[1]["MessageBody"])
+        assert body["heal_allowed"] is True
+        assert body["trigger"] == "scheduled"
+
+    def test_queue_sync_job_heal_allowed_false_omits_key(self):
+        queue_sync_job("ws", "o/r", "i", heal_allowed=False)
+        body = json.loads(mock_sqs_client.send_message.call_args[1]["MessageBody"])
+        assert "heal_allowed" not in body
+
+    def test_queue_sync_job_default_omits_key(self):
+        queue_sync_job("ws", "o/r", "i")
+        body = json.loads(mock_sqs_client.send_message.call_args[1]["MessageBody"])
+        assert "heal_allowed" not in body
+
+
+class TestScanReturnsHealColumns:
+    """scan_github_repos_for_sync carries the heal-decision columns."""
+
+    def test_scan_repos_returns_heal_columns(self):
+        mock_table = MagicMock()
+        mock_dynamodb_resource.Table.return_value = mock_table
+        mock_table.meta.client.get_paginator.return_value.paginate.return_value = [
+            {"Items": [{
+                "PK": "WS#ws_1", "SK": "GITHUB_REPO#o/a", "repo_name": "o/a",
+                "installation_id": "i", "repo_type": "standards",
+                "last_commit_sha": "c", "last_docs_sha": "d",
+                "last_code_map_sha": "m", "heal_next_at": 123,
+            }]},
+        ]
+        [repo] = scan_github_repos_for_sync()
+        assert repo["repo_type"] == "standards"
+        assert repo["last_commit_sha"] == "c"
+        assert repo["last_docs_sha"] == "d"
+        assert repo["last_code_map_sha"] == "m"
+        assert repo["heal_next_at"] == 123
+
+    def test_scan_repos_heal_columns_absent_are_none(self, sample_repos):
+        mock_table = MagicMock()
+        mock_dynamodb_resource.Table.return_value = mock_table
+        mock_table.meta.client.get_paginator.return_value.paginate.return_value = [
+            {"Items": sample_repos},
+        ]
+        result = scan_github_repos_for_sync()
+        for key in ("repo_type", "last_commit_sha", "last_docs_sha",
+                    "last_code_map_sha", "heal_next_at"):
+            assert result[0][key] is None
+
+
+class TestHandlerHealSlots:
+    """End-to-end: paginator-shaped scan, real queue_sync_job, mocked SQS."""
+
+    def _items(self, n_lagging, n_current):
+        items = []
+        for i in range(n_lagging):
+            items.append({
+                "PK": "WS#ws_1", "SK": f"GITHUB_REPO#o/lag{i:02d}",
+                "repo_name": f"o/lag{i:02d}", "installation_id": "i",
+                "include_code_maps": True, "last_sync_status": "success",
+                "last_commit_sha": "head", "last_docs_sha": "head",
+                "last_code_map_sha": "old",
+            })
+        for i in range(n_current):
+            items.append({
+                "PK": "WS#ws_1", "SK": f"GITHUB_REPO#o/ok{i:02d}",
+                "repo_name": f"o/ok{i:02d}", "installation_id": "i",
+                "include_code_maps": True, "last_sync_status": "success",
+                "last_commit_sha": "head", "last_docs_sha": "head",
+                "last_code_map_sha": "head",
+            })
+        return items
+
+    def _run(self, items, max_per_run, workers="8"):
+        # reset_mock() keeps side_effect set by earlier error-path tests.
+        mock_sqs_client.send_message.side_effect = None
+        mock_table = MagicMock()
+        mock_dynamodb_resource.Table.return_value = mock_table
+        # Two pages, as a real paginator would yield (ADR-013).
+        half = len(items) // 2
+        mock_table.meta.client.get_paginator.return_value.paginate.return_value = [
+            {"Items": items[:half]},
+            {"Items": items[half:]},
+        ]
+        with patch.object(handler_module, "GITHUB_SYNC_HEAL_MAX_PER_RUN", max_per_run), \
+                patch.dict(os.environ, {"GITHUB_SCHEDULER_PARALLEL_WORKERS": workers}):
+            result = lambda_handler({}, None)
+        bodies = [
+            json.loads(c[1]["MessageBody"])
+            for c in mock_sqs_client.send_message.call_args_list
+        ]
+        return result, bodies
+
+    def test_handler_grants_exactly_max_slots(self):
+        result, bodies = self._run(self._items(n_lagging=7, n_current=5), 3)
+        body = json.loads(result["body"])
+        assert body["repos_queued"] == 12
+        assert len(bodies) == 12
+        healed = sorted(b["repo_name"] for b in bodies if b.get("heal_allowed"))
+        assert healed == ["o/lag00", "o/lag01", "o/lag02"]
+        assert all(b["trigger"] == "scheduled" for b in bodies)
+
+    def test_handler_serial_path_grants_exactly_max_slots(self):
+        _, bodies = self._run(self._items(n_lagging=4, n_current=2), 2, workers="1")
+        assert len(bodies) == 6
+        assert sum(1 for b in bodies if b.get("heal_allowed")) == 2
+
+    def test_handler_fewer_candidates_than_slots(self):
+        _, bodies = self._run(self._items(n_lagging=2, n_current=3), 20)
+        assert sum(1 for b in bodies if b.get("heal_allowed")) == 2
+
+    def test_handler_max_per_run_zero_disables_healing(self):
+        _, bodies = self._run(self._items(n_lagging=4, n_current=1), 0)
+        assert len(bodies) == 5
+        assert not any("heal_allowed" in b for b in bodies)
+
+    def test_handler_logs_heal_summary(self, caplog):
+        import logging
+        with caplog.at_level(logging.INFO):
+            self._run(self._items(n_lagging=5, n_current=1), 2)
+        assert (
+            "[github-scheduler] queued 6 repos, 2 heal slots granted (5 candidates)"
+            in caplog.text
+        )
+
+
+def _load_isolated_module():
+    """Load a private copy of the handler without touching sys.modules."""
+    handler_path = os.path.join(
+        os.path.dirname(__file__), '../../github-scheduler/handler.py',
+    )
+    spec = importlib.util.spec_from_file_location(
+        "github_scheduler_handler_isolated", handler_path,
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_heal_max_per_run_env_default_is_20():
+    """Module-level default when the env var is unset."""
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("GITHUB_SYNC_HEAL_MAX_PER_RUN", None)
+        mod = _load_isolated_module()
+    assert mod.GITHUB_SYNC_HEAL_MAX_PER_RUN == 20
+
+
+def test_heal_max_per_run_env_override():
+    """GITHUB_SYNC_HEAL_MAX_PER_RUN is read at module level."""
+    with patch.dict(os.environ, {"GITHUB_SYNC_HEAL_MAX_PER_RUN": "0"}):
+        mod = _load_isolated_module()
+    assert mod.GITHUB_SYNC_HEAL_MAX_PER_RUN == 0
 
 
 # ============================================================================

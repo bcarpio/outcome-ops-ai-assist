@@ -71,6 +71,9 @@ ACTION_API_KEY_REVOKED = "API_KEY_REVOKED"
 ACTION_SYSTEM_PROMPT_UPDATED = "SYSTEM_PROMPT_UPDATED"
 ACTION_SYSTEM_PROMPT_RESET = "SYSTEM_PROMPT_RESET"
 ACTION_PRIVACY_MODE_UPDATED = "PRIVACY_MODE_UPDATED"
+# A workspace notification (e.g. a stalled repo) dismissed by a workspace
+# admin or the user who added the repo. Dismissal deletes it for everyone.
+ACTION_NOTIFICATION_DISMISSED = "NOTIFICATION_DISMISSED"
 ACTION_DOCUMENT_INGESTED = "DOCUMENT_INGESTED"
 
 # ----------------------------------------------------------------------------
@@ -162,6 +165,7 @@ ADMIN_ACTIONS = frozenset(
         ACTION_SYSTEM_PROMPT_UPDATED,
         ACTION_SYSTEM_PROMPT_RESET,
         ACTION_PRIVACY_MODE_UPDATED,
+        ACTION_NOTIFICATION_DISMISSED,
         ACTION_DOCUMENT_INGESTED,
         # Audit-completeness expansion:
         ACTION_LOGIN_SUCCEEDED,

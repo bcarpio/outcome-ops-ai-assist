@@ -133,6 +133,7 @@ from shared.audit_writer import (
     ACTION_WORKSPACE_SHARING_UPDATED,
     ACTION_ORG_MEMBER_ADDED,
     ACTION_ORG_MEMBER_REMOVED,
+    ACTION_NOTIFICATION_DISMISSED,
     ACTION_PRIVACY_MODE_UPDATED,
     ACTION_SYSTEM_PROMPT_RESET,
     ACTION_SYSTEM_PROMPT_UPDATED,
@@ -587,6 +588,13 @@ def _response(status_code: int, body: Dict) -> Dict:
         "headers": {"Content-Type": "application/json"},
         "body": json.dumps(body, default=str),
     }
+
+
+def _no_content() -> Dict:
+    """Build a 204 response with the same headers as ``_response``."""
+    response = _response(204, {})
+    response["body"] = ""
+    return response
 
 
 def _error(status_code: int, message: str) -> Dict:
@@ -4489,6 +4497,176 @@ def update_workspace_privacy(
 
 
 # ============================================================================
+# Notifications
+# ============================================================================
+
+# Stored fields never returned to the client.
+_NOTIFICATION_HIDDEN_FIELDS = ("PK", "SK", "ttl")
+
+
+def _get_notifications_table() -> str:
+    """Notifications table name from NOTIFICATIONS_TABLE.
+
+    Read per call, like ``_get_workspaces_table``, so tests can set the
+    variable per case.
+    """
+    return os.environ.get("NOTIFICATIONS_TABLE", "")
+
+
+def _query_workspace_notifications(notif_table: Any, workspace_id: str) -> List[Dict]:
+    """All NOTIF# rows for one workspace, following LastEvaluatedKey."""
+    items: List[Dict] = []
+    query_kwargs = {
+        "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk)",
+        "ExpressionAttributeValues": {
+            ":pk": f"WS#{workspace_id}",
+            ":sk": "NOTIF#",
+        },
+    }
+    while True:
+        response = notif_table.query(**query_kwargs)
+        items.extend(response.get("Items", []))
+        if "LastEvaluatedKey" not in response:
+            break
+        query_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+    return items
+
+
+def _public_notification(item: Dict) -> Dict:
+    """Return a notification row without its key and TTL attributes."""
+    return {
+        k: v for k, v in item.items() if k not in _NOTIFICATION_HIDDEN_FIELDS
+    }
+
+
+def list_notifications(user_email: str) -> Dict:
+    """GET /notifications.
+
+    Visibility: every row of a workspace the caller administers (org
+    admins administer every workspace), and in any other workspace the
+    caller belongs to only the rows whose ``added_by`` is the caller.
+    Newest first by ``updated_at``.
+    """
+    notif_table_name = _get_notifications_table()
+    if not notif_table_name:
+        logger.warning("NOTIFICATIONS_TABLE not configured")
+        return _response(200, {"notifications": []})
+
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+    notif_table = dynamodb.Table(notif_table_name)
+
+    try:
+        if _is_org_admin(table, user_email):
+            # Org admins see every workspace's notifications, matching
+            # list_workspaces' org-admin view.
+            workspace_ids = [
+                ws["workspace_id"]
+                for ws in _scan_all_workspaces(table)
+                if ws.get("workspace_id")
+            ]
+            admin_ids = set(workspace_ids)
+        else:
+            workspace_ids = _get_user_workspace_ids(table, user_email)
+            admin_ids = {
+                ws_id for ws_id in workspace_ids
+                if _is_workspace_admin(table, user_email, ws_id)
+            }
+
+        notifications: List[Dict] = []
+        for ws_id in dict.fromkeys(workspace_ids):
+            for item in _query_workspace_notifications(notif_table, ws_id):
+                if ws_id in admin_ids or item.get("added_by") == user_email:
+                    notifications.append(_public_notification(item))
+
+        notifications.sort(
+            key=lambda n: str(n.get("updated_at") or n.get("created_at") or ""),
+            reverse=True,
+        )
+        return _response(200, {"notifications": notifications})
+    except ClientError:
+        logger.exception("[workspace-management] Error listing notifications")
+        return _error(500, "Failed to list notifications")
+    except Exception:
+        logger.exception(
+            "[workspace-management] Unexpected error listing notifications"
+        )
+        return _error(500, "Internal server error")
+
+
+def dismiss_notification(
+    user_email: str,
+    workspace_id: str,
+    notification_id: str,
+    audit_ctx: Optional[Dict[str, str]] = None,
+) -> Dict:
+    """DELETE /workspaces/{id}/notifications/{notification_id}.
+
+    Allowed for a workspace admin of that workspace or the row's
+    ``added_by``. Deletes the row for everyone (dual_write, HA).
+    """
+    notif_table_name = _get_notifications_table()
+    if not notif_table_name:
+        logger.warning("NOTIFICATIONS_TABLE not configured")
+        return _error(503, "Notifications are not configured")
+
+    dynamodb = _get_dynamodb()
+    table = dynamodb.Table(_get_workspaces_table())
+    notif_table = dynamodb.Table(notif_table_name)
+
+    try:
+        is_admin = _is_workspace_admin(table, user_email, workspace_id)
+        # Non-members get 403 before the lookup so the endpoint does not
+        # reveal which notification ids exist in other workspaces.
+        if not is_admin and _get_membership(
+            table, user_email, workspace_id
+        ) is None:
+            return _error(403, "Not authorized to dismiss this notification")
+
+        key = {
+            "PK": f"WS#{workspace_id}",
+            "SK": f"NOTIF#{notification_id}",
+        }
+        item = notif_table.get_item(Key=key).get("Item")
+        if not item:
+            return _error(404, "Notification not found")
+
+        if not is_admin and item.get("added_by") != user_email:
+            return _error(403, "Not authorized to dismiss this notification")
+
+        dual_write.ddb_delete_item(notif_table_name, key)
+
+        ctx = audit_ctx or {}
+        log_admin_action(
+            AUDIT_TABLE,
+            ACTION_NOTIFICATION_DISMISSED,
+            workspace_id=workspace_id,
+            user_email=user_email,
+            source_ip=ctx.get("source_ip", ""),
+            user_agent=ctx.get("user_agent", ""),
+            details={
+                "notification_id": notification_id,
+                "type": item.get("type"),
+                "repo_name": item.get("repo_name"),
+                "added_by": item.get("added_by"),
+            },
+        )
+        logger.info(
+            f"Dismissed notification {notification_id} in workspace "
+            f"{workspace_id} by {user_email}"
+        )
+        return _no_content()
+    except ClientError:
+        logger.exception("[workspace-management] Error dismissing notification")
+        return _error(500, "Failed to dismiss notification")
+    except Exception:
+        logger.exception(
+            "[workspace-management] Unexpected error dismissing notification"
+        )
+        return _error(500, "Internal server error")
+
+
+# ============================================================================
 # Main Handler
 # ============================================================================
 
@@ -6197,6 +6375,23 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                 return blocked
             return update_workspace_privacy(
                 user_email, parts[1], body, audit_ctx,
+            )
+
+        # Route: GET /notifications
+        if parts == ("notifications",) and http_method == "GET":
+            return list_notifications(user_email)
+
+        # Route: DELETE /workspaces/{id}/notifications/{notification_id}
+        if (
+            len(parts) == 4
+            and parts[0] == "workspaces"
+            and parts[2] == "notifications"
+            and http_method == "DELETE"
+        ):
+            if blocked := _guard_or_block("dismiss_notification", parts[1]):
+                return blocked
+            return dismiss_notification(
+                user_email, parts[1], unquote(parts[3]), audit_ctx,
             )
 
         # Route: DELETE /workspaces/{id}/system-prompt

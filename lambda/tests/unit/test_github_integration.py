@@ -1785,6 +1785,33 @@ class TestHandleListRepos:
         assert repo["repo_type"] == "application"
         assert repo["last_sync_status"] == "pending"
 
+    @patch.object(handler_module, 'list_repos')
+    @patch.object(handler_module, '_get_dynamodb')
+    def test_list_repos_includes_branch_sha_and_failure_reason(
+        self, mock_db, mock_list, mock_dynamodb, mock_table, sample_repo,
+    ):
+        """The UI shows the sync branch chip, the commit, and why a repo
+        is stalled; all three must come back from the list endpoint."""
+        mock_db.return_value = mock_dynamodb
+        mock_table.get_item.return_value = {"Item": {"role": "member"}}
+        mock_list.return_value = [{
+            **sample_repo,
+            "default_branch": "master",
+            "last_commit_sha": "a" * 40,
+            "last_sync_status": "stalled",
+            "last_failure_reason": "units_failed",
+        }]
+
+        result = handle_list_repos(_authed_event(
+            path="/workspaces/ws_test/github/repos",
+            path_params={"id": "ws_test"},
+        ))
+        repo = json.loads(result["body"])["repos"][0]
+        assert repo["default_branch"] == "master"
+        assert repo["last_commit_sha"] == "a" * 40
+        assert repo["last_sync_status"] == "stalled"
+        assert repo["last_failure_reason"] == "units_failed"
+
     def test_list_repos_no_auth(self):
         """Test listing repos returns 401 without auth."""
         event = _make_event(

@@ -781,3 +781,214 @@ def test_two_overlapping_shas_late_finisher_does_not_clobber(tables):
     )["Item"]
     assert item["last_code_map_sha"] == SHA_B
     assert int(item["last_code_map_sha_ts"]) == COMMIT_TS_NEW
+
+
+# ===========================================================================
+# advance_past_failures
+# ===========================================================================
+# Used once the heal budget for a target SHA is spent: a CLOSED batch that
+# recorded failed units moves the completed-SHA baseline anyway, so one
+# permanently failing unit does not pin the repo forever.
+
+
+def _ws_item(tables):
+    return tables.Table(WORKSPACES_TABLE).get_item(
+        Key={"PK": f"WS#{WORKSPACE_ID}", "SK": f"GITHUB_REPO#{REPO}"}
+    ).get("Item")
+
+
+def _close_docs_with_failure(sha=SHA_A, ts=COMMIT_TS_NEW):
+    from shared.sha_truth import (  # type: ignore
+        mark_unit_complete,
+        mark_unit_failed,
+        open_pending_batch,
+    )
+
+    open_pending_batch(_make_batch(target_sha=sha, expected_count=2,
+                                   target_commit_timestamp=ts))
+    mark_unit_complete(WORKSPACE_ID, REPO, "docs", sha)
+    mark_unit_failed(WORKSPACE_ID, REPO, "docs", sha, "docs/bad.md",
+                     "decode_error", "not utf-8", 3)
+
+
+def test_advance_past_failures_docs_advances(tables):
+    from shared.sha_truth import advance_past_failures  # type: ignore
+
+    _close_docs_with_failure()
+    result = advance_past_failures(
+        WORKSPACE_ID, REPO, "docs", SHA_A, COMMIT_TS_NEW)
+    assert (result.advanced, result.reason) == (True, "ok")
+
+    item = _ws_item(tables)
+    assert item["last_docs_sha"] == SHA_A
+    assert int(item["last_docs_sha_ts"]) == COMMIT_TS_NEW
+    # The failure stays recorded.
+    failed = tables.Table(FAILED_TABLE).query(
+        KeyConditionExpression=Key("PK").eq(_ledger_pk()))["Items"]
+    assert [f["file_path"] for f in failed] == ["docs/bad.md"]
+
+
+def test_advance_past_failures_code_map_advances_code_map_and_gkg(tables):
+    from shared.sha_truth import (  # type: ignore
+        advance_past_failures,
+        mark_unit_complete,
+        mark_unit_failed,
+    )
+
+    _open_code_map_pair(dispatch_count=1, units_count=2)
+    mark_unit_complete(WORKSPACE_ID, REPO, "code_map_dispatch", SHA_A)
+    mark_unit_complete(WORKSPACE_ID, REPO, "code_map_units", SHA_A)
+    mark_unit_failed(WORKSPACE_ID, REPO, "code_map_units", SHA_A,
+                     "src/poison.py", "bedrock_error", "boom", 3)
+
+    result = advance_past_failures(
+        WORKSPACE_ID, REPO, "code_map", SHA_A, COMMIT_TS_NEW)
+    assert (result.advanced, result.reason) == (True, "ok")
+
+    item = _ws_item(tables)
+    assert item["last_code_map_sha"] == SHA_A
+    assert item["last_gkg_sha"] == SHA_A
+    assert int(item["last_code_map_sha_ts"]) == COMMIT_TS_NEW
+    assert int(item["last_gkg_sha_ts"]) == COMMIT_TS_NEW
+
+
+def test_advance_past_failures_code_map_dispatch_open_is_not_closed(tables):
+    from shared.sha_truth import (  # type: ignore
+        advance_past_failures,
+        mark_unit_complete,
+        mark_unit_failed,
+    )
+
+    _open_code_map_pair(dispatch_count=1, units_count=2)
+    mark_unit_complete(WORKSPACE_ID, REPO, "code_map_units", SHA_A)
+    mark_unit_failed(WORKSPACE_ID, REPO, "code_map_units", SHA_A,
+                     "src/poison.py", "bedrock_error", "boom", 3)
+
+    result = advance_past_failures(
+        WORKSPACE_ID, REPO, "code_map", SHA_A, COMMIT_TS_NEW)
+    assert (result.advanced, result.reason) == (False, "not_closed")
+    item = _ws_item(tables)
+    assert "last_code_map_sha" not in item
+    assert "last_gkg_sha" not in item
+
+
+def test_advance_past_failures_missing_row_is_not_closed(tables):
+    from shared.sha_truth import advance_past_failures  # type: ignore
+
+    result = advance_past_failures(
+        WORKSPACE_ID, REPO, "docs", SHA_A, COMMIT_TS_NEW)
+    assert (result.advanced, result.reason) == (False, "not_closed")
+    assert "last_docs_sha" not in _ws_item(tables)
+
+
+def test_advance_past_failures_code_map_missing_units_row(tables):
+    """Only the dispatch stage exists (units never opened) -> not_closed."""
+    from shared.sha_truth import (  # type: ignore
+        PendingBatch,
+        advance_past_failures,
+        mark_unit_failed,
+        open_pending_batch,
+    )
+
+    open_pending_batch(PendingBatch(
+        workspace_id=WORKSPACE_ID, repo=REPO, pipeline="code_map_dispatch",
+        target_sha=SHA_A, expected_count=1,
+        target_commit_timestamp=COMMIT_TS_NEW,
+    ))
+    mark_unit_failed(WORKSPACE_ID, REPO, "code_map_dispatch", SHA_A,
+                     "repo-summary", "error", "boom", 3)
+    result = advance_past_failures(
+        WORKSPACE_ID, REPO, "code_map", SHA_A, COMMIT_TS_NEW)
+    assert (result.advanced, result.reason) == (False, "not_closed")
+
+
+def test_advance_past_failures_open_docs_row_is_not_closed(tables):
+    from shared.sha_truth import (  # type: ignore
+        advance_past_failures,
+        mark_unit_failed,
+        open_pending_batch,
+    )
+
+    open_pending_batch(_make_batch(expected_count=3))
+    mark_unit_failed(WORKSPACE_ID, REPO, "docs", SHA_A, "docs/bad.md",
+                     "decode_error", "x", 3)
+    result = advance_past_failures(
+        WORKSPACE_ID, REPO, "docs", SHA_A, COMMIT_TS_NEW)
+    assert (result.advanced, result.reason) == (False, "not_closed")
+
+
+def test_advance_past_failures_clean_batch_is_no_failures(tables):
+    from shared.sha_truth import (  # type: ignore
+        advance_past_failures,
+        mark_unit_complete,
+        open_pending_batch,
+    )
+
+    open_pending_batch(_make_batch(expected_count=1))
+    mark_unit_complete(WORKSPACE_ID, REPO, "docs", SHA_A)
+    result = advance_past_failures(
+        WORKSPACE_ID, REPO, "docs", SHA_A, COMMIT_TS_NEW)
+    assert (result.advanced, result.reason) == (False, "no_failures")
+    assert "last_docs_sha" not in _ws_item(tables)
+
+
+def test_advance_past_failures_older_target_is_stale(tables):
+    from shared.sha_truth import (  # type: ignore
+        advance_past_failures,
+        advance_sha_without_work,
+    )
+
+    advance_sha_without_work(WORKSPACE_ID, REPO, "docs", SHA_B, COMMIT_TS_NEW)
+    _close_docs_with_failure(sha=SHA_A, ts=COMMIT_TS_OLD)
+    result = advance_past_failures(
+        WORKSPACE_ID, REPO, "docs", SHA_A, COMMIT_TS_OLD)
+    assert (result.advanced, result.reason) == (False, "stale_sha")
+    assert _ws_item(tables)["last_docs_sha"] == SHA_B
+
+
+def test_advance_past_failures_repo_removed(tables):
+    from shared.sha_truth import advance_past_failures  # type: ignore
+
+    _close_docs_with_failure()
+    key = {"PK": f"WS#{WORKSPACE_ID}", "SK": f"GITHUB_REPO#{REPO}"}
+    tables.Table(WORKSPACES_TABLE).delete_item(Key=key)
+    result = advance_past_failures(
+        WORKSPACE_ID, REPO, "docs", SHA_A, COMMIT_TS_NEW)
+    assert (result.advanced, result.reason) == (False, "repo_removed")
+    assert _ws_item(tables) is None
+
+
+def test_advance_past_failures_logs_warning(tables, caplog):
+    import logging
+
+    from shared.sha_truth import advance_past_failures  # type: ignore
+
+    _close_docs_with_failure()
+    with caplog.at_level(logging.WARNING, logger="shared.sha_truth"):
+        advance_past_failures(WORKSPACE_ID, REPO, "docs", SHA_A, COMMIT_TS_NEW)
+    messages = [r.getMessage() for r in caplog.records
+                if r.levelno == logging.WARNING]
+    assert f"advancing docs past 1 failed units for {REPO}@{SHA_A[:7]}" in messages
+
+
+def test_advance_past_failures_rejects_unknown_pipeline(tables):
+    from shared.sha_truth import advance_past_failures  # type: ignore
+
+    with pytest.raises(ValueError, match="invalid pipeline"):
+        advance_past_failures(WORKSPACE_ID, REPO, "gkg", SHA_A, COMMIT_TS_NEW)
+
+
+def test_advance_past_failures_ledger_read_error_is_not_closed(tables):
+    from shared import sha_truth  # type: ignore
+
+    err = ClientError(
+        {"Error": {"Code": "ProvisionedThroughputExceededException",
+                   "Message": "slow down"}},
+        "GetItem",
+    )
+    fake_table = MagicMock()
+    fake_table.get_item.side_effect = err
+    with patch.object(sha_truth, "_pending_table", return_value=fake_table):
+        result = sha_truth.advance_past_failures(
+            WORKSPACE_ID, REPO, "docs", SHA_A, COMMIT_TS_NEW)
+    assert (result.advanced, result.reason) == (False, "not_closed")

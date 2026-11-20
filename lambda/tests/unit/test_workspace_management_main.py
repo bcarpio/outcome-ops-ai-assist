@@ -1197,3 +1197,49 @@ class TestHandlerCalledWithNoneContext:
 
     def test_list_documents(self):
         self._assert_none_context("GET", "/workspaces/ws-1/documents")
+
+
+# ============================================================================
+# Notification routes
+# ============================================================================
+
+
+class TestNotificationRoutes:
+    """/notifications FastAPI wiring, including the empty-body 204."""
+
+    def test_list_notifications_forwards_to_handler(self):
+        mock_handler = _setup_mock_handler(
+            _mock_lambda_response(200, {"notifications": [{"notification_id": "notif_1"}]})
+        )
+        try:
+            response = TestClient(app).get("/notifications")
+            assert response.status_code == 200
+            assert response.json() == {"notifications": [{"notification_id": "notif_1"}]}
+            event = mock_handler.call_args[0][0]
+            assert event["requestContext"]["http"]["method"] == "GET"
+            assert event["requestContext"]["http"]["path"] == "/notifications"
+        finally:
+            _cleanup_handler()
+
+    def test_dismiss_returns_bare_204(self):
+        mock_handler = _setup_mock_handler({"statusCode": 204, "headers": {}, "body": ""})
+        try:
+            response = TestClient(app).delete("/workspaces/ws_1/notifications/notif_1")
+            assert response.status_code == 204
+            assert response.content == b""
+            event = mock_handler.call_args[0][0]
+            assert event["requestContext"]["http"]["method"] == "DELETE"
+            assert event["requestContext"]["http"]["path"] == (
+                "/workspaces/ws_1/notifications/notif_1"
+            )
+        finally:
+            _cleanup_handler()
+
+    def test_dismiss_error_passes_through_as_json(self):
+        _setup_mock_handler(_mock_lambda_response(403, {"error": "Not allowed"}))
+        try:
+            response = TestClient(app).delete("/workspaces/ws_1/notifications/notif_1")
+            assert response.status_code == 403
+            assert response.json() == {"error": "Not allowed"}
+        finally:
+            _cleanup_handler()

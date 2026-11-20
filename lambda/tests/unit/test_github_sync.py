@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import sys
+import time
 from unittest.mock import MagicMock, patch, call
 
 import pytest
@@ -1841,14 +1842,13 @@ class TestProcessSyncRequest:
                 "ws", "o/r", ("docs",), "sha123")
         assert "in-flight check failed for o/r@sha123: ddb down" in caplog.text
 
-    def test_scheduled_sync_still_skips_on_dispatched_sha(self):
-        """Scheduled behaviour is unchanged: last_commit_sha == HEAD skips,
-        and the status stays success (not up_to_date)."""
+    def test_scheduled_sync_legacy_row_at_head_skips(self):
+        """A legacy row (no completed columns) at HEAD is up to date: the
+        baselines fall back to last_commit_sha and the status is success."""
         with patch.object(handler_module, "get_repo", return_value={
                     "repo_type": "application",
                     "include_code_maps": True,
                     "last_commit_sha": "head_sha",
-                    "last_code_map_sha": "older_sha",
                 }), \
                 patch.object(handler_module, "update_sync_status") as status, \
                 patch.object(handler_module, "get_installation_token",
@@ -1969,6 +1969,571 @@ class TestProcessSyncRequest:
 
         # Should not be skipped - defaults to True
         assert result["status"] == "error"  # Error from token, not skipped
+
+
+class TestScheduledHeal:
+    """Scheduled syncs diff from completed SHAs and heal a commit whose run
+    died, within a per-target budget, never by a full rebuild."""
+
+    HEAD = "head_sha_0123456"
+    OLD = "older_sha_abcdef"
+
+    def _row(self, **extra):
+        row = {
+            "repo_type": "application",
+            "include_code_maps": True,
+            "last_sync_status": "success",
+            "added_by": "owner@example.com",
+        }
+        row.update(extra)
+        return row
+
+    def _heal_row(self, **extra):
+        """HEAD already dispatched, docs complete, code maps behind."""
+        return self._row(
+            last_commit_sha=self.HEAD,
+            last_docs_sha=self.HEAD,
+            last_code_map_sha=self.OLD,
+            **extra,
+        )
+
+    def _scheduled_sync(
+        self,
+        repo_row,
+        heal_allowed=False,
+        running=(),
+        compare=frozenset({"README.md"}),
+        trigger="scheduled",
+        advance_reason="not_closed",
+        failed_files=(["a.md"], 1),
+        ddb_side_effect=None,
+        notify_side_effect=None,
+        list_side_effect=None,
+    ):
+        """Run process_sync_request at HEAD with ``repo_row``. Returns a
+        namespace of the result and the mocks."""
+        from types import SimpleNamespace
+
+        from shared import notifications, sha_truth  # type: ignore
+
+        def in_flight(_ws, _repo, pipelines, sha):
+            assert sha == self.HEAD
+            return any(p in running for p in pipelines)
+
+        def compare_fn(*_args):
+            return set(compare) if compare is not None else None
+
+        message = {
+            "workspace_id": "ws_test",
+            "repo_name": "acme/my-repo",
+            "installation_id": "12345",
+            "trigger": trigger,
+        }
+        if heal_allowed:
+            message["heal_allowed"] = True
+
+        parent = MagicMock()
+        with patch.object(handler_module, "get_repo", return_value=repo_row), \
+                patch.object(handler_module, "_pipelines_in_flight",
+                             side_effect=in_flight), \
+                patch.object(handler_module, "update_sync_status") as status, \
+                patch.object(handler_module.dual_write, "ddb_update_item",
+                             side_effect=ddb_side_effect) as ddb, \
+                patch.object(handler_module, "get_installation_token",
+                             return_value="tok"), \
+                patch.object(handler_module, "resolve_sync_branch",
+                             return_value="main"), \
+                patch.object(handler_module, "get_latest_commit",
+                             return_value=(self.HEAD, 1700000000)), \
+                patch.object(handler_module, "get_repo_tree", return_value=[]), \
+                patch.object(handler_module, "fetch_changed_files",
+                             side_effect=compare_fn) as compare_mock, \
+                patch.object(handler_module, "_process_application_repo",
+                             return_value={"status": "success"}) as process_app, \
+                patch.object(handler_module, "_process_standards_repo",
+                             return_value={"status": "success"}) as process_std, \
+                patch.object(sha_truth, "advance_past_failures",
+                             return_value=MagicMock(reason=advance_reason)) as advance, \
+                patch.object(notifications, "notify_workspace",
+                             return_value=True,
+                             side_effect=notify_side_effect) as notify, \
+                patch.object(notifications, "list_failed_files",
+                             return_value=failed_files,
+                             side_effect=list_side_effect) as list_failed:
+            parent.attach_mock(ddb, "ddb")
+            parent.attach_mock(process_app, "process_app")
+            result = process_sync_request(message)
+        return SimpleNamespace(
+            result=result, status=status, ddb=ddb, compare=compare_mock,
+            process_app=process_app, process_std=process_std,
+            advance=advance, notify=notify, list_failed=list_failed,
+            parent=parent,
+        )
+
+    @staticmethod
+    def _ddb_calls(ddb, needle):
+        return [
+            c for c in ddb.call_args_list
+            if needle in c.kwargs.get("UpdateExpression", "")
+        ]
+
+    @staticmethod
+    def _statuses(status_mock):
+        return [c.args[2] for c in status_mock.call_args_list]
+
+    # -- new commit / up to date --------------------------------------
+
+    def test_process_sync_new_commit_dispatches_from_completed_baselines(self):
+        """Commit A died, commit B arrived: the diff starts at the last
+        COMPLETED SHA, so A's changes are included; heal attrs removed."""
+        run = self._scheduled_sync(self._row(
+            last_commit_sha="dispatched_a",
+            last_docs_sha="docs_done",
+            last_code_map_sha="cm_done",
+            heal_target_sha="dispatched_a", heal_attempts=2, heal_next_at=1,
+        ))
+        assert run.result["status"] == "success"
+        kwargs = run.process_app.call_args.kwargs
+        assert kwargs["last_commit_sha"] == "docs_done"
+        assert kwargs["code_map_last_sha"] == "cm_done"
+        assert kwargs["docs_changed_paths"] is None
+        removes = self._ddb_calls(run.ddb, "REMOVE heal_target_sha")
+        assert len(removes) == 1
+        run.compare.assert_not_called()  # not budgeted, no pre-flight
+
+    def test_process_sync_new_commit_legacy_row_falls_back_to_dispatched_sha(self):
+        """No completed columns: both baselines are last_commit_sha (today's
+        behaviour), never a full sync."""
+        run = self._scheduled_sync(self._row(last_commit_sha="dispatched_a"))
+        kwargs = run.process_app.call_args.kwargs
+        assert kwargs["last_commit_sha"] == "dispatched_a"
+        assert kwargs["code_map_last_sha"] == "dispatched_a"
+        assert not self._ddb_calls(run.ddb, "REMOVE heal_target_sha")
+
+    def test_process_sync_up_to_date_clears_heal_attrs(self):
+        run = self._scheduled_sync(self._row(
+            last_commit_sha=self.HEAD, last_docs_sha=self.HEAD,
+            last_code_map_sha=self.HEAD,
+            heal_target_sha=self.HEAD, heal_attempts=1,
+        ))
+        assert run.result["status"] == "no_changes"
+        assert self._ddb_calls(run.ddb, "REMOVE heal_target_sha")
+        assert run.status.call_args.args[2] == "success"
+
+    def test_process_sync_stalled_repo_up_to_date_keeps_stalled(self):
+        """units_failed advanced past the failures, so the row is at HEAD;
+        the scheduled run must not flip the status back to success."""
+        run = self._scheduled_sync(self._row(
+            last_commit_sha=self.HEAD, last_docs_sha=self.HEAD,
+            last_code_map_sha=self.HEAD, last_sync_status="stalled",
+        ))
+        assert run.result["status"] == "no_changes"
+        assert "success" not in self._statuses(run.status)
+        restores = self._ddb_calls(run.ddb, "SET last_sync_status = :prior")
+        assert restores[0].kwargs["ExpressionAttributeValues"][":prior"] == "stalled"
+
+    # -- heal gate ------------------------------------------------------
+
+    def test_process_sync_heal_without_slot_is_deferred(self):
+        run = self._scheduled_sync(self._heal_row())
+        assert run.result["status"] == "heal_deferred"
+        run.process_app.assert_not_called()
+        assert set(self._statuses(run.status)) == {"in_progress"}
+        restores = self._ddb_calls(run.ddb, "SET last_sync_status = :prior")
+        assert restores[0].kwargs["ExpressionAttributeValues"][":prior"] == "success"
+
+    def test_process_sync_heal_batch_live_is_already_running_without_status(self):
+        run = self._scheduled_sync(
+            self._heal_row(), heal_allowed=True, running=("code_map_units",),
+        )
+        assert run.result["status"] == "already_running"
+        run.process_app.assert_not_called()
+        assert "already_running" not in self._statuses(run.status)
+        assert not self._ddb_calls(run.ddb, "heal_attempts = :n")
+
+    def test_process_sync_heal_first_attempt_recorded_before_dispatch(self):
+        before = int(time.time())
+        run = self._scheduled_sync(self._heal_row(), heal_allowed=True)
+        after = int(time.time())
+        assert run.result["status"] == "success"
+
+        records = self._ddb_calls(run.ddb, "SET heal_target_sha = :sha")
+        assert len(records) == 1
+        values = records[0].kwargs["ExpressionAttributeValues"]
+        assert values[":sha"] == self.HEAD
+        assert values[":n"] == 1
+        assert before + 3600 <= values[":next"] <= after + 3600
+        assert "heal_target_sha <> :sha" in records[0].kwargs["ConditionExpression"]
+
+        order = [
+            "record" if c[0] == "ddb"
+            and "heal_attempts = :n" in c.kwargs.get("UpdateExpression", "")
+            else c[0]
+            for c in run.parent.mock_calls
+        ]
+        assert order.index("record") < order.index("process_app")
+
+        kwargs = run.process_app.call_args.kwargs
+        assert kwargs["last_commit_sha"] == self.HEAD
+        assert kwargs["code_map_last_sha"] == self.OLD
+        run.compare.assert_called_once_with(
+            "tok", "acme", "my-repo", self.OLD, self.HEAD)
+
+    def test_process_sync_heal_docs_behind_passes_preflight_compare(self):
+        """The dispatch reuses the pre-flight compare for docs, so it can
+        never fall back to a full upload."""
+        run = self._scheduled_sync(self._row(
+            last_commit_sha=self.HEAD, last_docs_sha=self.OLD,
+            last_code_map_sha=self.HEAD,
+        ), heal_allowed=True, compare={"docs/a.md"})
+        kwargs = run.process_app.call_args.kwargs
+        assert kwargs["last_commit_sha"] == self.OLD
+        assert kwargs["docs_changed_paths"] == {"docs/a.md"}
+
+    def test_process_sync_heal_shared_baseline_compares_once(self):
+        run = self._scheduled_sync(self._row(
+            last_commit_sha=self.HEAD, last_docs_sha=self.OLD,
+            last_code_map_sha=self.OLD,
+        ), heal_allowed=True, compare={"a.md"})
+        assert run.result["status"] == "success"
+        run.compare.assert_called_once()
+        kwargs = run.process_app.call_args.kwargs
+        assert kwargs["code_map_last_sha"] == self.OLD
+        assert kwargs["docs_changed_paths"] == {"a.md"}
+
+    def test_process_sync_heal_standards_repo_routes_with_compare(self):
+        run = self._scheduled_sync(self._row(
+            repo_type="standards",
+            last_commit_sha=self.HEAD, last_docs_sha=self.OLD,
+        ), heal_allowed=True, compare={"adr/1.md"})
+        assert run.result["status"] == "success"
+        kwargs = run.process_std.call_args.kwargs
+        assert kwargs["last_commit_sha"] == self.OLD
+        assert kwargs["docs_changed_paths"] == {"adr/1.md"}
+
+    def test_process_sync_heal_inside_backoff_window_backs_off(self):
+        run = self._scheduled_sync(self._heal_row(
+            heal_target_sha=self.HEAD, heal_attempts=1,
+            heal_next_at=int(time.time()) + 1000,
+        ), heal_allowed=True)
+        assert run.result["status"] == "heal_backoff"
+        run.process_app.assert_not_called()
+        assert not self._ddb_calls(run.ddb, "SET heal_target_sha = :sha")
+
+    def test_process_sync_heal_second_attempt_doubles_backoff(self):
+        before = int(time.time())
+        run = self._scheduled_sync(self._heal_row(
+            heal_target_sha=self.HEAD, heal_attempts=1,
+            heal_next_at=before - 1,
+        ), heal_allowed=True)
+        assert run.result["status"] == "success"
+        record = self._ddb_calls(run.ddb, "SET heal_target_sha = :sha")[0]
+        values = record.kwargs["ExpressionAttributeValues"]
+        assert values[":n"] == 2
+        assert values[":prev"] == 1
+        assert values[":next"] >= before + 7200
+        assert "heal_attempts = :prev" in record.kwargs["ConditionExpression"]
+
+    def test_process_sync_heal_target_changed_resets_attempts(self):
+        run = self._scheduled_sync(self._heal_row(
+            heal_target_sha="some_other_sha", heal_attempts=3,
+            heal_next_at=int(time.time()) + 99999,
+        ), heal_allowed=True)
+        assert run.result["status"] == "success"
+        values = self._ddb_calls(
+            run.ddb, "SET heal_target_sha = :sha")[0].kwargs["ExpressionAttributeValues"]
+        assert values[":n"] == 1
+        run.advance.assert_not_called()
+
+    def test_process_sync_heal_concurrent_record_does_not_dispatch(self):
+        def ddb(*_args, **kwargs):
+            if "heal_attempts = :n" in kwargs.get("UpdateExpression", ""):
+                raise ClientError(
+                    {"Error": {"Code": "ConditionalCheckFailedException"}},
+                    "UpdateItem")
+            return {}
+
+        run = self._scheduled_sync(
+            self._heal_row(), heal_allowed=True, ddb_side_effect=ddb)
+        assert run.result["status"] == "heal_backoff"
+        run.process_app.assert_not_called()
+
+    def test_process_sync_heal_logs_attempt_line(self, caplog):
+        with caplog.at_level("INFO"):
+            self._scheduled_sync(self._heal_row(), heal_allowed=True)
+        assert (
+            "[github-sync] heal attempt 1/3 for acme/my-repo@head_sh: "
+            "docs_baseline=head_sh code_map_baseline=older_s"
+        ) in caplog.text
+
+    # -- stalled --------------------------------------------------------
+
+    def test_process_sync_budget_exhausted_closed_failures_is_units_failed(self):
+        run = self._scheduled_sync(self._heal_row(
+            heal_target_sha=self.HEAD, heal_attempts=3, heal_next_at=1,
+        ), heal_allowed=True, advance_reason="ok",
+            failed_files=(["src/a.py", "src/b.py"], 7))
+        assert run.result == {
+            "status": "stalled", "reason": "units_failed",
+            "commit_sha": self.HEAD,
+        }
+        run.process_app.assert_not_called()
+        run.advance.assert_called_once_with(
+            "ws_test", "acme/my-repo", "code_map", self.HEAD, 1700000000)
+        stalled = run.status.call_args
+        assert stalled.args[2] == "stalled"
+        assert stalled.kwargs["last_failure_reason"] == "units_failed"
+        run.list_failed.assert_called_once_with(
+            "ws_test", "acme/my-repo", self.HEAD)
+        notify = run.notify.call_args
+        assert notify.args == ("ws_test",)
+        assert notify.kwargs["type"] == "repo_stalled"
+        assert notify.kwargs["severity"] == "error"
+        assert notify.kwargs["reason"] == "units_failed"
+        assert notify.kwargs["added_by"] == "owner@example.com"
+        assert notify.kwargs["repo_name"] == "acme/my-repo"
+        assert notify.kwargs["target_sha"] == self.HEAD
+        assert notify.kwargs["failed_files"] == ["src/a.py", "src/b.py"]
+        assert notify.kwargs["failed_files_total"] == 7
+        assert "Press Sync now to retry" in notify.kwargs["message"]
+
+    def test_process_sync_budget_exhausted_open_batch_is_budget_exhausted(self):
+        run = self._scheduled_sync(self._row(
+            last_commit_sha=self.HEAD, last_docs_sha=self.OLD,
+            last_code_map_sha=self.OLD,
+            heal_target_sha=self.HEAD, heal_attempts=3, heal_next_at=1,
+        ), heal_allowed=True, advance_reason="not_closed")
+        assert run.result["reason"] == "heal_budget_exhausted"
+        assert [c.args[2] for c in run.advance.call_args_list] == [
+            "docs", "code_map"]
+        assert run.status.call_args.kwargs["last_failure_reason"] == (
+            "heal_budget_exhausted")
+        run.list_failed.assert_not_called()
+        notify = run.notify.call_args.kwargs
+        assert notify["severity"] == "warning"
+        assert notify["failed_files"] == []
+        assert notify["failed_files_total"] == 0
+
+    def test_process_sync_heal_compare_failure_is_baseline_unreachable(self):
+        run = self._scheduled_sync(
+            self._heal_row(), heal_allowed=True, compare=None)
+        assert run.result["reason"] == "baseline_unreachable"
+        run.process_app.assert_not_called()
+        assert not self._ddb_calls(run.ddb, "SET heal_target_sha = :sha")
+        assert run.status.call_args.args[2] == "stalled"
+        assert run.status.call_args.kwargs["last_failure_reason"] == (
+            "baseline_unreachable")
+        assert run.notify.call_args.kwargs["reason"] == "baseline_unreachable"
+
+    def test_process_sync_notifier_failure_does_not_fail_sync(self, caplog):
+        with caplog.at_level("WARNING"):
+            run = self._scheduled_sync(
+                self._heal_row(), heal_allowed=True, compare=None,
+                notify_side_effect=RuntimeError("table gone"))
+        assert run.result["status"] == "stalled"
+        assert "stalled notification failed for acme/my-repo" in caplog.text
+
+    def test_process_sync_failed_files_read_error_still_notifies(self, caplog):
+        with caplog.at_level("WARNING"):
+            run = self._scheduled_sync(self._heal_row(
+                heal_target_sha=self.HEAD, heal_attempts=3,
+            ), heal_allowed=True, advance_reason="ok",
+                list_side_effect=RuntimeError("throttled"))
+        assert run.result["reason"] == "units_failed"
+        assert run.status.call_args.args[2] == "stalled"
+        notify = run.notify.call_args.kwargs
+        assert notify["failed_files"] == []
+        assert notify["failed_files_total"] == 0
+        assert "failed-files read failed" in caplog.text
+
+    # -- manual ---------------------------------------------------------
+
+    def test_process_sync_manual_removes_heal_attrs(self):
+        run = self._scheduled_sync(self._heal_row(
+            heal_target_sha=self.HEAD, heal_attempts=3, heal_next_at=1,
+        ), trigger="manual")
+        assert run.result["status"] == "success"
+        assert self._ddb_calls(run.ddb, "REMOVE heal_target_sha")
+        run.advance.assert_not_called()
+        run.compare.assert_not_called()
+        assert run.process_app.call_args.kwargs["code_map_last_sha"] == self.OLD
+
+
+class TestHealHelpers:
+    """Row-write helpers behind the heal flow."""
+
+    def test_restore_sync_status_without_prior_removes(self):
+        with patch.object(handler_module.dual_write, "ddb_update_item") as ddb:
+            handler_module._restore_sync_status("ws", "o/r", None)
+        kwargs = ddb.call_args.kwargs
+        assert kwargs["UpdateExpression"] == "REMOVE last_sync_status"
+        assert "last_sync_status = :ip" in kwargs["ConditionExpression"]
+
+    def test_restore_sync_status_swallows_errors(self, caplog):
+        ccf = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
+        with patch.object(handler_module.dual_write, "ddb_update_item",
+                          side_effect=ccf):
+            handler_module._restore_sync_status("ws", "o/r", "success")
+        with patch.object(handler_module.dual_write, "ddb_update_item",
+                          side_effect=RuntimeError("boom")), \
+                caplog.at_level("WARNING"):
+            handler_module._restore_sync_status("ws", "o/r", "success")
+        assert "status restore failed for o/r" in caplog.text
+
+    def test_clear_heal_state_swallows_errors(self, caplog):
+        ccf = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
+        with patch.object(handler_module.dual_write, "ddb_update_item",
+                          side_effect=ccf):
+            handler_module._clear_heal_state("ws", "o/r")
+        with patch.object(handler_module.dual_write, "ddb_update_item",
+                          side_effect=RuntimeError("boom")), \
+                caplog.at_level("WARNING"):
+            handler_module._clear_heal_state("ws", "o/r")
+        assert "heal state clear failed for o/r" in caplog.text
+
+    def test_record_heal_attempt_aws_error_propagates(self):
+        """Dispatching without a recorded attempt would bypass the budget."""
+        with patch.object(handler_module.dual_write, "ddb_update_item",
+                          side_effect=ClientError(
+                              {"Error": {"Code": "ProvisionedThroughputExceededException"}},
+                              "UpdateItem")):
+            with pytest.raises(ClientError):
+                handler_module._record_heal_attempt(
+                    "ws", "o/r", "sha", 0, False, 1)
+
+    def test_advance_past_failures_error_means_not_advanced(self):
+        from shared import sha_truth  # type: ignore
+
+        with patch.object(sha_truth, "advance_past_failures",
+                          side_effect=ValueError("bad pipeline")):
+            assert not handler_module._advance_past_failures(
+                "ws", "o/r", "docs", "sha1234", 1)
+
+    @pytest.mark.parametrize("status", [
+        "heal_deferred", "heal_backoff", "stalled", "already_running",
+    ])
+    def test_lambda_handler_heal_outcomes_are_not_redelivered(self, status):
+        with patch.object(handler_module, "process_sync_request",
+                          return_value={"status": status}):
+            out = lambda_handler({"Records": [
+                {"messageId": "m1", "body": json.dumps({"workspace_id": "w"})},
+            ]}, None)
+        assert out == {"batchItemFailures": []}
+
+
+class TestDocContentFetch:
+    """Doc content comes from the synced commit; bad bytes fail one unit."""
+
+    def _github_response(self, raw: bytes):
+        import base64
+
+        body = json.dumps({
+            "type": "file",
+            "content": base64.b64encode(raw).decode(),
+        }).encode()
+        resp = MagicMock()
+        resp.__enter__.return_value.read.return_value = body
+        return resp
+
+    def test_get_file_content_non_utf8_returns_none_and_records_reason(self, caplog):
+        failures = {}
+        with patch("urllib.request.urlopen",
+                   return_value=self._github_response(b"\xff\xfe\x00bad")), \
+                caplog.at_level("WARNING"):
+            out = handler_module.get_file_content(
+                "tok", "acme", "repo", "docs/latin1.txt", "sha1",
+                failures=failures)
+        assert out is None
+        assert failures == {"docs/latin1.txt": "decode_error"}
+        assert "docs/latin1.txt" in caplog.text
+        assert "not valid UTF-8" in caplog.text
+
+    def test_get_file_content_utf8_decodes(self):
+        with patch("urllib.request.urlopen",
+                   return_value=self._github_response("hello".encode())):
+            assert handler_module.get_file_content(
+                "tok", "acme", "repo", "a.md", "sha1") == "hello"
+
+    @staticmethod
+    def _content_side_effect(token, owner, repo, path, ref, failures=None):
+        if path == "bad.md":
+            failures[path] = "decode_error"
+            return None
+        return "# ok"
+
+    def test_application_repo_decode_error_marks_unit_and_continues(self):
+        tree = [
+            {"path": "bad.md", "type": "blob", "sha": "a", "size": 10},
+            {"path": "good.md", "type": "blob", "sha": "b", "size": 10},
+        ]
+        with patch.object(handler_module, "fetch_ingestion_config",
+                          return_value=[]), \
+                patch.object(handler_module, "get_file_content",
+                             side_effect=self._content_side_effect) as get_content, \
+                patch.object(handler_module, "upload_file_to_s3",
+                             return_value="key"), \
+                patch.object(handler_module, "_mark_docs_unit_fetch_failed") as mark, \
+                patch.object(handler_module, "_open_docs_pending_batch"), \
+                patch.object(handler_module, "_queue_orphan_detection"), \
+                patch.object(handler_module, "_open_code_map_dispatch_ledger"), \
+                patch.object(handler_module, "queue_repo_for_code_maps",
+                             return_value=True), \
+                patch.object(handler_module, "update_sync_status"):
+            result = _process_application_repo(
+                workspace_id="ws_test", repo_name="acme/my-repo",
+                repo_type="application", installation_id="1",
+                owner="acme", repo_short="my-repo", token="tok",
+                default_branch="main", tree=tree,
+                current_sha="commit123", current_commit_timestamp=1,
+            )
+        assert result["status"] == "success"
+        assert result["docs_uploaded"] == 1
+        mark.assert_called_once_with(
+            "ws_test", "acme/my-repo", "commit123", "bad.md",
+            failure_reason="decode_error")
+        assert {c.args[4] for c in get_content.call_args_list} == {"commit123"}
+
+    def test_standards_repo_fetches_docs_at_commit_sha(self):
+        tree = [
+            {"path": "bad.md", "type": "blob", "sha": "a", "size": 10},
+            {"path": "adr.md", "type": "blob", "sha": "b", "size": 10},
+        ]
+        with patch.object(handler_module, "get_file_content",
+                          side_effect=self._content_side_effect) as get_content, \
+                patch.object(handler_module, "upload_file_to_s3",
+                             return_value="key"), \
+                patch.object(handler_module, "_mark_docs_unit_fetch_failed") as mark, \
+                patch.object(handler_module, "_open_docs_pending_batch"), \
+                patch.object(handler_module, "_queue_orphan_detection"), \
+                patch.object(handler_module, "update_sync_status"):
+            result = _process_standards_repo(
+                workspace_id="ws_test", repo_name="acme/standards",
+                repo_type="standards", tree=tree, current_sha="commit123",
+                current_commit_timestamp=1, token="tok", owner="acme",
+                repo_short="standards", default_branch="main",
+            )
+        assert result["files_uploaded"] == 1
+        assert {c.args[4] for c in get_content.call_args_list} == {"commit123"}
+        assert mark.call_args.kwargs == {"failure_reason": "decode_error"}
+
+    def test_mark_docs_unit_fetch_failed_passes_reason(self):
+        from shared import sha_truth  # type: ignore
+
+        with patch.object(sha_truth, "mark_unit_failed") as mark:
+            handler_module._mark_docs_unit_fetch_failed(
+                "ws", "o/r", "sha", "x.md", failure_reason="decode_error")
+        assert mark.call_args.kwargs["failure_reason"] == "decode_error"
+
+    def test_filter_docs_uses_precomputed_changed_paths(self):
+        with patch.object(handler_module, "fetch_changed_files") as compare:
+            out = handler_module._filter_docs_to_changed(
+                "tok", "acme", "r",
+                [{"path": "a.md"}, {"path": "b.md"}],
+                "old", "new", changed_paths={"b.md"})
+        assert out == [{"path": "b.md"}]
+        compare.assert_not_called()
 
 
 # ============================================================================

@@ -187,7 +187,8 @@ test-coverage:
 
 # coverage-new mirrors the SonarCloud quality gate locally: at least 80% of
 # the lines changed since COVERAGE_BASE (default origin/main, i.e. what is not
-# pushed yet) must be covered. Total coverage can look healthy while new lines
+# pushed yet, new untracked files included, as Sonar counts them) must be
+# covered. Total coverage can look healthy while new lines
 # are not, which is exactly what the gate fails on. diff-cover cannot mix XML
 # and lcov reports, so Python and UI are checked separately; the UI check runs
 # from ui/ because lcov paths are relative to it. Needs Node 20+ for UI coverage.
@@ -198,10 +199,10 @@ DIFF_COVER_VERSION := 11.0.4
 coverage-new: test-coverage
 	@test -x venv/bin/diff-cover || venv/bin/pip install -q "diff-cover==$(DIFF_COVER_VERSION)"
 	@echo "Python: coverage of lines changed since $(COVERAGE_BASE)..."
-	venv/bin/diff-cover lambda/coverage.xml --compare-branch=$(COVERAGE_BASE) --fail-under=$(COVERAGE_MIN)
+	venv/bin/diff-cover lambda/coverage.xml --compare-branch=$(COVERAGE_BASE) --include-untracked --fail-under=$(COVERAGE_MIN)
 	@echo "UI: coverage of lines changed since $(COVERAGE_BASE)..."
-	cd ui && npm run test:coverage --silent >/dev/null
-	cd ui && ../venv/bin/diff-cover coverage/lcov.info --compare-branch=$(COVERAGE_BASE) --fail-under=$(COVERAGE_MIN)
+	@cd ui && npm run test:coverage --silent >/dev/null 2>&1 || { echo "UI coverage run failed; see: cd ui && npm run test:coverage"; exit 1; }
+	cd ui && ../venv/bin/diff-cover coverage/lcov.info --compare-branch=$(COVERAGE_BASE) --include-untracked --fail-under=$(COVERAGE_MIN)
 
 test-ui:
 	@echo "Running UI tests..."

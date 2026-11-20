@@ -698,6 +698,14 @@ audit_stream_export_enabled = true
 # batch_summary_max_conc            = 100
 # github_scheduler_parallel_workers = 64
 
+# --- Scheduled GitHub sync self-heal ---
+# The hourly scheduled sync re-dispatches a commit whose pipelines never
+# completed. Attempts per stalled commit before the repo is marked
+# `stalled`, and heal slots the scheduler grants per hourly run (oldest
+# first). 0 disables healing.
+# github_sync_heal_max_attempts = 3
+# github_sync_heal_max_per_run  = 20
+
 # --- PR analysis CI trigger ---
 # IAM role ARN(s) your CI assumes (e.g. a GitHub Actions OIDC role) that may
 # invoke the analyze-pr and handle-command Lambdas directly. PR analysis uses

@@ -13,7 +13,7 @@ import sys
 sys.path.insert(0, os.environ.get("LAMBDA_TASK_ROOT", "/var/task"))
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 app = FastAPI()
 
@@ -71,9 +71,14 @@ def _build_event(request: Request, method: str, path: str, body: str = "") -> di
     }
 
 
-def _parse_response(result: dict) -> JSONResponse:
-    """Convert a Lambda handler response dict to a FastAPI JSONResponse."""
+def _parse_response(result: dict) -> Response:
+    """Convert a Lambda handler response dict to a FastAPI JSONResponse.
+
+    A 204 carries no body, so it becomes a bare Response.
+    """
     status = result.get("statusCode", 200)
+    if status == 204:
+        return Response(status_code=204)
     body = result.get("body", "{}")
     return JSONResponse(content=json.loads(body), status_code=status)
 
@@ -776,6 +781,37 @@ async def update_workspace_privacy_route(workspace_id: str, request: Request):
     body = await request.body()
     event = _build_event(
         request, "PUT", f"/workspaces/{workspace_id}/privacy", body.decode("utf-8")
+    )
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
+# ============================================================================
+# Notification Routes
+# ============================================================================
+
+
+@app.get("/notifications")
+async def list_notifications_route(request: Request):
+    """List the caller's visible notifications across workspaces."""
+    from handler import lambda_handler
+
+    event = _build_event(request, "GET", "/notifications")
+    result = lambda_handler(event, None)
+    return _parse_response(result)
+
+
+@app.delete("/workspaces/{workspace_id}/notifications/{notification_id}")
+async def dismiss_notification_route(
+    workspace_id: str, notification_id: str, request: Request
+):
+    """Dismiss (delete for everyone) a workspace notification."""
+    from handler import lambda_handler
+
+    event = _build_event(
+        request,
+        "DELETE",
+        f"/workspaces/{workspace_id}/notifications/{notification_id}",
     )
     result = lambda_handler(event, None)
     return _parse_response(result)

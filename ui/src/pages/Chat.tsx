@@ -46,6 +46,7 @@ import {
 import AllChatsModal from '../components/AllChatsModal'
 import ShareDialog from '../components/ShareDialog'
 import SharedConversationsList from '../components/SharedConversationsList'
+import NotificationBell from '../components/NotificationBell'
 import { useRegionRole } from '../lib/regionRole'
 
 interface DisplayMessage extends Message {
@@ -716,6 +717,7 @@ export default function Chat() {
           </div>
 
           <div className="flex items-center gap-2">
+            <NotificationBell />
             {/* Workspace Selector */}
             {searchableWorkspaces.length > 0 && (
               <div className="relative">

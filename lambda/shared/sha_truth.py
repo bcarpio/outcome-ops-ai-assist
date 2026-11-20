@@ -568,10 +568,108 @@ def advance_sha_without_work(
         raise
 
 
+# SHA-column pipeline -> (ledger stages that must be closed, SHA columns
+# to advance). ``code_map`` also advances ``gkg``: the symbol graph is
+# built from the same code units, so skipping past a code-map failure
+# skips it for the graph too.
+_ADVANCE_PAST_FAILURES_PLAN: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "docs": (("docs",), ("docs",)),
+    "code_map": (("code_map_dispatch", "code_map_units"), ("code_map", "gkg")),
+}
+
+
+def advance_past_failures(
+    workspace_id: str,
+    repo: str,
+    pipeline: str,
+    target_sha: str,
+    target_commit_timestamp: int,
+) -> AdvanceResult:
+    """Advance a SHA column past a closed batch that recorded failures.
+
+    Used once the scheduled-sync heal budget for ``target_sha`` is spent,
+    so one permanently failing unit does not pin the repo's completed SHA
+    forever (the next diff would otherwise grow without bound). The
+    failed units stay recorded in the failed-files table; this only moves
+    the baseline.
+
+    ``pipeline`` is ``docs`` or ``code_map``. ``docs`` requires the
+    ``docs`` ledger row; ``code_map`` requires both the
+    ``code_map_dispatch`` and ``code_map_units`` rows and advances both
+    ``last_code_map_sha`` and ``last_gkg_sha``.
+
+    Reasons:
+      - ``not_closed``    a required ledger row is missing, unreadable or
+                          still has outstanding units
+      - ``no_failures``   every required row closed clean (the normal
+                          ``try_advance_sha`` path handles that)
+      - ``ok``            at least one column advanced
+      - ``stale_sha``     every column already holds a newer commit
+      - ``repo_removed``  the workspaces row no longer exists
+    """
+
+    plan = _ADVANCE_PAST_FAILURES_PLAN.get(pipeline)
+    if plan is None:
+        raise ValueError(f"invalid pipeline for advance_past_failures: {pipeline}")
+    stages, columns = plan
+
+    failed_total = 0
+    for stage in stages:
+        try:
+            resp = _pending_table().get_item(
+                Key={
+                    "PK": _ledger_pk(workspace_id, repo),
+                    "SK": _pending_sk(stage, target_sha),
+                },
+            )
+        except ClientError:
+            logger.warning(
+                "advance_past_failures: ledger read failed for %s %s@%s",
+                repo,
+                stage,
+                target_sha[:7],
+                exc_info=True,
+            )
+            return AdvanceResult(False, "not_closed")
+        item = resp.get("Item")
+        if not item:
+            return AdvanceResult(False, "not_closed")
+        expected = int(item.get("expected_count", 0))
+        completed = int(item.get("completed_count", 0))
+        failed = int(item.get("failed_count", 0))
+        if completed + failed < expected:
+            return AdvanceResult(False, "not_closed")
+        failed_total += failed
+
+    if failed_total <= 0:
+        return AdvanceResult(False, "no_failures")
+
+    logger.warning(
+        "advancing %s past %d failed units for %s@%s",
+        pipeline,
+        failed_total,
+        repo,
+        target_sha[:7],
+    )
+
+    results = [
+        advance_sha_without_work(
+            workspace_id, repo, column, target_sha, target_commit_timestamp
+        )
+        for column in columns
+    ]
+    if any(r.reason == "repo_removed" for r in results):
+        return AdvanceResult(False, "repo_removed")
+    if any(r.advanced for r in results):
+        return AdvanceResult(True, "ok")
+    return AdvanceResult(False, "stale_sha")
+
+
 __all__ = (
     "AdvanceResult",
     "PendingBatch",
     "Pipeline",
+    "advance_past_failures",
     "advance_sha_without_work",
     "batch_in_flight",
     "mark_unit_complete",

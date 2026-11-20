@@ -289,6 +289,10 @@ module "github_sync_lambda" {
       # yet imported by github-sync; lights them up.
       PENDING_WORK_TABLE = module.code_map_pending_work_table.dynamodb_table_id
       FAILED_FILES_TABLE = module.code_map_failed_files_table.dynamodb_table_id
+      # Workspace notifications (repo entered `stalled`).
+      NOTIFICATIONS_TABLE = module.notifications_table[0].dynamodb_table_id
+      # Scheduled self-heal: per-target attempt budget.
+      GITHUB_SYNC_HEAL_MAX_ATTEMPTS = tostring(var.github_sync_heal_max_attempts)
     },
     local.ha_writer_env,
   )
@@ -314,7 +318,8 @@ module "github_sync_lambda" {
 
       # plan-git-truth SHA-truth ledger (pending-work +
       # failed-files). Get/Put/Update only — no Query needed at the
-      # dispatcher tier.
+      # dispatcher tier. The failed-files Query used to list a stalled
+      # commit's failures is granted via local.github_sync_notifications_iam.
       sha_truth = {
         effect = "Allow"
         actions = [
@@ -411,6 +416,8 @@ module "github_sync_lambda" {
       }
     },
     local.ha_writer_events_iam,
+    # Notifications write + failed-files Query (iam_notifications.tf).
+    local.github_sync_notifications_iam,
   )
 
   tags = {
@@ -495,6 +502,8 @@ module "github_scheduler_lambda" {
     GITHUB_SYNC_QUEUE = aws_sqs_queue.github_sync[0].url
     # parallel enqueue worker count.
     GITHUB_SCHEDULER_PARALLEL_WORKERS = tostring(var.github_scheduler_parallel_workers)
+    # Scheduled self-heal: max heal slots granted per hourly run.
+    GITHUB_SYNC_HEAL_MAX_PER_RUN = tostring(var.github_sync_heal_max_per_run)
     },
     local.ha_scheduler_env,
   )

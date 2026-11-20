@@ -24,7 +24,7 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
 import yaml
@@ -45,6 +45,8 @@ APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 WORKSPACES_TABLE = os.environ.get("WORKSPACES_TABLE")
 FILE_INGESTION_QUEUE = os.environ.get("FILE_INGESTION_QUEUE")
 REPO_SUMMARIES_QUEUE = os.environ.get("REPO_SUMMARIES_QUEUE")
+# Guards repo-row updates so a removed repo is never recreated as a stub.
+_REPO_ROW_EXISTS = "attribute_exists(repo_name)"
 DELETE_QUEUE = os.environ.get("DELETE_QUEUE")
 KB_BUCKET = os.environ.get("KB_BUCKET")
 
@@ -66,6 +68,41 @@ _SAME_AS_DOCS_BASELINE = object()
 # third and final receive behind a 15-minute Lambda timeout (~45 minutes);
 # past this window the batch is presumed dead and the work is redone.
 _IN_FLIGHT_STALE_SECONDS = 3600
+
+# Scheduled-sync heal budget: attempts per target SHA before the repo is
+# marked stalled. Backoff between attempts is 1h, 2h, 4h, ...
+GITHUB_SYNC_HEAL_MAX_ATTEMPTS = int(
+    os.environ.get("GITHUB_SYNC_HEAL_MAX_ATTEMPTS", "3")
+)
+_HEAL_BACKOFF_BASE_SECONDS = 3600
+_HEAL_ATTRS = ("heal_target_sha", "heal_attempts", "heal_next_at")
+
+# Result statuses that are final for this message. Anything else is put in
+# batchItemFailures so SQS redelivers it. A deferred, backed-off, stalled or
+# already-running sync must NOT be redelivered: a retry would either repeat
+# the same no-op or bypass the heal budget.
+_NON_RETRY_STATUSES = (
+    "success", "no_changes", "skipped", "already_running",
+    "heal_deferred", "heal_backoff", "stalled",
+)
+
+# Plain-language explanation per stalled reason, shown in the workspace
+# notification.
+_STALLED_MESSAGES = {
+    "units_failed": (
+        "Some files at commit {sha7} still failed after {attempts} automatic "
+        "retries and were skipped. The rest of the repository is up to date."
+    ),
+    "heal_budget_exhausted": (
+        "Processing of commit {sha7} did not finish after {attempts} "
+        "automatic retries, so automatic retries have stopped."
+    ),
+    "baseline_unreachable": (
+        "Commit {sha7} cannot be compared with the last commit that finished "
+        "processing (history may have been rewritten or force-pushed), so it "
+        "was not retried automatically."
+    ),
+}
 
 
 def _pipelines_in_flight(
@@ -374,8 +411,21 @@ def get_latest_commit(
         raise
 
 
-def get_file_content(token: str, owner: str, repo: str, path: str, ref: str) -> Optional[str]:
-    """Get the content of a file from a repository."""
+def get_file_content(
+    token: str,
+    owner: str,
+    repo: str,
+    path: str,
+    ref: str,
+    failures: Optional[Dict[str, str]] = None,
+) -> Optional[str]:
+    """Get the content of a file from a repository.
+
+    Returns None when the file is missing, not a file, unfetchable, or not
+    valid UTF-8. When ``failures`` is given, a decode failure is recorded
+    there as ``failures[path] = "decode_error"`` so the caller can name the
+    reason when it marks the ledger unit failed.
+    """
     import base64
     import urllib.parse
     import urllib.request
@@ -399,6 +449,16 @@ def get_file_content(token: str, owner: str, repo: str, path: str, ref: str) -> 
                 return None
             content = data.get("content", "")
             return base64.b64decode(content).decode("utf-8")
+    except UnicodeDecodeError as e:
+        # A non-UTF-8 file must not fail the whole sync (it would fail
+        # again every hour). The caller records the unit as failed.
+        logger.warning(
+            "[github-sync] %s/%s:%s@%s is not valid UTF-8 (%s); skipping",
+            owner, repo, path, ref, e,
+        )
+        if failures is not None:
+            failures[path] = "decode_error"
+        return None
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return None
@@ -549,7 +609,7 @@ def _backfill_default_branch(
             {"PK": f"WS#{workspace_id}", "SK": f"GITHUB_REPO#{repo_name}"},
             UpdateExpression="SET default_branch = :b",
             ExpressionAttributeValues={":b": default_branch},
-            ConditionExpression="attribute_exists(repo_name)",
+            ConditionExpression=_REPO_ROW_EXISTS,
         )
     except Exception as e:
         logger.warning(
@@ -671,10 +731,363 @@ def update_sync_status(
             {"PK": f"WS#{workspace_id}", "SK": f"GITHUB_REPO#{repo_name}"},
             UpdateExpression=update_expr,
             ExpressionAttributeValues=expr_values,
-            ConditionExpression="attribute_exists(repo_name)",
+            ConditionExpression=_REPO_ROW_EXISTS,
         )
     except table.meta.client.exceptions.ConditionalCheckFailedException:
         logger.warning("Skipping sync status update for deleted repo %s in workspace %s", repo_name, workspace_id)
+
+
+def _repo_key(workspace_id: str, repo_name: str) -> Dict[str, str]:
+    return {"PK": f"WS#{workspace_id}", "SK": f"GITHUB_REPO#{repo_name}"}
+
+
+def _is_conditional_failure(exc: Exception) -> bool:
+    return (
+        isinstance(exc, ClientError)
+        and exc.response.get("Error", {}).get("Code")
+        == "ConditionalCheckFailedException"
+    )
+
+
+def _restore_sync_status(
+    workspace_id: str, repo_name: str, prior_status: Optional[str],
+) -> None:
+    """Put back the status this run overwrote with ``in_progress``.
+
+    A scheduled run that decides to do nothing (heal deferred, backoff,
+    batch already running, stalled repo up to date) must leave
+    ``last_sync_status`` as it found it. Only undoes our own
+    ``in_progress``; a concurrent writer's status wins. Best-effort.
+    """
+    condition = "attribute_exists(repo_name) AND last_sync_status = :ip"
+    values: Dict[str, Any] = {":ip": "in_progress"}
+    if prior_status:
+        update_expr = "SET last_sync_status = :prior"
+        values[":prior"] = prior_status
+    else:
+        update_expr = "REMOVE last_sync_status"
+    try:
+        dual_write.ddb_update_item(
+            WORKSPACES_TABLE,
+            _repo_key(workspace_id, repo_name),
+            UpdateExpression=update_expr,
+            ConditionExpression=condition,
+            ExpressionAttributeValues=values,
+        )
+    except Exception as exc:
+        if _is_conditional_failure(exc):
+            return
+        logger.warning(
+            "[github-sync] status restore failed for %s: %s",
+            repo_name, exc, exc_info=True,
+        )
+
+
+def _clear_heal_state(workspace_id: str, repo_name: str) -> None:
+    """REMOVE the heal budget attributes (new commit, manual sync, or every
+    completed SHA at HEAD). Best-effort: a leftover budget for an old
+    target SHA is ignored once HEAD moves."""
+    try:
+        dual_write.ddb_update_item(
+            WORKSPACES_TABLE,
+            _repo_key(workspace_id, repo_name),
+            UpdateExpression="REMOVE " + ", ".join(_HEAL_ATTRS),
+            ConditionExpression=_REPO_ROW_EXISTS,
+        )
+    except Exception as exc:
+        if _is_conditional_failure(exc):
+            return
+        logger.warning(
+            "[github-sync] heal state clear failed for %s: %s",
+            repo_name, exc, exc_info=True,
+        )
+
+
+def _record_heal_attempt(
+    workspace_id: str,
+    repo_name: str,
+    target_sha: str,
+    previous_attempts: int,
+    same_target: bool,
+    next_at: int,
+) -> bool:
+    """Record a heal attempt on the repo row BEFORE dispatching it.
+
+    One conditional UpdateItem. The condition is optimistic concurrency on
+    the budget: it only succeeds if the row still holds the attempt count
+    this run read, so two concurrent heal runs cannot both dispatch.
+    Returns False when the condition fails (concurrent attempt or repo
+    removed). Other errors propagate: dispatching without a recorded
+    attempt would bypass the budget.
+    """
+    values: Dict[str, Any] = {
+        ":sha": target_sha,
+        ":n": previous_attempts + 1,
+        ":next": next_at,
+    }
+    if same_target:
+        condition = (
+            "attribute_exists(repo_name) AND heal_target_sha = :sha "
+            "AND heal_attempts = :prev"
+        )
+        values[":prev"] = previous_attempts
+    else:
+        condition = (
+            "attribute_exists(repo_name) AND "
+            "(attribute_not_exists(heal_target_sha) OR heal_target_sha <> :sha)"
+        )
+    try:
+        dual_write.ddb_update_item(
+            WORKSPACES_TABLE,
+            _repo_key(workspace_id, repo_name),
+            UpdateExpression=(
+                "SET heal_target_sha = :sha, heal_attempts = :n, "
+                "heal_next_at = :next"
+            ),
+            ConditionExpression=condition,
+            ExpressionAttributeValues=values,
+        )
+    except Exception as exc:
+        if _is_conditional_failure(exc):
+            logger.info(
+                "[github-sync] heal attempt for %s@%s not recorded: "
+                "budget changed concurrently or repo removed",
+                repo_name, target_sha[:7],
+            )
+            return False
+        raise
+    return True
+
+
+def _notify_stalled(
+    workspace_id: str,
+    repo_name: str,
+    repo: Dict,
+    reason: str,
+    current_sha: str,
+) -> None:
+    """Tell the workspace's admins (and the repo's ``added_by``) that the
+    repo stalled. Best-effort: never fails the sync."""
+    failed_files: List[str] = []
+    failed_total = 0
+    try:
+        from shared.notifications import list_failed_files, notify_workspace  # type: ignore
+    except Exception as exc:
+        logger.warning(
+            "[github-sync] notifications import failed: %s", exc, exc_info=True,
+        )
+        return
+
+    if reason == "units_failed":
+        try:
+            failed_files, failed_total = list_failed_files(
+                workspace_id, repo_name, current_sha,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[github-sync] failed-files read failed for %s@%s: %s",
+                repo_name, current_sha[:7], exc, exc_info=True,
+            )
+            failed_files, failed_total = [], 0
+
+    message = _STALLED_MESSAGES.get(
+        reason, "Automatic sync of commit {sha7} stopped.",
+    ).format(sha7=current_sha[:7], attempts=GITHUB_SYNC_HEAL_MAX_ATTEMPTS)
+    message += " Press Sync now to retry."
+    try:
+        notify_workspace(
+            workspace_id,
+            type="repo_stalled",
+            severity="error" if reason == "units_failed" else "warning",
+            title=f"{repo_name}: sync stalled",
+            message=message,
+            repo_name=repo_name,
+            added_by=repo.get("added_by") or "",
+            reason=reason,
+            target_sha=current_sha,
+            failed_files=failed_files,
+            failed_files_total=int(failed_total or 0),
+        )
+    except Exception as exc:
+        logger.warning(
+            "[github-sync] stalled notification failed for %s: %s",
+            repo_name, exc, exc_info=True,
+        )
+
+
+def _mark_stalled(
+    workspace_id: str,
+    repo_name: str,
+    repo: Dict,
+    reason: str,
+    current_sha: str,
+) -> Dict:
+    """Set ``last_sync_status=stalled`` with ``reason`` and notify."""
+    logger.warning(
+        "[github-sync] %s stalled at %s: %s", repo_name, current_sha[:7], reason,
+    )
+    update_sync_status(
+        workspace_id,
+        repo_name,
+        "stalled",
+        last_failed_sha=current_sha,
+        last_failure_reason=reason,
+    )
+    _notify_stalled(workspace_id, repo_name, repo, reason, current_sha)
+    return {"status": "stalled", "reason": reason, "commit_sha": current_sha}
+
+
+def _advance_past_failures(
+    workspace_id: str,
+    repo_name: str,
+    pipeline: str,
+    current_sha: str,
+    current_commit_timestamp: int,
+) -> bool:
+    """True if ``sha_truth.advance_past_failures`` advanced ``pipeline``
+    (``docs`` or ``code_map``) past a closed batch with failures.
+    Best-effort: any error means not advanced."""
+    try:
+        from shared.sha_truth import advance_past_failures  # type: ignore
+
+        result = advance_past_failures(
+            workspace_id, repo_name, pipeline, current_sha,
+            current_commit_timestamp,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[github-sync] advance_past_failures(%s) failed for %s@%s: %s",
+            pipeline, repo_name, current_sha[:7], exc, exc_info=True,
+        )
+        return False
+    logger.info(
+        "[github-sync] advance_past_failures(%s) for %s@%s: %s",
+        pipeline, repo_name, current_sha[:7], result.reason,
+    )
+    return result.reason == "ok"
+
+
+def _exhausted_heal_reason(
+    workspace_id: str,
+    repo_name: str,
+    behind: List[Tuple[str, Optional[str]]],
+    current_sha: str,
+    current_commit_timestamp: int,
+) -> str:
+    """Stall reason once the heal budget is spent.
+
+    Every behind pipeline is evaluated (no short-circuit): each one whose
+    batch closed with failures is advanced past them.
+    """
+    advanced = False
+    for pipeline, _baseline in behind:
+        if _advance_past_failures(
+            workspace_id, repo_name, pipeline, current_sha,
+            current_commit_timestamp,
+        ):
+            advanced = True
+    return "units_failed" if advanced else "heal_budget_exhausted"
+
+
+def _preflight_compare(
+    token: str,
+    owner: str,
+    repo_short: str,
+    behind: List[Tuple[str, Optional[str]]],
+    current_sha: str,
+) -> Optional[Dict[str, set]]:
+    """Compare each distinct behind baseline with ``current_sha``.
+
+    Returns ``{baseline: changed_paths}``, or None when a baseline is
+    missing or unreachable. A missing baseline or a failed compare would
+    make the dispatch fall back to a full upload; a heal never does that.
+    """
+    compared: Dict[str, set] = {}
+    for _pipeline, baseline in behind:
+        if baseline in compared:
+            continue
+        if not baseline:
+            return None
+        changed = fetch_changed_files(token, owner, repo_short, baseline, current_sha)
+        if changed is None:
+            return None
+        compared[baseline] = changed
+    return compared
+
+
+def _heal_preflight(
+    workspace_id: str,
+    repo_name: str,
+    repo: Dict,
+    message: Dict,
+    token: str,
+    owner: str,
+    repo_short: str,
+    current_sha: str,
+    current_commit_timestamp: int,
+    docs_baseline: Optional[str],
+    code_map_baseline: Optional[str],
+) -> tuple:
+    """Gate a scheduled heal: HEAD unchanged, a completed SHA behind, no
+    live batch.
+
+    Returns ``(result, docs_changed_paths)``. A non-None ``result`` is
+    returned by the caller as-is (no dispatch). Otherwise the attempt has
+    been recorded and the caller dispatches from the completed baselines,
+    passing ``docs_changed_paths`` (the pre-flight compare for the docs
+    baseline, or None when docs are at HEAD) so the dispatch never falls
+    back to a full upload.
+    """
+    if not message.get("heal_allowed"):
+        _restore_sync_status(workspace_id, repo_name, repo.get("last_sync_status"))
+        return {"status": "heal_deferred", "commit_sha": current_sha}, None
+
+    same_target = repo.get("heal_target_sha") == current_sha
+    attempts = int(repo.get("heal_attempts") or 0) if same_target else 0
+    next_at = int(repo.get("heal_next_at") or 0) if same_target else 0
+    behind = [
+        (pipeline, baseline)
+        for pipeline, baseline in (
+            ("docs", docs_baseline), ("code_map", code_map_baseline),
+        )
+        if baseline != current_sha
+    ]
+
+    if attempts >= GITHUB_SYNC_HEAL_MAX_ATTEMPTS:
+        reason = _exhausted_heal_reason(
+            workspace_id, repo_name, behind, current_sha,
+            current_commit_timestamp,
+        )
+        return _mark_stalled(workspace_id, repo_name, repo, reason, current_sha), None
+
+    now = int(time.time())
+    if next_at > now:
+        _restore_sync_status(workspace_id, repo_name, repo.get("last_sync_status"))
+        return {"status": "heal_backoff", "commit_sha": current_sha}, None
+
+    compared = _preflight_compare(token, owner, repo_short, behind, current_sha)
+    if compared is None:
+        return _mark_stalled(
+            workspace_id, repo_name, repo, "baseline_unreachable", current_sha,
+        ), None
+
+    if not _record_heal_attempt(
+        workspace_id, repo_name, current_sha, attempts, same_target,
+        now + _HEAL_BACKOFF_BASE_SECONDS * (2 ** attempts),
+    ):
+        _restore_sync_status(workspace_id, repo_name, repo.get("last_sync_status"))
+        return {"status": "heal_backoff", "commit_sha": current_sha}, None
+
+    logger.info(
+        "[github-sync] heal attempt %d/%d for %s@%s: "
+        "docs_baseline=%s code_map_baseline=%s",
+        attempts + 1, GITHUB_SYNC_HEAL_MAX_ATTEMPTS, repo_name, current_sha[:7],
+        (docs_baseline or "")[:7], (code_map_baseline or "")[:7],
+    )
+    docs_changed = (
+        compared.get(docs_baseline) if docs_baseline != current_sha else None
+    )
+    return None, docs_changed
 
 
 # ============================================================================
@@ -1093,21 +1506,26 @@ def _filter_docs_to_changed(
     all_doc_files: List[Dict],
     last_commit_sha: Optional[str],
     current_sha: str,
+    changed_paths: Optional[set] = None,
 ) -> List[Dict]:
     """Narrow a doc-file list to only files changed between
     ``last_commit_sha`` and ``current_sha``.
 
     On first-sync (no last_commit_sha) or compare-API failure, returns
     the full list — safe fall-back to the pre-incremental behavior.
+    ``changed_paths``, when given, is an already-fetched compare result
+    for that range (a heal's pre-flight compare) and is used instead of
+    calling the compare API again.
     """
     if not last_commit_sha or not all_doc_files:
         return all_doc_files
     if last_commit_sha == current_sha:
         # Docs already completed this commit; nothing changed.
         return []
-    changed_paths = fetch_changed_files(
-        token, owner, repo_short, last_commit_sha, current_sha,
-    )
+    if changed_paths is None:
+        changed_paths = fetch_changed_files(
+            token, owner, repo_short, last_commit_sha, current_sha,
+        )
     if changed_paths is None:
         return all_doc_files
     return [f for f in all_doc_files if f.get("path") in changed_paths]
@@ -1174,6 +1592,7 @@ def _mark_docs_unit_fetch_failed(
     repo_name: str,
     current_sha: str,
     file_path: str,
+    failure_reason: str = "github_fetch_or_s3_put_failed",
 ) -> None:
     """Mark a docs ledger unit as failed when github-sync can't fetch
     the file content from the GitHub API or the S3 PutObject fails.
@@ -1199,7 +1618,7 @@ def _mark_docs_unit_fetch_failed(
             "docs",
             current_sha,
             file_path=file_path,
-            failure_reason="github_fetch_or_s3_put_failed",
+            failure_reason=failure_reason,
             failure_detail="",
             attempt_count=1,
         )
@@ -1208,6 +1627,13 @@ def _mark_docs_unit_fetch_failed(
             "[github-sync] docs unit-failed mark failed for %s@%s/%s: %s",
             repo_name, current_sha, file_path, exc,
         )
+
+
+def _fetch_failure_kwargs(failures: Dict[str, str], file_path: str) -> Dict[str, str]:
+    """Extra ``_mark_docs_unit_fetch_failed`` kwargs for a fetch that
+    returned None: the recorded reason (e.g. ``decode_error``) if any."""
+    reason = failures.get(file_path)
+    return {"failure_reason": reason} if reason else {}
 
 
 def _open_docs_pending_batch(
@@ -1342,43 +1768,58 @@ def process_sync_request(message: Dict) -> Dict:
             last_attempted_sha=current_sha,
         )
 
-        # Decide the incremental baseline for each pipeline.
+        # Decide the incremental baseline for each pipeline: the last SHA
+        # each pipeline actually COMPLETED (last_docs_sha /
+        # last_code_map_sha; standards repos have no code maps, so HEAD).
+        # last_commit_sha is written at DISPATCH, so diffing from it would
+        # skip the changes of a commit whose run died (the A..B gap).
         #
-        # Scheduled syncs compare against last_commit_sha (the last SHA
-        # handed to the pipelines) -- unchanged behaviour.
-        #
-        # A manual "Sync now" compares against the last SHA each pipeline
-        # actually COMPLETED (last_docs_sha / last_code_map_sha).
-        # last_commit_sha is written at dispatch, so a run that failed
-        # after dispatch (GitHub API outage, DLQ) leaves it equal to HEAD
-        # and the scheduled sync skips that commit forever. Diffing from
-        # the completed SHA re-processes only the files changed since the
-        # last good build. If every pipeline is already at HEAD there is
-        # nothing to do -- never a blanket rebuild.
+        # Scheduled (non-manual) syncs fall back to last_commit_sha when a
+        # completed column is absent, so legacy rows keep the old
+        # behaviour and a deploy never triggers a mass first sync. A
+        # manual "Sync now" has no fallback (it may full-sync a repo that
+        # never completed anything).
         last_sha = repo.get("last_commit_sha")
+        prior_status = repo.get("last_sync_status")
         if trigger == "manual":
             docs_baseline = repo.get("last_docs_sha")
             code_map_baseline = (
                 current_sha if repo_type == "standards"
                 else repo.get("last_code_map_sha")
             )
-            up_to_date = (
-                docs_baseline == current_sha
-                and code_map_baseline == current_sha
-            )
+            new_commit = False
         else:
-            docs_baseline = code_map_baseline = last_sha
-            up_to_date = last_sha == current_sha
+            docs_baseline = repo.get("last_docs_sha") or last_sha
+            code_map_baseline = (
+                current_sha if repo_type == "standards"
+                else (repo.get("last_code_map_sha") or last_sha)
+            )
+            new_commit = last_sha != current_sha
+        up_to_date = (
+            docs_baseline == current_sha
+            and code_map_baseline == current_sha
+        )
+        # Scheduled run, HEAD unchanged since the last dispatch, but a
+        # completed SHA is behind: a budgeted, throttled heal.
+        heal = trigger != "manual" and not new_commit and not up_to_date
 
-        # A manual sync pressed while an earlier sync of this same commit
-        # is still running must not queue the work a second time. Only
-        # live batches count (see _IN_FLIGHT_STALE_SECONDS); a batch that
-        # stopped progressing is redone. Code maps still running are
-        # skipped by treating their baseline as HEAD, which dispatches
-        # nothing and advances nothing. Docs have no such skip (a HEAD
-        # baseline would advance last_docs_sha early), so if docs are
-        # running while code maps need redoing, docs are redone too.
-        if trigger == "manual" and not up_to_date:
+        # Explicit human intent, a new commit, or everything at HEAD resets
+        # the heal budget.
+        if (
+            (trigger == "manual" or new_commit or up_to_date)
+            and any(attr in repo for attr in _HEAL_ATTRS)
+        ):
+            _clear_heal_state(workspace_id, repo_name)
+
+        # A sync of a commit whose batch is still running must not queue
+        # the work a second time (manual press, or a heal of the same
+        # HEAD). Only live batches count (see _IN_FLIGHT_STALE_SECONDS); a
+        # batch that stopped progressing is redone. Code maps still
+        # running are skipped by treating their baseline as HEAD, which
+        # dispatches nothing and advances nothing. Docs have no such skip
+        # (a HEAD baseline would advance last_docs_sha early), so if docs
+        # are running while code maps need redoing, docs are redone too.
+        if (trigger == "manual" and not up_to_date) or heal:
             docs_running = docs_baseline != current_sha and _pipelines_in_flight(
                 workspace_id, repo_name, ("docs",), current_sha,
             )
@@ -1398,6 +1839,11 @@ def process_sync_request(message: Dict) -> Dict:
                     f"Sync of {current_sha[:7]} already running for "
                     f"{repo_name}; nothing queued"
                 )
+                if trigger != "manual":
+                    # already_running is the manual UI's message; a
+                    # scheduled run leaves the status as it found it.
+                    _restore_sync_status(workspace_id, repo_name, prior_status)
+                    return {"status": "already_running", "commit_sha": current_sha}
                 update_sync_status(workspace_id, repo_name, "already_running")
                 log_source_sync(
                     audit_table_name=os.environ.get("AUDIT_TABLE", ""),
@@ -1418,6 +1864,24 @@ def process_sync_request(message: Dict) -> Dict:
             if code_maps_running:
                 code_map_baseline = current_sha
 
+        docs_changed_paths = None
+        if heal:
+            heal_result, docs_changed_paths = _heal_preflight(
+                workspace_id=workspace_id,
+                repo_name=repo_name,
+                repo=repo,
+                message=message,
+                token=token,
+                owner=owner,
+                repo_short=repo_short,
+                current_sha=current_sha,
+                current_commit_timestamp=current_commit_timestamp,
+                docs_baseline=docs_baseline,
+                code_map_baseline=code_map_baseline,
+            )
+            if heal_result is not None:
+                return heal_result
+
         if up_to_date:
             logger.info(f"No changes since last sync ({current_sha[:7]})")
             # No SQS dispatch happens, so no ledger row is opened. We
@@ -1425,11 +1889,20 @@ def process_sync_request(message: Dict) -> Dict:
             # but skip the per-pipeline columns since this path didn't
             # actually re-run any pipeline. A manual sync records
             # "up_to_date" so the UI can tell the user nothing changed.
-            update_sync_status(
-                workspace_id, repo_name,
-                "up_to_date" if trigger == "manual" else "success",
-                commit_sha=current_sha,
-            )
+            # A scheduled run keeps a stalled status for an unchanged
+            # HEAD (units_failed advanced past the failures, so it is
+            # "up to date" but the failed files are still missing).
+            if (
+                trigger != "manual" and not new_commit
+                and prior_status == "stalled"
+            ):
+                _restore_sync_status(workspace_id, repo_name, prior_status)
+            else:
+                update_sync_status(
+                    workspace_id, repo_name,
+                    "up_to_date" if trigger == "manual" else "success",
+                    commit_sha=current_sha,
+                )
             log_source_sync(
                 audit_table_name=os.environ.get("AUDIT_TABLE", ""),
                 source="github",
@@ -1465,6 +1938,7 @@ def process_sync_request(message: Dict) -> Dict:
                 repo_short=repo_short,
                 default_branch=default_branch,
                 last_commit_sha=docs_baseline,
+                docs_changed_paths=docs_changed_paths,
             )
         else:
             # Application repos: Discover code units and queue to repo-summaries queue
@@ -1482,6 +1956,7 @@ def process_sync_request(message: Dict) -> Dict:
                 current_commit_timestamp=current_commit_timestamp,
                 last_commit_sha=docs_baseline,
                 code_map_last_sha=code_map_baseline,
+                docs_changed_paths=docs_changed_paths,
             )
 
         # Emit REPO_SYNCED parent audit row covering both repo types.
@@ -1539,6 +2014,7 @@ def _process_standards_repo(
     repo_short: str,
     default_branch: str,
     last_commit_sha: Optional[str] = None,
+    docs_changed_paths: Optional[set] = None,
 ) -> Dict:
     """
     Process a standards repo by uploading files directly to S3.
@@ -1565,6 +2041,7 @@ def _process_standards_repo(
     files_to_process = _filter_docs_to_changed(
         token, owner, repo_short,
         all_doc_files, last_commit_sha, current_sha,
+        changed_paths=docs_changed_paths,
     )
     logger.info(
         f"Processing {len(files_to_process)} of {len(all_doc_files)} "
@@ -1597,15 +2074,21 @@ def _process_standards_repo(
 
     # Fetch and upload files directly to S3
     uploaded = 0
+    fetch_failures: Dict[str, str] = {}
     for file_item in files_to_process:
         file_path = file_item["path"]
 
-        # Fetch file content from GitHub
-        content = get_file_content(token, owner, repo_short, file_path, default_branch)
+        # Fetch file content at the commit being synced (the tree was
+        # listed at current_sha; a branch ref could have moved since).
+        content = get_file_content(
+            token, owner, repo_short, file_path, current_sha,
+            failures=fetch_failures,
+        )
         if content is None:
             logger.warning(f"Could not fetch content for {file_path}, skipping")
             _mark_docs_unit_fetch_failed(
                 workspace_id, repo_name, current_sha, file_path,
+                **_fetch_failure_kwargs(fetch_failures, file_path),
             )
             continue
 
@@ -1670,6 +2153,7 @@ def _process_application_repo(
     current_commit_timestamp: int,
     last_commit_sha: Optional[str] = None,
     code_map_last_sha: Any = _SAME_AS_DOCS_BASELINE,
+    docs_changed_paths: Optional[set] = None,
 ) -> Dict:
     """
     Process an application repo by uploading doc files to S3 for indexing
@@ -1701,6 +2185,7 @@ def _process_application_repo(
     doc_files = _filter_docs_to_changed(
         token, owner, repo_short,
         all_doc_files, last_commit_sha, current_sha,
+        changed_paths=docs_changed_paths,
     )
     if len(doc_files) < len(all_doc_files):
         logger.info(
@@ -1730,13 +2215,19 @@ def _process_application_repo(
         )
 
     docs_uploaded = 0
+    fetch_failures: Dict[str, str] = {}
     for file_item in doc_files:
         file_path = file_item["path"]
-        content = get_file_content(token, owner, repo_short, file_path, default_branch)
+        # Content at the commit being synced, same as the tree listing.
+        content = get_file_content(
+            token, owner, repo_short, file_path, current_sha,
+            failures=fetch_failures,
+        )
         if content is None:
             logger.warning(f"Could not fetch content for {file_path}, skipping")
             _mark_docs_unit_fetch_failed(
                 workspace_id, repo_name, current_sha, file_path,
+                **_fetch_failure_kwargs(fetch_failures, file_path),
             )
             continue
         doc_type = classify_doc_type(file_path, standards_paths)
@@ -1877,7 +2368,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             logger.info(f"Processing message: {json.dumps(message)}")
 
             result = process_sync_request(message)
-            if result.get("status") in ("success", "no_changes", "skipped"):
+            if result.get("status") in _NON_RETRY_STATUSES:
                 successes += 1
             else:
                 # Business-logic failure surface -- treat as retry too

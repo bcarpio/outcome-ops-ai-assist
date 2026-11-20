@@ -22,6 +22,7 @@ locals {
   # ARNs; the secondary applier needs the secondary ARNs.
   applier_dynamodb_arns_primary = compact([
     var.enable_workspaces ? module.workspaces_table[0].dynamodb_table_arn : "",
+    var.enable_workspaces ? module.notifications_table[0].dynamodb_table_arn : "",
     module.audit_logs_table.dynamodb_table_arn,
     module.chat_table.dynamodb_table_arn,
     module.analytics_table.dynamodb_table_arn,
@@ -33,6 +34,7 @@ locals {
 
   applier_dynamodb_arns_secondary = var.secondary_region != "" ? compact([
     var.enable_workspaces ? module.workspaces_table_secondary[0].dynamodb_table_arn : "",
+    var.enable_workspaces ? module.notifications_table_secondary[0].dynamodb_table_arn : "",
     module.audit_logs_table_secondary[0].dynamodb_table_arn,
     module.chat_table_secondary[0].dynamodb_table_arn,
     module.analytics_table_secondary[0].dynamodb_table_arn,

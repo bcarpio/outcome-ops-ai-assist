@@ -223,6 +223,38 @@ import MutationButton from '../components/MutationButton'
 
 type Tab = 'general' | 'members' | 'integrations' | 'sharing' | 'documents' | 'advanced'
 
+// Plain-language explanation shown under a `stalled` GitHub repo badge,
+// keyed by the repo row's last_failure_reason.
+const STALLED_REASON_TEXT: Record<string, string> = {
+  heal_budget_exhausted: 'Automatic retries for the latest commit failed. Press Sync now to retry.',
+  baseline_unreachable: 'The last completed commit is no longer reachable (force-push?). Press Sync now to rebuild from the current commit.',
+  units_failed: 'Some files failed to process and were skipped. Press Sync now to retry them.',
+}
+const STALLED_REASON_FALLBACK = 'Syncing the latest commit stalled. Press Sync now to retry.'
+
+const SYNC_STATUS_CLASSES: Record<string, string> = {
+  success: 'text-green-600',
+  up_to_date: 'text-green-600',
+  failed: 'text-red-600',
+  stalled: 'text-amber-600',
+  in_progress: 'text-blue-600',
+  queued: 'text-blue-600',
+  already_running: 'text-blue-600',
+}
+
+const SYNC_STATUS_LABELS: Record<string, string> = {
+  up_to_date: 'up to date',
+  already_running: 'already running',
+}
+
+function syncStatusClass(status: string): string {
+  return SYNC_STATUS_CLASSES[status] ?? 'text-gray-500'
+}
+
+function syncStatusLabel(status: string): string {
+  return SYNC_STATUS_LABELS[status] ?? status
+}
+
 export default function WorkspaceSettings() {
   const { workspaceId } = useParams()
   const navigate = useNavigate()
@@ -3486,15 +3518,8 @@ export default function WorkspaceSettings() {
                               <p className="text-sm text-gray-500">
                                 {repo.last_sync_status ? (
                                   <>
-                                    <span className={
-                                      repo.last_sync_status === 'success' || repo.last_sync_status === 'up_to_date' ? 'text-green-600' :
-                                      repo.last_sync_status === 'failed' ? 'text-red-600' :
-                                      repo.last_sync_status === 'in_progress' || repo.last_sync_status === 'queued' || repo.last_sync_status === 'already_running' ? 'text-blue-600' :
-                                      'text-gray-500'
-                                    }>
-                                      {repo.last_sync_status === 'up_to_date' ? 'up to date' :
-                                        repo.last_sync_status === 'already_running' ? 'already running' :
-                                        repo.last_sync_status}
+                                    <span className={syncStatusClass(repo.last_sync_status)}>
+                                      {syncStatusLabel(repo.last_sync_status)}
                                     </span>
                                     {repo.last_sync_at && <> | {new Date(repo.last_sync_at).toLocaleDateString()}</>}
                                   </>
@@ -3502,6 +3527,11 @@ export default function WorkspaceSettings() {
                                   <span className="text-amber-600">Never synced</span>
                                 )}
                               </p>
+                              {repo.last_sync_status === 'stalled' && (
+                                <p className="text-xs text-amber-600 mt-0.5">
+                                  {STALLED_REASON_TEXT[repo.last_failure_reason ?? ''] ?? STALLED_REASON_FALLBACK}
+                                </p>
+                              )}
                             </div>
                           </div>
                           <div className="flex items-center gap-2 ml-4">

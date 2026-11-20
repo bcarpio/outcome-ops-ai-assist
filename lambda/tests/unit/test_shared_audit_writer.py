@@ -303,8 +303,10 @@ class TestActionConstants:
         # (DATABASE_SYNCED, DB_CONNECTION_ESTABLISHED,
         # DB_CREDENTIAL_USED, DB_CONNECTION_DELETED) + 1 from
         # CHAT_ROUTING_DECISION + 1 from 
-        # (ADMIN_MUTATION_BLOCKED_PASSIVE) = 50.
-        assert len(ADMIN_ACTIONS) == 50
+        # (ADMIN_MUTATION_BLOCKED_PASSIVE) + 1 from workspace
+        # notifications (NOTIFICATION_DISMISSED) = 51.
+        assert len(ADMIN_ACTIONS) == 51
+        assert audit_writer.ACTION_NOTIFICATION_DISMISSED in ADMIN_ACTIONS
 
     def test_known_action_in_set(self):
         assert ACTION_API_KEY_CREATED in ADMIN_ACTIONS
