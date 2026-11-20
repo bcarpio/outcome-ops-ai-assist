@@ -32,6 +32,7 @@ from botocore.exceptions import ClientError
 # Make shared/ importable; deploy package now bundles lambda/shared/.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared import dual_write  # noqa: E402
+from shared import oauth_state  # noqa: E402
 from shared.audit_writer import (  # noqa: E402
     ACTION_OAUTH_CONNECTION_ESTABLISHED,
     log_admin_action,
@@ -240,7 +241,7 @@ def generate_id() -> str:
     return secrets.token_urlsafe(16)
 
 
-def get_authorize_url(workspace_id: str) -> Dict:
+def get_authorize_url(workspace_id: str, user_email: str) -> Dict:
     """
     Generate Microsoft OAuth authorization URL.
 
@@ -252,9 +253,8 @@ def get_authorize_url(workspace_id: str) -> Dict:
     """
     config = _load_oauth_config()
 
-    # State contains workspace context
-    state = json.dumps({"workspace_id": workspace_id})
-    encoded_state = urllib.parse.quote(state)
+    # One-time server-side state bound to this admin (shared/oauth_state.py).
+    encoded_state = oauth_state.issue_state("outlook", workspace_id, user_email)
 
     params = {
         "client_id": config["client_id"],
@@ -293,14 +293,14 @@ def handle_callback(event: Dict, body: Dict = None) -> Dict:
     if not code or not state:
         return _response(400, {"redirect": "/?error=invalid_callback"})
 
-    try:
-        # State might be URL-encoded or plain JSON
-        if state.startswith("%"):
-            state = urllib.parse.unquote(state)
-        state_data = json.loads(state)
-        workspace_id = state_data.get("workspace_id")
-    except (json.JSONDecodeError, KeyError):
+    state_data = oauth_state.consume_state("outlook", state)
+    if not state_data:
         return _response(400, {"redirect": "/?error=invalid_state"})
+    workspace_id = state_data["workspace_id"]
+    # The workspace admin who started this flow (from the stored state, not
+    # the browser). user_email below is the connected Microsoft/Atlassian
+    # account, which can differ.
+    admin_email = state_data["user_email"]
 
     config = _load_oauth_config()
 
@@ -361,7 +361,7 @@ def handle_callback(event: Dict, body: Dict = None) -> Dict:
                 os.environ.get("AUDIT_TABLE", ""),
                 ACTION_OAUTH_CONNECTION_ESTABLISHED,
                 workspace_id=workspace_id,
-                user_email=user_email or "",
+                user_email=admin_email,
                 source_ip="",
                 user_agent="",
                 details={
@@ -687,7 +687,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         table = dynamodb.Table(os.environ.get("WORKSPACES_TABLE", ""))
         if not _is_workspace_admin(table, user_email, workspace_id):
             return _error(403, "Only workspace admins can configure integrations")
-        return get_authorize_url(workspace_id)
+        return get_authorize_url(workspace_id, user_email)
 
     # GET or POST /outlook/callback
     if parts == ("outlook", "callback") and http_method in ("GET", "POST"):

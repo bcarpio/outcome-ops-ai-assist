@@ -164,3 +164,69 @@ def _route_dual_write_through_handler(monkeypatch):
     dual_write._reset_clients_for_tests()
     yield
     dual_write._reset_clients_for_tests()
+
+
+# ---------------------------------------------------------------------------
+# One-time OAuth state (shared/oauth_state.py)
+# ---------------------------------------------------------------------------
+
+
+class FakeOAuthStates:
+    """In-memory stand-in for ``shared.oauth_state`` with the same rules:
+    tokens are opaque, single-use, and bound to one provider.
+
+    Integration tests that exercise a callback get a valid token from
+    ``issue(...)`` (the same thing the authorize step would have stored);
+    a hand-built JSON state is rejected, exactly as in production.
+    """
+
+    def __init__(self) -> None:
+        self.rows: dict = {}
+        self._n = 0
+
+    def issue_state(self, provider, workspace_id, user_email, extra=None, *, table_name=None):
+        if not provider or not workspace_id or not user_email:
+            raise ValueError("provider, workspace_id and user_email are required")
+        self._n += 1
+        token = f"test-state-{self._n}"
+        self.rows[token] = {
+            "provider": provider,
+            "workspace_id": workspace_id,
+            "user_email": user_email,
+            "extra": dict(extra or {}),
+        }
+        return token
+
+    # Convenience alias for tests.
+    issue = issue_state
+
+    def consume_state(self, provider, token, *, table_name=None):
+        row = self.rows.pop(token, None) if isinstance(token, str) else None
+        if not row or row["provider"] != provider:
+            return None
+        payload = dict(row["extra"])
+        payload["workspace_id"] = row["workspace_id"]
+        payload["user_email"] = row["user_email"]
+        return payload
+
+
+@pytest.fixture(autouse=True)
+def oauth_states(request, monkeypatch):
+    """Replace ``shared.oauth_state`` issue/consume with an in-memory fake
+    for every unit test. Tests of the real module opt out with
+    ``@pytest.mark.real_oauth_state``."""
+    if "real_oauth_state" in request.keywords:
+        yield None
+        return
+    import os
+    import sys
+
+    lambda_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    if lambda_root not in sys.path:
+        sys.path.insert(0, lambda_root)
+    from shared import oauth_state
+
+    fake = FakeOAuthStates()
+    monkeypatch.setattr(oauth_state, "issue_state", fake.issue_state)
+    monkeypatch.setattr(oauth_state, "consume_state", fake.consume_state)
+    yield fake

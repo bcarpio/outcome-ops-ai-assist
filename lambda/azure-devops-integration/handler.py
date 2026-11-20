@@ -56,6 +56,7 @@ _BOTO_CONFIG = Config(connect_timeout=10, read_timeout=60, retries={"max_attempt
 # Make shared/ importable; deploy package bundles lambda/shared/.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared import dual_write  # noqa: E402
+from shared import oauth_state  # noqa: E402
 from shared.audit_writer import (  # noqa: E402
     ACTION_OAUTH_CONNECTION_ESTABLISHED,
     log_admin_action,
@@ -303,13 +304,14 @@ def handle_authorize(event: Dict) -> Dict:
     ):
         return _error(500, "Azure DevOps OAuth app not configured")
 
-    state = json.dumps({"workspace_id": workspace_id, "user_email": user_email})
+    # One-time server-side state bound to this admin (shared/oauth_state.py).
+    state = oauth_state.issue_state("azure_devops", workspace_id, user_email)
 
     params = {
         "client_id": AZURE_DEVOPS_CLIENT_ID,
         "scope": AZDO_SCOPES,
         "redirect_uri": AZURE_DEVOPS_REDIRECT_URI,
-        "state": urllib.parse.quote(state),
+        "state": state,
         "response_type": "code",
         "response_mode": "query",
         "prompt": "consent",
@@ -341,14 +343,11 @@ def handle_callback(event: Dict) -> Dict:
     if not code or not state:
         return _redirect(f"{base_redirect}?azure_devops_error=invalid_callback")
 
-    try:
-        if state.startswith("%"):
-            state = urllib.parse.unquote(state)
-        state_data = json.loads(state)
-        workspace_id = state_data["workspace_id"]
-        callback_user_email = state_data["user_email"]
-    except (json.JSONDecodeError, KeyError):
+    state_data = oauth_state.consume_state("azure_devops", state)
+    if not state_data:
         return _redirect(f"{base_redirect}?azure_devops_error=invalid_state")
+    workspace_id = state_data["workspace_id"]
+    callback_user_email = state_data["user_email"]
 
     try:
         client_secret = _get_client_secret()

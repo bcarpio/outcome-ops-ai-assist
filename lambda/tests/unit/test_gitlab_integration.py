@@ -26,6 +26,7 @@ import importlib.util
 import json
 import os
 import sys
+import urllib.parse
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -158,7 +159,7 @@ def _make_event(method, path, *, user_email="admin@example.com", query=None, bod
 
 class TestAuthorize:
 
-    def test_returns_url(self, mock_table):
+    def test_returns_url(self, mock_table, oauth_states):
         _admin_user(mock_table)
         # get_client_id() reads env live; set it for this call.
         with patch.dict(os.environ, {
@@ -174,6 +175,19 @@ class TestAuthorize:
         assert "redirect_uri=" in url
         assert "scope=" in url
         assert "state=" in url
+
+        # State is an opaque one-time token stored server-side with the
+        # workspace, the admin's email, and the instance; none of them ride
+        # in the URL.
+        token = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["state"][0]
+        assert token in oauth_states.rows
+        row = oauth_states.rows[token]
+        assert row["provider"] == "gitlab"
+        assert row["workspace_id"] == "w1"
+        assert row["user_email"] == "admin@example.com"
+        assert row["extra"] == {"instance_id": "default"}
+        assert "w1" not in urllib.parse.unquote(url).replace(token, "")
+        assert "admin@example.com" not in urllib.parse.unquote(url)
 
     def test_returns_401_when_no_user_email(self, mock_table):
         event = _make_event(
@@ -211,19 +225,63 @@ class TestAuthorize:
 
 class TestCallback:
 
-    def test_invalid_state_redirects_with_error(self, mock_table):
+    @patch.object(handler.gitlab_oauth, "exchange_code_for_tokens")
+    def test_forged_json_state_redirects_with_error(self, mock_exchange, mock_table):
+        """A hand-built JSON state naming a workspace is not a valid token."""
         event = _make_event(
             "GET", "/gitlab/callback",
-            query={"code": "auth-code", "state": "not-json"},
+            query={
+                "code": "auth-code",
+                "state": json.dumps({"workspace_id": "ws-x", "user_email": "x@y"}),
+            },
         )
         result = handler.lambda_handler(event, None)
         assert result["statusCode"] == 302
         assert "gitlab_error=invalid_state" in result["headers"]["Location"]
+        mock_exchange.assert_not_called()
 
-    def test_missing_code_redirects_with_error(self, mock_table):
+    @patch.object(handler.gitlab_oauth, "exchange_code_for_tokens")
+    def test_unknown_state_token_redirects_with_error(self, mock_exchange, mock_table):
         event = _make_event(
             "GET", "/gitlab/callback",
-            query={"state": json.dumps({"workspace_id": "w1", "user_email": "u@example.com"})},
+            query={"code": "auth-code", "state": "never-issued-token"},
+        )
+        result = handler.lambda_handler(event, None)
+        assert result["statusCode"] == 302
+        assert "gitlab_error=invalid_state" in result["headers"]["Location"]
+        mock_exchange.assert_not_called()
+
+    @patch.object(handler.gitlab_oauth, "base_url", return_value="https://gitlab.com")
+    @patch.object(handler.gitlab_oauth, "get_user_profile")
+    @patch.object(handler.gitlab_oauth, "exchange_code_for_tokens")
+    @patch.object(handler, "dual_write")
+    def test_state_token_is_single_use(
+        self, mock_dual, mock_exchange, mock_profile, mock_base, mock_table, oauth_states,
+    ):
+        mock_exchange.return_value = "access-x"
+        mock_profile.return_value = ("999", "octocat")
+
+        state = oauth_states.issue(
+            "gitlab", "w1", "u@example.com", {"instance_id": "default"},
+        )
+        event = _make_event(
+            "GET", "/gitlab/callback",
+            query={"code": "auth-code", "state": state},
+        )
+        first = handler.lambda_handler(event, None)
+        assert "gitlab_connected=" in first["headers"]["Location"]
+
+        second = handler.lambda_handler(event, None)
+        assert second["statusCode"] == 302
+        assert "gitlab_error=invalid_state" in second["headers"]["Location"]
+        assert mock_exchange.call_count == 1
+
+    def test_missing_code_redirects_with_error(self, mock_table, oauth_states):
+        event = _make_event(
+            "GET", "/gitlab/callback",
+            query={"state": oauth_states.issue(
+                "gitlab", "w1", "u@example.com", {"instance_id": "default"},
+            )},
         )
         result = handler.lambda_handler(event, None)
         assert result["statusCode"] == 302
@@ -242,12 +300,14 @@ class TestCallback:
     @patch.object(handler.gitlab_oauth, "exchange_code_for_tokens")
     @patch.object(handler, "dual_write")
     def test_happy_path_creates_connection_and_redirects(
-        self, mock_dual, mock_exchange, mock_profile, mock_base, mock_table,
+        self, mock_dual, mock_exchange, mock_profile, mock_base, mock_table, oauth_states,
     ):
         mock_exchange.return_value = "access-x"
         mock_profile.return_value = ("999", "octocat")
 
-        state = json.dumps({"workspace_id": "w1", "user_email": "u@example.com"})
+        state = oauth_states.issue(
+            "gitlab", "w1", "u@example.com", {"instance_id": "default"},
+        )
         event = _make_event(
             "GET", "/gitlab/callback",
             query={"code": "auth-code", "state": state},
@@ -265,6 +325,9 @@ class TestCallback:
         assert item["SK"].startswith("GITLAB_CONNECTION#")
         assert item["gitlab_user_id"] == "999"
         assert item["gitlab_username"] == "octocat"
+        # Workspace, user and instance come from the stored state row.
+        assert item["user_email"] == "u@example.com"
+        assert item["instance_id"] == "default"
 
         # The exchange was handed the SAME connection_id used in the SK,
         # so the persisted tokens key the connection.

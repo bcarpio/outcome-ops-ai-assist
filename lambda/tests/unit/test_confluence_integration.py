@@ -270,7 +270,7 @@ class TestGetAuthorizeUrl:
         """Test generates valid Atlassian OAuth URL."""
         mock_config.return_value = oauth_config
 
-        result = get_authorize_url("ws_test")
+        result = get_authorize_url("ws_test", "admin@example.com")
         assert result["statusCode"] == 200
         body = json.loads(result["body"])
         assert "auth_url" in body
@@ -285,7 +285,7 @@ class TestGetAuthorizeUrl:
         """Test auth URL includes Confluence OAuth scopes."""
         mock_config.return_value = oauth_config
 
-        result = get_authorize_url("ws_test")
+        result = get_authorize_url("ws_test", "admin@example.com")
         body = json.loads(result["body"])
         auth_url = body["auth_url"]
         # URL-encoded scopes should be present
@@ -293,21 +293,29 @@ class TestGetAuthorizeUrl:
         assert "confluence" in auth_url
 
     @patch.object(handler_module, '_load_oauth_config')
-    def test_includes_workspace_in_state(self, mock_config, oauth_config):
-        """Test auth URL encodes workspace_id in state."""
+    def test_includes_workspace_in_state(self, mock_config, oauth_config, oauth_states):
+        """Test auth URL state is an opaque token bound server-side to the workspace and admin."""
         mock_config.return_value = oauth_config
 
-        result = get_authorize_url("ws_test")
+        result = get_authorize_url("ws_test", "admin@example.com")
         body = json.loads(result["body"])
         auth_url = body["auth_url"]
-        assert "workspace_id" in auth_url
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(auth_url).query)
+        state = query["state"][0]
+        assert state in oauth_states.rows
+        row = oauth_states.rows[state]
+        assert row["provider"] == "confluence"
+        assert row["workspace_id"] == "ws_test"
+        assert row["user_email"] == "admin@example.com"
+        assert "ws_test" not in state
+        assert "workspace_id" not in state
 
     @patch.object(handler_module, '_load_oauth_config')
     def test_includes_audience_param(self, mock_config, oauth_config):
         """Test auth URL includes Atlassian audience parameter."""
         mock_config.return_value = oauth_config
 
-        result = get_authorize_url("ws_test")
+        result = get_authorize_url("ws_test", "admin@example.com")
         body = json.loads(result["body"])
         auth_url = body["auth_url"]
         assert "audience=api.atlassian.com" in auth_url
@@ -317,7 +325,7 @@ class TestGetAuthorizeUrl:
         """Test auth URL includes prompt=consent."""
         mock_config.return_value = oauth_config
 
-        result = get_authorize_url("ws_test")
+        result = get_authorize_url("ws_test", "admin@example.com")
         body = json.loads(result["body"])
         auth_url = body["auth_url"]
         assert "prompt=consent" in auth_url
@@ -327,7 +335,7 @@ class TestGetAuthorizeUrl:
         """Test auth URL includes the callback URL."""
         mock_config.return_value = oauth_config
 
-        result = get_authorize_url("ws_test")
+        result = get_authorize_url("ws_test", "admin@example.com")
         body = json.loads(result["body"])
         auth_url = body["auth_url"]
         assert urllib.parse.quote("https://example.com/api/confluence/callback", safe='') in auth_url
@@ -341,7 +349,7 @@ class TestHandleCallback:
     @patch.object(handler_module, 'exchange_code_for_tokens')
     @patch.object(handler_module, '_load_oauth_config')
     @patch.object(handler_module, '_get_dynamodb')
-    def test_callback_success(self, mock_db, mock_config, mock_exchange, mock_resources, mock_save, oauth_config, mock_dynamodb, mock_table):
+    def test_callback_success(self, mock_db, mock_config, mock_exchange, mock_resources, mock_save, oauth_config, mock_dynamodb, mock_table, oauth_states):
         """Test successful OAuth callback creates connection."""
         mock_db.return_value = mock_dynamodb
         mock_config.return_value = oauth_config
@@ -353,7 +361,7 @@ class TestHandleCallback:
         event = {
             "queryStringParameters": {
                 "code": "auth_code_123",
-                "state": json.dumps({"workspace_id": "ws_test"}),
+                "state": oauth_states.issue("confluence", "ws_test", "admin@example.com"),
             }
         }
 
@@ -370,7 +378,7 @@ class TestHandleCallback:
     @patch.object(handler_module, 'exchange_code_for_tokens')
     @patch.object(handler_module, '_load_oauth_config')
     @patch.object(handler_module, '_get_dynamodb')
-    def test_callback_creates_correct_connection_record(self, mock_db, mock_config, mock_exchange, mock_resources, mock_save, oauth_config, mock_dynamodb, mock_table):
+    def test_callback_creates_correct_connection_record(self, mock_db, mock_config, mock_exchange, mock_resources, mock_save, oauth_config, mock_dynamodb, mock_table, oauth_states):
         """Test callback creates connection with correct fields."""
         mock_db.return_value = mock_dynamodb
         mock_config.return_value = oauth_config
@@ -382,7 +390,7 @@ class TestHandleCallback:
         event = {
             "queryStringParameters": {
                 "code": "auth_code_123",
-                "state": json.dumps({"workspace_id": "ws_test"}),
+                "state": oauth_states.issue("confluence", "ws_test", "admin@example.com"),
             }
         }
 
@@ -450,7 +458,7 @@ class TestHandleCallback:
 
     @patch.object(handler_module, 'exchange_code_for_tokens')
     @patch.object(handler_module, '_load_oauth_config')
-    def test_callback_token_exchange_fails(self, mock_config, mock_exchange, oauth_config):
+    def test_callback_token_exchange_fails(self, mock_config, mock_exchange, oauth_config, oauth_states):
         """Test callback handles failed token exchange."""
         mock_config.return_value = oauth_config
         mock_exchange.return_value = (None, None, None)
@@ -458,7 +466,7 @@ class TestHandleCallback:
         event = {
             "queryStringParameters": {
                 "code": "bad_code",
-                "state": json.dumps({"workspace_id": "ws_test"}),
+                "state": oauth_states.issue("confluence", "ws_test", "admin@example.com"),
             }
         }
 
@@ -467,21 +475,59 @@ class TestHandleCallback:
         assert "error=token_exchange_failed" in body["redirect"]
 
     def test_callback_invalid_state_json(self):
-        """Test callback handles invalid state JSON."""
+        """Test callback rejects an unknown state token."""
         event = {
             "queryStringParameters": {
                 "code": "auth_code",
-                "state": "not-json",
+                "state": "not-a-known-token",
             }
         }
         result = handle_callback(event)
         body = json.loads(result["body"])
         assert "error=invalid_state" in body.get("redirect", "")
 
+    @patch.object(handler_module, 'exchange_code_for_tokens')
+    def test_callback_rejects_forged_json_state(self, mock_exchange):
+        """Test callback rejects a hand-built JSON state naming a workspace."""
+        event = {
+            "queryStringParameters": {
+                "code": "auth_code",
+                "state": json.dumps({"workspace_id": "ws-x"}),
+            }
+        }
+        result = handle_callback(event)
+        body = json.loads(result["body"])
+        assert "error=invalid_state" in body.get("redirect", "")
+        mock_exchange.assert_not_called()
+
+    @patch.object(handler_module, 'save_tokens')
     @patch.object(handler_module, 'get_accessible_resources')
     @patch.object(handler_module, 'exchange_code_for_tokens')
     @patch.object(handler_module, '_load_oauth_config')
-    def test_callback_api_error(self, mock_config, mock_exchange, mock_resources, oauth_config):
+    @patch.object(handler_module, '_get_dynamodb')
+    def test_callback_state_is_single_use(self, mock_db, mock_config, mock_exchange, mock_resources, mock_save, oauth_config, mock_dynamodb, mock_table, oauth_states):
+        """Test a state token cannot be replayed after a successful callback."""
+        mock_db.return_value = mock_dynamodb
+        mock_config.return_value = oauth_config
+        mock_exchange.return_value = ("access_token", "refresh_token", 3600)
+        mock_resources.return_value = [
+            {"id": "cloud-123", "name": "Test", "url": "https://test.atlassian.net"}
+        ]
+        token = oauth_states.issue("confluence", "ws_test", "admin@example.com")
+        event = {"queryStringParameters": {"code": "auth_code_123", "state": token}}
+
+        first = handle_callback(event)
+        assert "/workspaces/ws_test/settings" in json.loads(first["body"])["redirect"]
+
+        second = handle_callback(event)
+        assert second["statusCode"] == 400
+        assert "error=invalid_state" in json.loads(second["body"])["redirect"]
+        mock_table.put_item.assert_called_once()
+
+    @patch.object(handler_module, 'get_accessible_resources')
+    @patch.object(handler_module, 'exchange_code_for_tokens')
+    @patch.object(handler_module, '_load_oauth_config')
+    def test_callback_api_error(self, mock_config, mock_exchange, mock_resources, oauth_config, oauth_states):
         """Test callback handles accessible resources API error."""
         mock_config.return_value = oauth_config
         mock_exchange.return_value = ("access_token", "refresh_token", 3600)
@@ -490,7 +536,7 @@ class TestHandleCallback:
         event = {
             "queryStringParameters": {
                 "code": "auth_code",
-                "state": json.dumps({"workspace_id": "ws_test"}),
+                "state": oauth_states.issue("confluence", "ws_test", "admin@example.com"),
             }
         }
 
@@ -501,7 +547,7 @@ class TestHandleCallback:
     @patch.object(handler_module, 'get_accessible_resources')
     @patch.object(handler_module, 'exchange_code_for_tokens')
     @patch.object(handler_module, '_load_oauth_config')
-    def test_callback_no_confluence_access(self, mock_config, mock_exchange, mock_resources, oauth_config):
+    def test_callback_no_confluence_access(self, mock_config, mock_exchange, mock_resources, oauth_config, oauth_states):
         """Test callback handles no accessible Confluence resources."""
         mock_config.return_value = oauth_config
         mock_exchange.return_value = ("access_token", "refresh_token", 3600)
@@ -510,7 +556,7 @@ class TestHandleCallback:
         event = {
             "queryStringParameters": {
                 "code": "auth_code",
-                "state": json.dumps({"workspace_id": "ws_test"}),
+                "state": oauth_states.issue("confluence", "ws_test", "admin@example.com"),
             }
         }
 
@@ -524,13 +570,9 @@ class TestHandleCallback:
     @patch.object(handler_module, '_load_oauth_config')
     @patch.object(handler_module, '_get_dynamodb')
     def test_callback_url_encoded_state(self, mock_db, mock_config, mock_exchange, mock_resources, mock_save, oauth_config, mock_dynamodb, mock_table):
-        """Test callback handles URL-encoded state parameter."""
+        """Test callback rejects a URL-encoded JSON state (no longer decoded or trusted)."""
         mock_db.return_value = mock_dynamodb
         mock_config.return_value = oauth_config
-        mock_exchange.return_value = ("access_token", "refresh_token", 3600)
-        mock_resources.return_value = [
-            {"id": "cloud-123", "name": "Test", "url": "https://test.atlassian.net"}
-        ]
 
         state = urllib.parse.quote(json.dumps({"workspace_id": "ws_test"}))
 
@@ -542,15 +584,17 @@ class TestHandleCallback:
         }
 
         result = handle_callback(event)
-        assert result["statusCode"] == 200
-        mock_table.put_item.assert_called_once()
+        assert result["statusCode"] == 400
+        assert "error=invalid_state" in json.loads(result["body"])["redirect"]
+        mock_exchange.assert_not_called()
+        mock_table.put_item.assert_not_called()
 
     @patch.object(handler_module, 'save_tokens')
     @patch.object(handler_module, 'get_accessible_resources')
     @patch.object(handler_module, 'exchange_code_for_tokens')
     @patch.object(handler_module, '_load_oauth_config')
     @patch.object(handler_module, '_get_dynamodb')
-    def test_callback_from_post_body(self, mock_db, mock_config, mock_exchange, mock_resources, mock_save, oauth_config, mock_dynamodb, mock_table):
+    def test_callback_from_post_body(self, mock_db, mock_config, mock_exchange, mock_resources, mock_save, oauth_config, mock_dynamodb, mock_table, oauth_states):
         """Test callback accepts parameters from body (POST)."""
         mock_db.return_value = mock_dynamodb
         mock_config.return_value = oauth_config
@@ -562,7 +606,7 @@ class TestHandleCallback:
         event = {"queryStringParameters": {}}
         body = {
             "code": "auth_code_123",
-            "state": json.dumps({"workspace_id": "ws_test"}),
+            "state": oauth_states.issue("confluence", "ws_test", "admin@example.com"),
         }
 
         result = handle_callback(event, body)
@@ -574,7 +618,7 @@ class TestHandleCallback:
     @patch.object(handler_module, 'exchange_code_for_tokens')
     @patch.object(handler_module, '_load_oauth_config')
     @patch.object(handler_module, '_get_dynamodb')
-    def test_callback_database_error(self, mock_db, mock_config, mock_exchange, mock_resources, mock_save, oauth_config, mock_dynamodb, mock_table):
+    def test_callback_database_error(self, mock_db, mock_config, mock_exchange, mock_resources, mock_save, oauth_config, mock_dynamodb, mock_table, oauth_states):
         """Test callback handles DynamoDB put_item failure."""
         mock_db.return_value = mock_dynamodb
         mock_config.return_value = oauth_config
@@ -589,7 +633,7 @@ class TestHandleCallback:
         event = {
             "queryStringParameters": {
                 "code": "auth_code_123",
-                "state": json.dumps({"workspace_id": "ws_test"}),
+                "state": oauth_states.issue("confluence", "ws_test", "admin@example.com"),
             }
         }
 
@@ -610,7 +654,7 @@ class TestHandleCallback:
     @patch.object(handler_module, 'get_accessible_resources')
     @patch.object(handler_module, 'exchange_code_for_tokens')
     @patch.object(handler_module, '_load_oauth_config')
-    def test_callback_uses_first_resource(self, mock_config, mock_exchange, mock_resources, oauth_config, mock_dynamodb, mock_table):
+    def test_callback_uses_first_resource(self, mock_config, mock_exchange, mock_resources, oauth_config, mock_dynamodb, mock_table, oauth_states):
         """Test callback uses the first accessible Confluence site."""
         with patch.object(handler_module, '_get_dynamodb', return_value=mock_dynamodb):
             with patch.object(handler_module, 'save_tokens'):
@@ -624,7 +668,7 @@ class TestHandleCallback:
                 event = {
                     "queryStringParameters": {
                         "code": "auth_code_123",
-                        "state": json.dumps({"workspace_id": "ws_test"}),
+                        "state": oauth_states.issue("confluence", "ws_test", "admin@example.com"),
                     }
                 }
 
@@ -1424,7 +1468,7 @@ class TestLambdaHandlerRouting:
         }
 
         result = lambda_handler(event, None)
-        mock_fn.assert_called_once_with("ws_test")
+        mock_fn.assert_called_once_with("ws_test", "admin@example.com")
 
     def test_authorize_missing_workspace_id(self):
         """Test authorize returns 401 without user email."""

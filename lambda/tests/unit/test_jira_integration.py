@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import sys
+import urllib.parse
 from unittest.mock import MagicMock, patch, call
 
 import pytest
@@ -646,8 +647,8 @@ class TestHandleAuthorize:
 
     @patch.object(handler_module, 'get_oauth_config')
     @patch.object(handler_module, '_get_dynamodb')
-    def test_handle_authorize_includes_state(self, mock_db_fn, mock_config, oauth_config, mock_dynamodb, mock_table):
-        """Test auth URL encodes workspace_id and user_email in state."""
+    def test_handle_authorize_includes_state(self, mock_db_fn, mock_config, oauth_config, mock_dynamodb, mock_table, oauth_states):
+        """Test auth URL carries an opaque state token; workspace_id and user_email are stored server-side."""
         mock_db_fn.return_value = mock_dynamodb
         mock_config.return_value = oauth_config
         mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
@@ -661,8 +662,17 @@ class TestHandleAuthorize:
         body = json.loads(result["body"])
         auth_url = body["auth_url"]
         assert "state=" in auth_url
-        assert "workspace_id" in auth_url
-        assert "user_email" in auth_url
+        token = urllib.parse.parse_qs(urllib.parse.urlparse(auth_url).query)["state"][0]
+        assert token in oauth_states.rows
+        row = oauth_states.rows[token]
+        assert row["provider"] == "jira"
+        assert row["workspace_id"] == "ws_test"
+        assert row["user_email"] == "admin@example.com"
+        decoded = urllib.parse.unquote(auth_url)
+        assert "ws_test" not in decoded
+        assert "admin@example.com" not in decoded
+        assert "workspace_id" not in decoded
+        assert "user_email" not in decoded
 
     def test_handle_authorize_no_user_email(self):
         """Test returns 401 when user email is missing."""
@@ -734,7 +744,7 @@ class TestHandleCallback:
     @patch.object(handler_module, 'get_oauth_config')
     def test_handle_callback_success_new_connection(
         self, mock_config, mock_exchange, mock_resources, mock_list,
-        mock_gen_id, mock_save_conn, mock_save_tokens, oauth_config, sample_sites,
+        mock_gen_id, mock_save_conn, mock_save_tokens, oauth_config, sample_sites, oauth_states,
     ):
         """Test successful OAuth callback creates new connection."""
         mock_config.return_value = oauth_config
@@ -744,7 +754,7 @@ class TestHandleCallback:
         event = {
             "queryStringParameters": {
                 "code": "auth_code_123",
-                "state": json.dumps({"workspace_id": "ws_test", "user_email": "admin@example.com"}),
+                "state": oauth_states.issue("jira", "ws_test", "admin@example.com"),
             },
         }
 
@@ -755,6 +765,8 @@ class TestHandleCallback:
         assert "tab=jira" in location
         assert "connection=jira_new_conn" in location
         mock_save_conn.assert_called_once()
+        # The connection is attributed to the admin stored with the state.
+        assert mock_save_conn.call_args.kwargs["created_by"] == "admin@example.com"
         mock_save_tokens.assert_called_once_with("jira_new_conn", "access_tok", "refresh_tok", 3600)
 
     @patch.object(handler_module, 'save_tokens')
@@ -765,6 +777,7 @@ class TestHandleCallback:
     def test_handle_callback_existing_connection(
         self, mock_config, mock_exchange, mock_resources, mock_list,
         mock_save_tokens, oauth_config, sample_sites, sample_connection,
+        oauth_states,
     ):
         """Test callback updates tokens for existing connection with same cloud_id."""
         mock_config.return_value = oauth_config
@@ -775,7 +788,7 @@ class TestHandleCallback:
         event = {
             "queryStringParameters": {
                 "code": "auth_code_123",
-                "state": json.dumps({"workspace_id": "ws_test", "user_email": "admin@example.com"}),
+                "state": oauth_states.issue("jira", "ws_test", "admin@example.com"),
             },
         }
 
@@ -797,12 +810,12 @@ class TestHandleCallback:
         assert result["statusCode"] == 302
         assert "jira_error=access_denied" in result["headers"]["Location"]
 
-    def test_handle_callback_missing_code(self):
+    def test_handle_callback_missing_code(self, oauth_states):
         """Test callback redirects on missing code."""
         handler_module.ENV = "dev"
         event = {
             "queryStringParameters": {
-                "state": json.dumps({"workspace_id": "ws_test", "user_email": "admin@example.com"}),
+                "state": oauth_states.issue("jira", "ws_test", "admin@example.com"),
             },
         }
         result = handle_callback(event)
@@ -819,35 +832,72 @@ class TestHandleCallback:
         assert result["statusCode"] == 302
         assert "jira_error=missing_params" in result["headers"]["Location"]
 
-    def test_handle_callback_invalid_state_json(self):
-        """Test callback handles invalid state JSON."""
+    @patch.object(handler_module, 'exchange_code_for_tokens')
+    def test_handle_callback_rejects_forged_json_state(self, mock_exchange):
+        """Test callback rejects a hand-built JSON state naming a workspace."""
         handler_module.ENV = "dev"
         event = {
             "queryStringParameters": {
                 "code": "auth_code",
-                "state": "not-json",
+                "state": json.dumps({"workspace_id": "ws-x", "user_email": "x@y"}),
             },
         }
         result = handle_callback(event)
         assert result["statusCode"] == 302
         assert "jira_error=invalid_state" in result["headers"]["Location"]
+        mock_exchange.assert_not_called()
 
-    def test_handle_callback_state_missing_workspace_id(self):
-        """Test callback handles state missing workspace_id key."""
+    @patch.object(handler_module, 'exchange_code_for_tokens')
+    def test_handle_callback_rejects_unknown_token(self, mock_exchange):
+        """Test callback rejects a state token that was never issued."""
         handler_module.ENV = "dev"
         event = {
             "queryStringParameters": {
                 "code": "auth_code",
-                "state": json.dumps({"user_email": "test@example.com"}),
+                "state": "never-issued-token",
             },
         }
         result = handle_callback(event)
         assert result["statusCode"] == 302
         assert "jira_error=invalid_state" in result["headers"]["Location"]
+        mock_exchange.assert_not_called()
+
+    @patch.object(handler_module, 'save_tokens')
+    @patch.object(handler_module, 'save_connection')
+    @patch.object(handler_module, '_generate_connection_id', return_value="jira_new_conn")
+    @patch.object(handler_module, 'list_connections', return_value=[])
+    @patch.object(handler_module, 'get_accessible_resources')
+    @patch.object(handler_module, 'exchange_code_for_tokens')
+    @patch.object(handler_module, 'get_oauth_config')
+    def test_handle_callback_state_token_is_single_use(
+        self, mock_config, mock_exchange, mock_resources, mock_list,
+        mock_gen_id, mock_save_conn, mock_save_tokens, oauth_config, sample_sites, oauth_states,
+    ):
+        """Test a state token cannot be replayed after a successful callback."""
+        handler_module.ENV = "dev"
+        mock_config.return_value = oauth_config
+        mock_exchange.return_value = ("access_tok", "refresh_tok", 3600)
+        mock_resources.return_value = sample_sites
+
+        event = {
+            "queryStringParameters": {
+                "code": "auth_code_123",
+                "state": oauth_states.issue("jira", "ws_test", "admin@example.com"),
+            },
+        }
+
+        first = handle_callback(event)
+        assert "connection=jira_new_conn" in first["headers"]["Location"]
+
+        second = handle_callback(event)
+        assert second["statusCode"] == 302
+        assert "jira_error=invalid_state" in second["headers"]["Location"]
+        assert mock_exchange.call_count == 1
+        mock_save_conn.assert_called_once()
 
     @patch.object(handler_module, 'exchange_code_for_tokens')
     @patch.object(handler_module, 'get_oauth_config')
-    def test_handle_callback_token_exchange_returns_none(self, mock_config, mock_exchange, oauth_config):
+    def test_handle_callback_token_exchange_returns_none(self, mock_config, mock_exchange, oauth_config, oauth_states):
         """Test callback handles None tokens from exchange."""
         handler_module.ENV = "dev"
         mock_config.return_value = oauth_config
@@ -856,7 +906,7 @@ class TestHandleCallback:
         event = {
             "queryStringParameters": {
                 "code": "bad_code",
-                "state": json.dumps({"workspace_id": "ws_test", "user_email": "admin@example.com"}),
+                "state": oauth_states.issue("jira", "ws_test", "admin@example.com"),
             },
         }
         result = handle_callback(event)
@@ -865,7 +915,7 @@ class TestHandleCallback:
 
     @patch.object(handler_module, 'exchange_code_for_tokens')
     @patch.object(handler_module, 'get_oauth_config')
-    def test_handle_callback_access_token_but_no_refresh(self, mock_config, mock_exchange, oauth_config):
+    def test_handle_callback_access_token_but_no_refresh(self, mock_config, mock_exchange, oauth_config, oauth_states):
         """Test callback handles access token without refresh token."""
         handler_module.ENV = "dev"
         mock_config.return_value = oauth_config
@@ -874,7 +924,7 @@ class TestHandleCallback:
         event = {
             "queryStringParameters": {
                 "code": "code_123",
-                "state": json.dumps({"workspace_id": "ws_test", "user_email": "admin@example.com"}),
+                "state": oauth_states.issue("jira", "ws_test", "admin@example.com"),
             },
         }
         result = handle_callback(event)
@@ -884,7 +934,7 @@ class TestHandleCallback:
     @patch.object(handler_module, 'get_accessible_resources')
     @patch.object(handler_module, 'exchange_code_for_tokens')
     @patch.object(handler_module, 'get_oauth_config')
-    def test_handle_callback_no_accessible_sites(self, mock_config, mock_exchange, mock_resources, oauth_config):
+    def test_handle_callback_no_accessible_sites(self, mock_config, mock_exchange, mock_resources, oauth_config, oauth_states):
         """Test callback handles no accessible Jira sites."""
         handler_module.ENV = "dev"
         mock_config.return_value = oauth_config
@@ -894,7 +944,7 @@ class TestHandleCallback:
         event = {
             "queryStringParameters": {
                 "code": "code_123",
-                "state": json.dumps({"workspace_id": "ws_test", "user_email": "admin@example.com"}),
+                "state": oauth_states.issue("jira", "ws_test", "admin@example.com"),
             },
         }
         result = handle_callback(event)
@@ -903,7 +953,7 @@ class TestHandleCallback:
 
     @patch.object(handler_module, 'exchange_code_for_tokens')
     @patch.object(handler_module, 'get_oauth_config')
-    def test_handle_callback_exception(self, mock_config, mock_exchange, oauth_config):
+    def test_handle_callback_exception(self, mock_config, mock_exchange, oauth_config, oauth_states):
         """Test callback handles unexpected exceptions."""
         handler_module.ENV = "dev"
         mock_config.return_value = oauth_config
@@ -912,7 +962,7 @@ class TestHandleCallback:
         event = {
             "queryStringParameters": {
                 "code": "code_123",
-                "state": json.dumps({"workspace_id": "ws_test", "user_email": "admin@example.com"}),
+                "state": oauth_states.issue("jira", "ws_test", "admin@example.com"),
             },
         }
         result = handle_callback(event)

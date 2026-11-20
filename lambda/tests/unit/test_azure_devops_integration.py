@@ -24,6 +24,7 @@ import importlib.util
 import json
 import os
 import sys
+import urllib.parse
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -173,7 +174,7 @@ def _make_event(method, path, *, user_email="admin@example.com", query=None, bod
 
 class TestAuthorize:
 
-    def test_returns_url_with_single_tenant(self, mock_table):
+    def test_returns_url_with_single_tenant(self, mock_table, oauth_states):
         _admin_user(mock_table)
         event = _make_event("GET", "/azure-devops/authorize", query={"workspace_id": "w1"})
         result = handler.lambda_handler(event, None)
@@ -188,6 +189,18 @@ class TestAuthorize:
         # Scope is URL-encoded; spaces become +
         assert "scope=" in url
         assert "redirect_uri=https" in url
+
+        # state is an opaque one-time token stored server-side, bound to
+        # the admin who authorized; the workspace id is not in the URL.
+        state = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["state"][0]
+        assert oauth_states.rows[state] == {
+            "provider": "azure_devops",
+            "workspace_id": "w1",
+            "user_email": "admin@example.com",
+            "extra": {},
+        }
+        assert "w1" not in state
+        assert "workspace_id" not in state
 
     def test_returns_401_when_no_user_email(self, mock_table):
         event = _make_event(
@@ -239,6 +252,37 @@ class TestCallback:
         assert result["statusCode"] == 302
         assert "azure_devops_error=invalid_state" in result["headers"]["Location"]
 
+    def test_forged_json_state_is_rejected(self, mock_table):
+        # A hand-built JSON state (the pre-fix format) must not attach a
+        # connection to an arbitrary workspace.
+        forged = json.dumps({"workspace_id": "ws-x", "user_email": "x@y"})
+        event = _make_event(
+            "GET", "/azure-devops/callback",
+            query={"code": "auth-code", "state": forged},
+        )
+        result = handler.lambda_handler(event, None)
+        assert result["statusCode"] == 302
+        assert "azure_devops_error=invalid_state" in result["headers"]["Location"]
+
+    def test_unknown_token_is_rejected(self, mock_table):
+        event = _make_event(
+            "GET", "/azure-devops/callback",
+            query={"code": "auth-code", "state": "never-issued-token"},
+        )
+        result = handler.lambda_handler(event, None)
+        assert result["statusCode"] == 302
+        assert "azure_devops_error=invalid_state" in result["headers"]["Location"]
+
+    def test_token_issued_for_other_provider_is_rejected(self, mock_table, oauth_states):
+        token = oauth_states.issue("azure_devops_boards", "w1", "u@example.com")
+        event = _make_event(
+            "GET", "/azure-devops/callback",
+            query={"code": "auth-code", "state": token},
+        )
+        result = handler.lambda_handler(event, None)
+        assert result["statusCode"] == 302
+        assert "azure_devops_error=invalid_state" in result["headers"]["Location"]
+
     def test_missing_code_redirects_with_error(self, mock_table):
         event = _make_event(
             "GET", "/azure-devops/callback",
@@ -264,6 +308,7 @@ class TestCallback:
     @patch.object(handler, "save_tokens")
     def test_happy_path_creates_connection_and_redirects(
         self, mock_save, mock_dual, mock_secret, mock_profile, mock_exchange, mock_table,
+        oauth_states,
     ):
         mock_secret.return_value = "secret-value"
         mock_exchange.return_value = ("access-x", "refresh-x", 3600)
@@ -274,7 +319,7 @@ class TestCallback:
         }
         mock_save.return_value = True
 
-        state = json.dumps({"workspace_id": "w1", "user_email": "u@example.com"})
+        state = oauth_states.issue("azure_devops", "w1", "u@example.com")
         event = _make_event(
             "GET", "/azure-devops/callback",
             query={"code": "auth-code", "state": state},
@@ -297,6 +342,37 @@ class TestCallback:
         sk_conn_id = item["SK"].split("#", 1)[1]
         save_call = mock_save.call_args
         assert save_call.args[0] == sk_conn_id
+
+    @patch.object(handler, "exchange_code_for_tokens")
+    @patch.object(handler, "get_user_profile")
+    @patch.object(handler, "_get_client_secret")
+    @patch.object(handler, "dual_write")
+    @patch.object(handler, "save_tokens")
+    def test_state_token_is_single_use(
+        self, mock_save, mock_dual, mock_secret, mock_profile, mock_exchange, mock_table,
+        oauth_states,
+    ):
+        mock_secret.return_value = "secret-value"
+        mock_exchange.return_value = ("access-x", "refresh-x", 3600)
+        mock_profile.return_value = {
+            "emailAddress": "external@contoso.com",
+            "displayName": "Jane Doe",
+            "id": "member-uuid",
+        }
+        mock_save.return_value = True
+
+        state = oauth_states.issue("azure_devops", "w1", "u@example.com")
+        event = _make_event(
+            "GET", "/azure-devops/callback",
+            query={"code": "auth-code", "state": state},
+        )
+        first = handler.lambda_handler(event, None)
+        assert "azure_devops_connected=" in first["headers"]["Location"]
+
+        replay = handler.lambda_handler(event, None)
+        assert replay["statusCode"] == 302
+        assert "azure_devops_error=invalid_state" in replay["headers"]["Location"]
+        assert mock_dual.ddb_put_item.call_count == 1
 
 
 # ---------------------------------------------------------------------------

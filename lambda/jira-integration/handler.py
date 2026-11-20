@@ -32,6 +32,7 @@ from botocore.exceptions import ClientError
 # Make shared/ importable; deploy package now bundles lambda/shared/.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared import dual_write  # noqa: E402
+from shared import oauth_state  # noqa: E402
 from shared.audit_writer import (  # noqa: E402
     ACTION_OAUTH_CONNECTION_ESTABLISHED,
     log_admin_action,
@@ -381,10 +382,8 @@ def handle_authorize(event: Dict) -> Dict:
 
     # Build OAuth URL
     config = get_oauth_config()
-    state = json.dumps({
-        "workspace_id": workspace_id,
-        "user_email": user_email,
-    })
+    # One-time server-side state bound to this admin (shared/oauth_state.py).
+    state = oauth_state.issue_state("jira", workspace_id, user_email)
 
     params = {
         "audience": "api.atlassian.com",
@@ -432,12 +431,11 @@ def handle_callback(event: Dict) -> Dict:
     if not code or not state:
         return _redirect(f"{base_url}/workspaces?jira_error=missing_params")
 
-    try:
-        state_data = json.loads(state)
-        workspace_id = state_data["workspace_id"]
-        user_email = state_data["user_email"]
-    except (json.JSONDecodeError, KeyError):
+    state_data = oauth_state.consume_state("jira", state)
+    if not state_data:
         return _redirect(f"{base_url}/workspaces?jira_error=invalid_state")
+    workspace_id = state_data["workspace_id"]
+    user_email = state_data["user_email"]
 
     try:
         config = get_oauth_config()

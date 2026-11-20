@@ -719,7 +719,9 @@ class TestHandleAuthorize:
         body = json.loads(result["body"])
         assert "install_url" in body
         assert "github.com/apps/outcome-ops-test/installations/new" in body["install_url"]
-        assert "workspace_id" in body["install_url"]
+        # State is an opaque one-time token; the workspace id never rides in the URL.
+        assert "state=" in body["install_url"]
+        assert "ws_test" not in body["install_url"]
         # Regression guard 2026-06-04: when multiple GitHub App callback
         # URLs are registered (one per environment / workspace stack),
         # GitHub uses the FIRST one unless redirect_uri is explicit.
@@ -823,8 +825,8 @@ class TestHandleAuthorize:
 
     @patch.object(handler_module, 'get_github_config')
     @patch.object(handler_module, '_get_dynamodb')
-    def test_authorize_state_encodes_user_and_workspace(self, mock_db, mock_config, mock_dynamodb, mock_table, github_config):
-        """Test authorize encodes both workspace_id and user_email in state."""
+    def test_authorize_state_is_opaque_server_side_token(self, mock_db, mock_config, mock_dynamodb, mock_table, github_config, oauth_states):
+        """Test authorize stores workspace_id and user_email server-side and puts only an opaque token in the URL."""
         mock_db.return_value = mock_dynamodb
         mock_config.return_value = github_config
         mock_table.get_item.return_value = {"Item": {"role": "workspace_admin"}}
@@ -842,9 +844,15 @@ class TestHandleAuthorize:
         # Extract state parameter from URL
         parsed = urllib.parse.urlparse(install_url)
         query_params = urllib.parse.parse_qs(parsed.query)
-        state = json.loads(query_params["state"][0])
-        assert state["workspace_id"] == "ws_test"
-        assert state["user_email"] == "admin@example.com"
+        token = query_params["state"][0]
+        assert token in oauth_states.rows
+        row = oauth_states.rows[token]
+        assert row["provider"] == "github"
+        assert row["workspace_id"] == "ws_test"
+        assert row["user_email"] == "admin@example.com"
+        assert "ws_test" not in install_url
+        assert "admin@example.com" not in install_url
+        assert "admin%40example.com" not in install_url
 
 
 # ============================================================================
@@ -857,7 +865,7 @@ class TestHandleCallback:
     @patch.object(handler_module, 'save_installation')
     @patch.object(handler_module, 'get_app_installations')
     @patch.object(handler_module, 'get_github_config')
-    def test_callback_success(self, mock_config, mock_installations, mock_save, github_config):
+    def test_callback_success(self, mock_config, mock_installations, mock_save, github_config, oauth_states):
         """Test successful callback saves installation and redirects."""
         mock_config.return_value = github_config
         mock_installations.return_value = [
@@ -868,7 +876,7 @@ class TestHandleCallback:
             }
         ]
 
-        state = json.dumps({"workspace_id": "ws_test", "user_email": "admin@example.com"})
+        state = oauth_states.issue("github", "ws_test", "admin@example.com")
         event = _make_event(
             method="GET",
             path="/github/callback",
@@ -893,11 +901,11 @@ class TestHandleCallback:
         )
 
     @patch.object(handler_module, 'get_github_config')
-    def test_callback_missing_installation_id(self, mock_config, github_config):
+    def test_callback_missing_installation_id(self, mock_config, github_config, oauth_states):
         """Test callback redirects with error when installation_id missing."""
         mock_config.return_value = github_config
 
-        state = json.dumps({"workspace_id": "ws_test", "user_email": "admin@example.com"})
+        state = oauth_states.issue("github", "ws_test", "admin@example.com")
         event = _make_event(
             method="GET",
             path="/github/callback",
@@ -923,46 +931,101 @@ class TestHandleCallback:
         assert result["statusCode"] == 302
         assert "github_error=missing_state" in result["headers"]["Location"]
 
+    @patch.object(handler_module, 'save_installation')
+    @patch.object(handler_module, 'get_app_installations')
     @patch.object(handler_module, 'get_github_config')
-    def test_callback_invalid_state_json(self, mock_config, github_config):
-        """Test callback handles invalid state JSON."""
+    def test_callback_rejects_forged_json_state(self, mock_config, mock_installations, mock_save, github_config):
+        """Test callback rejects a hand-built JSON state naming a workspace."""
         mock_config.return_value = github_config
 
         event = _make_event(
             method="GET",
             path="/github/callback",
-            query={"installation_id": "12345", "state": "not-json"},
+            query={
+                "installation_id": "12345",
+                "state": json.dumps({"workspace_id": "ws-x", "user_email": "x@y"}),
+            },
         )
 
         result = handle_callback(event)
         assert result["statusCode"] == 302
         assert "github_error=invalid_state" in result["headers"]["Location"]
+        mock_installations.assert_not_called()
+        mock_save.assert_not_called()
 
+    @patch.object(handler_module, 'save_installation')
     @patch.object(handler_module, 'get_github_config')
-    def test_callback_state_missing_keys(self, mock_config, github_config):
-        """Test callback handles state missing required keys."""
+    def test_callback_rejects_unknown_token(self, mock_config, mock_save, github_config):
+        """Test callback rejects a state token that was never issued."""
         mock_config.return_value = github_config
 
         event = _make_event(
             method="GET",
             path="/github/callback",
-            query={"installation_id": "12345", "state": json.dumps({"foo": "bar"})},
+            query={"installation_id": "12345", "state": "never-issued-token"},
         )
 
         result = handle_callback(event)
         assert result["statusCode"] == 302
         assert "github_error=invalid_state" in result["headers"]["Location"]
+        mock_save.assert_not_called()
+
+    @patch.object(handler_module, 'save_installation')
+    @patch.object(handler_module, 'get_github_config')
+    def test_callback_rejects_token_for_other_provider(self, mock_config, mock_save, github_config, oauth_states):
+        """Test callback rejects a state token issued for a different provider."""
+        mock_config.return_value = github_config
+        token = oauth_states.issue("jira", "ws_test", "admin@example.com")
+
+        event = _make_event(
+            method="GET",
+            path="/github/callback",
+            query={"installation_id": "12345", "state": token},
+        )
+
+        result = handle_callback(event)
+        assert result["statusCode"] == 302
+        assert "github_error=invalid_state" in result["headers"]["Location"]
+        mock_save.assert_not_called()
+
+    @patch.object(handler_module, 'save_installation')
+    @patch.object(handler_module, 'get_app_installations')
+    @patch.object(handler_module, 'get_github_config')
+    def test_callback_state_token_is_single_use(self, mock_config, mock_installations, mock_save, github_config, oauth_states):
+        """Test a state token cannot be replayed after a successful callback."""
+        mock_config.return_value = github_config
+        mock_installations.return_value = [
+            {
+                "id": 12345,
+                "account": {"login": "test-org", "type": "Organization"},
+                "permissions": {"contents": "read"},
+            }
+        ]
+        state = oauth_states.issue("github", "ws_test", "admin@example.com")
+        event = _make_event(
+            method="GET",
+            path="/github/callback",
+            query={"installation_id": "12345", "state": state},
+        )
+
+        first = handle_callback(event)
+        assert "github_connected=true" in first["headers"]["Location"]
+
+        second = handle_callback(event)
+        assert second["statusCode"] == 302
+        assert "github_error=invalid_state" in second["headers"]["Location"]
+        mock_save.assert_called_once()
 
     @patch.object(handler_module, 'get_app_installations')
     @patch.object(handler_module, 'get_github_config')
-    def test_callback_installation_not_found(self, mock_config, mock_installations, github_config):
+    def test_callback_installation_not_found(self, mock_config, mock_installations, github_config, oauth_states):
         """Test callback handles installation not found in GitHub API."""
         mock_config.return_value = github_config
         mock_installations.return_value = [
             {"id": 99999, "account": {"login": "other-org", "type": "Organization"}},
         ]
 
-        state = json.dumps({"workspace_id": "ws_test", "user_email": "admin@example.com"})
+        state = oauth_states.issue("github", "ws_test", "admin@example.com")
         event = _make_event(
             method="GET",
             path="/github/callback",
@@ -975,13 +1038,13 @@ class TestHandleCallback:
 
     @patch.object(handler_module, 'get_app_installations')
     @patch.object(handler_module, 'get_github_config')
-    def test_callback_github_api_error(self, mock_config, mock_installations, github_config):
+    def test_callback_github_api_error(self, mock_config, mock_installations, github_config, oauth_states):
         """Test callback handles GitHub API error."""
         from github_app import GitHubAppError
         mock_config.return_value = github_config
         mock_installations.side_effect = GitHubAppError("API rate limit exceeded")
 
-        state = json.dumps({"workspace_id": "ws_test", "user_email": "admin@example.com"})
+        state = oauth_states.issue("github", "ws_test", "admin@example.com")
         event = _make_event(
             method="GET",
             path="/github/callback",
@@ -994,12 +1057,12 @@ class TestHandleCallback:
 
     @patch.object(handler_module, 'get_app_installations')
     @patch.object(handler_module, 'get_github_config')
-    def test_callback_unexpected_error(self, mock_config, mock_installations, github_config):
+    def test_callback_unexpected_error(self, mock_config, mock_installations, github_config, oauth_states):
         """Test callback handles unexpected errors gracefully."""
         mock_config.return_value = github_config
         mock_installations.side_effect = RuntimeError("Unexpected error")
 
-        state = json.dumps({"workspace_id": "ws_test", "user_email": "admin@example.com"})
+        state = oauth_states.issue("github", "ws_test", "admin@example.com")
         event = _make_event(
             method="GET",
             path="/github/callback",
@@ -1013,7 +1076,7 @@ class TestHandleCallback:
     @patch.object(handler_module, 'save_installation')
     @patch.object(handler_module, 'get_app_installations')
     @patch.object(handler_module, 'get_github_config')
-    def test_callback_reads_from_body_params(self, mock_config, mock_installations, mock_save, github_config):
+    def test_callback_reads_from_body_params(self, mock_config, mock_installations, mock_save, github_config, oauth_states):
         """Test callback can read params from POST body (Express proxy)."""
         mock_config.return_value = github_config
         mock_installations.return_value = [
@@ -1024,7 +1087,7 @@ class TestHandleCallback:
             }
         ]
 
-        state = json.dumps({"workspace_id": "ws_test", "user_email": "admin@example.com"})
+        state = oauth_states.issue("github", "ws_test", "admin@example.com")
         event = _make_event(
             method="POST",
             path="/github/callback",
@@ -1041,11 +1104,11 @@ class TestHandleCallback:
         assert "github_connected=true" in result["headers"]["Location"]
 
     @patch.object(handler_module, 'get_github_config')
-    def test_callback_url_not_configured(self, mock_config):
+    def test_callback_url_not_configured(self, mock_config, oauth_states):
         """Test callback returns error when callback_url not configured."""
         mock_config.return_value = {"callback_url": "PLACEHOLDER_CONFIGURE_ME"}
 
-        state = json.dumps({"workspace_id": "ws_test", "user_email": "admin@example.com"})
+        state = oauth_states.issue("github", "ws_test", "admin@example.com")
         event = _make_event(
             method="GET",
             path="/github/callback",
@@ -1056,11 +1119,11 @@ class TestHandleCallback:
         assert result["statusCode"] == 500
 
     @patch.object(handler_module, 'get_github_config')
-    def test_callback_empty_callback_url(self, mock_config):
+    def test_callback_empty_callback_url(self, mock_config, oauth_states):
         """Test callback returns error when callback_url is empty."""
         mock_config.return_value = {"callback_url": ""}
 
-        state = json.dumps({"workspace_id": "ws_test", "user_email": "admin@example.com"})
+        state = oauth_states.issue("github", "ws_test", "admin@example.com")
         event = _make_event(
             method="GET",
             path="/github/callback",

@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import urllib.error
+import urllib.parse
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -412,19 +413,31 @@ class TestParsePathAndAuth:
 class TestAuthorize:
 
     @patch.object(handler_module, "_load_oauth_config")
-    def test_get_authorize_url_success(self, mock_load):
+    def test_get_authorize_url_success(self, mock_load, oauth_states):
         mock_load.return_value = {
             "client_id": "cid",
             "client_secret": "sec",
             "callback_url": "https://example.com/api/onenote/callback",
         }
-        result = handler_module.get_authorize_url("ws1")
+        result = handler_module.get_authorize_url("ws1", "admin@x.com")
         assert result["statusCode"] == 200
         body = json.loads(result["body"])
         assert "auth_url" in body
         assert "client_id=cid" in body["auth_url"]
         # Confirm the OneNote scope (Notes.Read.All) is in the URL
         assert "Notes.Read.All" in body["auth_url"]
+
+        # State is an opaque one-time token bound server-side to the
+        # workspace and the admin, not a JSON blob in the URL.
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(body["auth_url"]).query)
+        state = query["state"][0]
+        assert oauth_states.rows[state] == {
+            "provider": "onenote",
+            "workspace_id": "ws1",
+            "user_email": "admin@x.com",
+            "extra": {},
+        }
+        assert "ws1" not in state
 
 
 class TestCallback:
@@ -437,7 +450,7 @@ class TestCallback:
     @patch.object(handler_module, "_get_dynamodb")
     def test_handle_callback_success_creates_connection(
         self, mock_db_fn, mock_load, mock_exchange, mock_profile,
-        mock_save, mock_audit
+        mock_save, mock_audit, oauth_states
     ):
         mock_table = MagicMock()
         mock_db = MagicMock()
@@ -456,7 +469,7 @@ class TestCallback:
         event = {
             "queryStringParameters": {
                 "code": "auth_code",
-                "state": json.dumps({"workspace_id": "ws1"}),
+                "state": oauth_states.issue("onenote", "ws1", "admin@x.com"),
             }
         }
         result = handler_module.handle_callback(event, {})
@@ -478,6 +491,10 @@ class TestCallback:
         # Audit row emitted
         mock_audit.assert_called_once()
         audit_kwargs = mock_audit.call_args[1]
+        # Audit names the admin from the stored state; the connected
+        # Microsoft account stays in details.
+        assert audit_kwargs["user_email"] == "admin@x.com"
+        assert audit_kwargs["details"]["user_email_external"] == "u@x.com"
         assert audit_kwargs["details"]["provider"] == "onenote"
         assert audit_kwargs["details"]["user_id"] == "user-id-1"
 
@@ -487,6 +504,67 @@ class TestCallback:
         result = handler_module.handle_callback(event, {})
         body = json.loads(result["body"])
         assert "oauth_denied" in body["redirect"]
+
+    @patch.object(handler_module, "exchange_code_for_tokens")
+    def test_handle_callback_rejects_forged_json_state(self, mock_exchange):
+        event = {
+            "queryStringParameters": {
+                "code": "auth_code",
+                "state": json.dumps({"workspace_id": "ws-x"}),
+            }
+        }
+        result = handler_module.handle_callback(event, {})
+        assert result["statusCode"] == 400
+        assert "error=invalid_state" in json.loads(result["body"])["redirect"]
+        mock_exchange.assert_not_called()
+
+    @patch.object(handler_module, "exchange_code_for_tokens")
+    def test_handle_callback_rejects_unknown_token(self, mock_exchange):
+        event = {
+            "queryStringParameters": {
+                "code": "auth_code",
+                "state": "not-a-known-token",
+            }
+        }
+        result = handler_module.handle_callback(event, {})
+        assert result["statusCode"] == 400
+        assert "error=invalid_state" in json.loads(result["body"])["redirect"]
+        mock_exchange.assert_not_called()
+
+    @patch.object(handler_module, "log_admin_action")
+    @patch.object(handler_module, "save_tokens")
+    @patch.object(handler_module, "get_user_profile")
+    @patch.object(handler_module, "exchange_code_for_tokens")
+    @patch.object(handler_module, "_load_oauth_config")
+    @patch.object(handler_module, "_get_dynamodb")
+    def test_handle_callback_state_is_single_use(
+        self, mock_db_fn, mock_load, mock_exchange, mock_profile,
+        mock_save, mock_audit, oauth_states
+    ):
+        mock_table = MagicMock()
+        mock_db = MagicMock()
+        mock_db.Table.return_value = mock_table
+        mock_db_fn.return_value = mock_db
+        mock_load.return_value = {
+            "client_id": "c", "client_secret": "s", "callback_url": "https://x/cb"
+        }
+        mock_exchange.return_value = ("at", "rt", 3600)
+        mock_profile.return_value = {
+            "id": "user-id-1",
+            "mail": "u@x.com",
+            "displayName": "User",
+        }
+        token = oauth_states.issue("onenote", "ws1", "admin@x.com")
+        event = {"queryStringParameters": {"code": "auth_code", "state": token}}
+
+        first = handler_module.handle_callback(event, {})
+        assert first["statusCode"] == 200
+        assert "configure_onenote=" in json.loads(first["body"])["redirect"]
+
+        second = handler_module.handle_callback(event, {})
+        assert second["statusCode"] == 400
+        assert "error=invalid_state" in json.loads(second["body"])["redirect"]
+        mock_table.put_item.assert_called_once()
 
 
 class TestListConnections:
@@ -683,3 +761,32 @@ class TestLambdaHandlerRouting:
             handler_module.lambda_handler(event, None)
             mock_cb.assert_called_once()
 
+
+
+class TestAuthorizeRouteBindsAdmin:
+    """GET /onenote/authorize passes the authenticated admin into the
+    one-time OAuth state, and refuses non-admins before issuing one."""
+
+    def _event(self):
+        return {
+            "requestContext": {"http": {"method": "GET", "path": "/onenote/authorize"}},
+            "headers": {"x-user-email": "admin@example.com"},
+            "queryStringParameters": {"workspace_id": "ws_test"},
+        }
+
+    @patch.object(handler_module, "_get_dynamodb")
+    @patch.object(handler_module, "_is_workspace_admin", return_value=True)
+    @patch.object(handler_module, "get_authorize_url")
+    def test_admin_route_passes_workspace_and_admin(self, mock_url, _admin, _ddb):
+        mock_url.return_value = {"statusCode": 200, "body": "{}"}
+        handler_module.lambda_handler(self._event(), None)
+        mock_url.assert_called_once_with("ws_test", "admin@example.com")
+
+    @patch.object(handler_module, "_get_dynamodb")
+    @patch.object(handler_module, "_is_workspace_admin", return_value=False)
+    @patch.object(handler_module, "get_authorize_url")
+    def test_non_admin_gets_403_and_no_state(self, mock_url, _admin, _ddb, oauth_states):
+        result = handler_module.lambda_handler(self._event(), None)
+        assert result["statusCode"] == 403
+        mock_url.assert_not_called()
+        assert oauth_states.rows == {}

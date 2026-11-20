@@ -680,6 +680,35 @@ class TestTeamsIntegrationListConnections:
         assert result["statusCode"] == 403
 
 
+class TestTeamsIntegrationAuthorize:
+
+    @pytest.fixture(autouse=True)
+    def reset_globals(self):
+        handler_module._oauth_config = None
+        yield
+        handler_module._oauth_config = None
+
+    @patch.object(handler_module, "_load_oauth_config")
+    def test_authorize_url_carries_opaque_state(self, mock_oauth, oauth_states):
+        mock_oauth.return_value = {
+            "client_id": "cid", "client_secret": "csec", "callback_url": "https://cb"
+        }
+        result = handler_module.get_authorize_url("ws1", "admin@test.com")
+        assert result["statusCode"] == 200
+        auth_url = json.loads(result["body"])["auth_url"]
+        state = urllib.parse.parse_qs(urllib.parse.urlparse(auth_url).query)["state"][0]
+        # Opaque one-time token stored server-side, bound to the admin;
+        # the workspace id is not carried in the URL.
+        assert oauth_states.rows[state] == {
+            "provider": "teams",
+            "workspace_id": "ws1",
+            "user_email": "admin@test.com",
+            "extra": {},
+        }
+        assert "ws1" not in state
+        assert "workspace_id" not in state
+
+
 class TestTeamsIntegrationCallback:
 
     @pytest.fixture(autouse=True)
@@ -690,13 +719,14 @@ class TestTeamsIntegrationCallback:
         handler_module._sqs = None
         yield
 
+    @patch.object(handler_module, "log_admin_action")
     @patch.object(handler_module, "save_tokens")
     @patch.object(handler_module, "get_user_profile")
     @patch.object(handler_module, "exchange_code_for_tokens")
     @patch.object(handler_module, "_load_oauth_config")
     @patch.object(handler_module, "_get_dynamodb")
     def test_callback_success(self, mock_db_fn, mock_oauth, mock_exchange,
-                               mock_profile, mock_save):
+                               mock_profile, mock_save, mock_audit, oauth_states):
         mock_table = MagicMock()
         mock_db = MagicMock()
         mock_db.Table.return_value = mock_table
@@ -712,7 +742,7 @@ class TestTeamsIntegrationCallback:
         event = {
             "queryStringParameters": {
                 "code": "auth_code",
-                "state": json.dumps({"workspace_id": "ws1"}),
+                "state": oauth_states.issue("teams", "ws1", "admin@test.com"),
             }
         }
         result = handler_module.handle_callback(event)
@@ -720,6 +750,42 @@ class TestTeamsIntegrationCallback:
         body = json.loads(result["body"])
         assert "redirect" in body
         assert "ws1" in body["redirect"]
+
+        # Audit row names the admin from the stored state; the connected
+        # Microsoft account goes in details.
+        audit_kwargs = mock_audit.call_args.kwargs
+        assert audit_kwargs["workspace_id"] == "ws1"
+        assert audit_kwargs["user_email"] == "admin@test.com"
+        assert audit_kwargs["details"]["user_email_external"] == "user@test.com"
+
+    @patch.object(handler_module, "save_tokens")
+    @patch.object(handler_module, "get_user_profile")
+    @patch.object(handler_module, "exchange_code_for_tokens")
+    @patch.object(handler_module, "_load_oauth_config")
+    @patch.object(handler_module, "_get_dynamodb")
+    def test_callback_state_is_single_use(self, mock_db_fn, mock_oauth, mock_exchange,
+                                          mock_profile, mock_save, oauth_states):
+        mock_db_fn.return_value = MagicMock()
+        mock_oauth.return_value = {
+            "client_id": "cid", "client_secret": "csec", "callback_url": "https://cb"
+        }
+        mock_exchange.return_value = ("access", "refresh", 3600)
+        mock_profile.return_value = {
+            "mail": "user@test.com", "displayName": "Test User"
+        }
+
+        event = {
+            "queryStringParameters": {
+                "code": "auth_code",
+                "state": oauth_states.issue("teams", "ws1", "admin@test.com"),
+            }
+        }
+        assert handler_module.handle_callback(event)["statusCode"] == 200
+
+        replay = handler_module.handle_callback(event)
+        assert replay["statusCode"] == 400
+        assert "invalid_state" in json.loads(replay["body"])["redirect"]
+        assert mock_save.call_count == 1
 
     def test_callback_error_param(self):
         event = {"queryStringParameters": {"error": "access_denied"}}
@@ -734,7 +800,7 @@ class TestTeamsIntegrationCallback:
 
     @patch.object(handler_module, "exchange_code_for_tokens")
     @patch.object(handler_module, "_load_oauth_config")
-    def test_callback_token_exchange_failed(self, mock_oauth, mock_exchange):
+    def test_callback_token_exchange_failed(self, mock_oauth, mock_exchange, oauth_states):
         mock_oauth.return_value = {
             "client_id": "cid", "client_secret": "csec", "callback_url": "https://cb"
         }
@@ -742,7 +808,7 @@ class TestTeamsIntegrationCallback:
         event = {
             "queryStringParameters": {
                 "code": "code",
-                "state": json.dumps({"workspace_id": "ws1"}),
+                "state": oauth_states.issue("teams", "ws1", "admin@test.com"),
             }
         }
         result = handler_module.handle_callback(event)
@@ -758,6 +824,41 @@ class TestTeamsIntegrationCallback:
         }
         result = handler_module.handle_callback(event)
         assert result["statusCode"] == 400
+
+    def test_callback_forged_json_state_rejected(self):
+        # A hand-built JSON state (the pre-fix format) must not attach a
+        # connection to an arbitrary workspace.
+        event = {
+            "queryStringParameters": {
+                "code": "code",
+                "state": json.dumps({"workspace_id": "ws-x", "user_email": "x@y"}),
+            }
+        }
+        result = handler_module.handle_callback(event)
+        assert result["statusCode"] == 400
+        assert "invalid_state" in json.loads(result["body"])["redirect"]
+
+    def test_callback_unknown_token_rejected(self):
+        event = {
+            "queryStringParameters": {
+                "code": "code",
+                "state": "never-issued-token",
+            }
+        }
+        result = handler_module.handle_callback(event)
+        assert result["statusCode"] == 400
+        assert "invalid_state" in json.loads(result["body"])["redirect"]
+
+    def test_callback_token_for_other_provider_rejected(self, oauth_states):
+        event = {
+            "queryStringParameters": {
+                "code": "code",
+                "state": oauth_states.issue("sharepoint", "ws1", "admin@test.com"),
+            }
+        }
+        result = handler_module.handle_callback(event)
+        assert result["statusCode"] == 400
+        assert "invalid_state" in json.loads(result["body"])["redirect"]
 
 
 class TestTeamsIntegrationDeleteConnection:
@@ -805,3 +906,32 @@ class TestTeamsIntegrationDeleteConnection:
         result = handler_module.delete_connection("user@test.com", "ws1", "conn1")
         assert result["statusCode"] == 403
 
+
+
+class TestAuthorizeRouteBindsAdmin:
+    """GET /teams/authorize passes the authenticated admin into the
+    one-time OAuth state, and refuses non-admins before issuing one."""
+
+    def _event(self):
+        return {
+            "requestContext": {"http": {"method": "GET", "path": "/teams/authorize"}},
+            "headers": {"x-user-email": "admin@example.com"},
+            "queryStringParameters": {"workspace_id": "ws_test"},
+        }
+
+    @patch.object(handler_module, "_get_dynamodb")
+    @patch.object(handler_module, "_is_workspace_admin", return_value=True)
+    @patch.object(handler_module, "get_authorize_url")
+    def test_admin_route_passes_workspace_and_admin(self, mock_url, _admin, _ddb):
+        mock_url.return_value = {"statusCode": 200, "body": "{}"}
+        handler_module.lambda_handler(self._event(), None)
+        mock_url.assert_called_once_with("ws_test", "admin@example.com")
+
+    @patch.object(handler_module, "_get_dynamodb")
+    @patch.object(handler_module, "_is_workspace_admin", return_value=False)
+    @patch.object(handler_module, "get_authorize_url")
+    def test_non_admin_gets_403_and_no_state(self, mock_url, _admin, _ddb, oauth_states):
+        result = handler_module.lambda_handler(self._event(), None)
+        assert result["statusCode"] == 403
+        mock_url.assert_not_called()
+        assert oauth_states.rows == {}

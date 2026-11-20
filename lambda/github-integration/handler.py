@@ -36,6 +36,7 @@ from botocore.exceptions import ClientError
 # at zip root via terraform source_path (see lambda-github.tf).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared import dual_write  # noqa: E402
+from shared import oauth_state  # noqa: E402
 from shared.delete_dispatch import dispatch_repo_delete, region_from_sqs_url  # noqa: E402
 from shared.region_guard import (  # noqa: E402
     RegionPassiveError,
@@ -522,10 +523,8 @@ def handle_authorize(event: Dict) -> Dict:
         return _error(500, "GitHub App slug not configured")
 
     # Build install URL with state for callback
-    state = json.dumps({
-        "workspace_id": workspace_id,
-        "user_email": user_email,
-    })
+    # One-time server-side state bound to this admin (shared/oauth_state.py).
+    state = oauth_state.issue_state("github", workspace_id, user_email)
 
     # Pin GitHub's post-install redirect to THIS environment's callback
     # URL. When a single GitHub App is shared across multiple
@@ -597,12 +596,11 @@ def handle_callback(event: Dict) -> Dict:
     if not state:
         return _redirect(f"{base_url}/workspaces?github_error=missing_state")
 
-    try:
-        state_data = json.loads(state)
-        workspace_id = state_data["workspace_id"]
-        user_email = state_data["user_email"]
-    except (json.JSONDecodeError, KeyError):
+    state_data = oauth_state.consume_state("github", state)
+    if not state_data:
         return _redirect(f"{base_url}/workspaces?github_error=invalid_state")
+    workspace_id = state_data["workspace_id"]
+    user_email = state_data["user_email"]
 
     try:
         # Get installation details from GitHub API
