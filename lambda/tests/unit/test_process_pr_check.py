@@ -2812,6 +2812,13 @@ class TestSyncInlineFindings(_InlineJobMixin):
         mock_store.assert_not_called()
 
 
+def _info(added_lines, blocks=None, is_new=False):
+    """A pr_diff.FileDiffInfo for worker-wiring tests."""
+    from shared.pr_diff import FileDiffInfo
+    return FileDiffInfo(added_lines=list(added_lines), blocks=list(blocks or []),
+                        is_new=is_new)
+
+
 class TestComputeAnchors:
     """_compute_anchors threads the right provider args; any failure -> {}."""
 
@@ -2831,8 +2838,8 @@ class TestComputeAnchors:
         with patch("process_pr_check_handler.get_github_token", return_value="ghp"), \
              patch("shared.pr_metadata.fetch_pr_metadata",
                    return_value=SimpleNamespace(base_sha="b", head_sha="h")) as mock_meta, \
-             patch("shared.pr_diff.added_lines_by_file",
-                   return_value={"f.py": [3, 8]}) as mock_fal:
+             patch("shared.pr_diff.diff_info_by_file",
+                   return_value={"f.py": _info([3, 8])}) as mock_fal:
             out = handler_module._compute_anchors(job)
         assert out == {"f.py": [3, 8]}
         mock_meta.assert_called_once_with(
@@ -2848,8 +2855,8 @@ class TestComputeAnchors:
                    return_value="https://gl.example"), \
              patch("shared.pr_metadata.fetch_pr_metadata",
                    return_value=SimpleNamespace(base_sha="b", head_sha="h")) as mock_meta, \
-             patch("shared.pr_diff.added_lines_by_file",
-                   return_value={"f.py": [2]}) as mock_fal:
+             patch("shared.pr_diff.diff_info_by_file",
+                   return_value={"f.py": _info([2])}) as mock_fal:
             out = handler_module._compute_anchors(job)
         assert out == {"f.py": [2]}
         mock_meta.assert_called_once_with(
@@ -2869,8 +2876,8 @@ class TestComputeAnchors:
                    return_value="secret"), \
              patch("shared.pr_metadata.fetch_pr_metadata",
                    return_value=SimpleNamespace(base_sha="b", head_sha="h")) as mock_meta, \
-             patch("shared.pr_diff.added_lines_by_file",
-                   return_value={"f.py": [9, 27, 35]}) as mock_fal:
+             patch("shared.pr_diff.diff_info_by_file",
+                   return_value={"f.py": _info([9, 27, 35])}) as mock_fal:
             out = handler_module._compute_anchors(job)
         assert out == {"f.py": [9, 27, 35]}
         mock_meta.assert_called_once_with(
@@ -2888,6 +2895,177 @@ class TestComputeAnchors:
                    side_effect=RuntimeError("SSM down")):
             out = handler_module._compute_anchors(job)
         assert out == {}
+
+    def test_files_without_added_lines_are_omitted(self):
+        job = self._job("github")
+        with patch("process_pr_check_handler.get_github_token", return_value="ghp"), \
+             patch("shared.pr_metadata.fetch_pr_metadata",
+                   return_value=SimpleNamespace(base_sha="b", head_sha="h")), \
+             patch("shared.pr_diff.diff_info_by_file",
+                   return_value={"f.py": _info([4]), "gone.py": _info([])}):
+            out = handler_module._compute_anchors(job)
+        assert out == {"f.py": [4]}
+
+
+
+
+class TestBreakingChangesDiffWiring:
+    """BREAKING_CHANGES gets anchors and change blocks from ONE diff fetch."""
+
+    def _job(self):
+        return CheckJob(checkType="BREAKING_CHANGES", pr_number=7,
+                        repository="owner/repo",
+                        changedFiles=["src/a.py", "src/b.py"])
+
+    def _run(self, job, **diff_patch):
+        with patch("process_pr_check_handler.get_github_token", return_value="ghp"), \
+             patch("shared.pr_metadata.fetch_pr_metadata",
+                   return_value=SimpleNamespace(base_sha="b", head_sha="h")), \
+             patch("shared.pr_diff.diff_info_by_file", **diff_patch) as mock_dif, \
+             patch("process_pr_check_handler.check_breaking_changes",
+                   return_value={"status": "PASS", "message": "ok",
+                                 "details": []}) as mock_check, \
+             patch("process_pr_check_handler.store_check_result"), \
+             patch("process_pr_check_handler.post_pr_comment",
+                   return_value={"id": 1, "html_url": "u"}):
+            process_check_job(job)
+        return mock_dif, mock_check
+
+    def test_single_fetch_and_matching_kwargs(self):
+        from shared.pr_diff import ChangeBlock
+        blk_a = ChangeBlock(removed_base_lines=(5,), insert_after_base_line=None,
+                            head_anchor=5)
+        blk_b = ChangeBlock(removed_base_lines=(), insert_after_base_line=2,
+                            head_anchor=None)
+        info = {
+            "src/a.py": _info([5], [blk_a]),
+            "src/b.py": _info([], [blk_b]),
+        }
+        mock_dif, mock_check = self._run(self._job(), return_value=info)
+        mock_dif.assert_called_once_with(
+            "github", "owner/repo", "b", "h", ["src/a.py", "src/b.py"],
+            github_token="ghp")
+        kwargs = mock_check.call_args.kwargs
+        assert kwargs["anchors"] == {"src/a.py": [5]}
+        assert kwargs["change_blocks"] == {"src/a.py": [blk_a], "src/b.py": [blk_b]}
+
+    def test_diff_failure_gives_empty_anchors_and_none_blocks(self):
+        mock_dif, mock_check = self._run(
+            self._job(), side_effect=RuntimeError("provider 500"))
+        mock_dif.assert_called_once()
+        kwargs = mock_check.call_args.kwargs
+        assert kwargs["anchors"] == {}
+        assert kwargs["change_blocks"] is None
+
+    def test_helper_failure_returns_empty_and_none(self):
+        job = self._job()
+        with patch("process_pr_check_handler.get_github_token",
+                   side_effect=RuntimeError("SSM down")):
+            anchors, blocks = handler_module._compute_breaking_changes_inputs(job)
+        assert anchors == {}
+        assert blocks is None
+
+
+class TestReadmeFreshnessNewFiles:
+    """README_FRESHNESS gets the set of handler files added in the PR."""
+
+    def _job(self, files):
+        return CheckJob(checkType="README_FRESHNESS", pr_number=7,
+                        repository="owner/repo", changedFiles=files)
+
+    def test_only_handler_files_fetched_and_new_ones_returned(self):
+        job = self._job([
+            "lambda/new-fn/handler.py",
+            "lambda/old-fn/handler.py",
+            "lambda/tests/unit/handler.py",
+            "lambda/old-fn/utils.py",
+            "README.md",
+        ])
+        info = {
+            "lambda/new-fn/handler.py": _info([1, 2], is_new=True),
+            "lambda/old-fn/handler.py": _info([9], is_new=False),
+        }
+        with patch("process_pr_check_handler.get_github_token", return_value="ghp"), \
+             patch("shared.pr_metadata.fetch_pr_metadata",
+                   return_value=SimpleNamespace(base_sha="b", head_sha="h")), \
+             patch("shared.pr_diff.diff_info_by_file",
+                   return_value=info) as mock_dif:
+            out = handler_module._compute_new_handler_files(job)
+        assert out == {"lambda/new-fn/handler.py"}
+        mock_dif.assert_called_once_with(
+            "github", "owner/repo", "b", "h",
+            ["lambda/new-fn/handler.py", "lambda/old-fn/handler.py"],
+            github_token="ghp")
+
+    def test_no_handler_files_returns_empty_set_without_fetch(self):
+        job = self._job(["README.md", "terraform/main.tf"])
+        with patch("process_pr_check_handler._compute_diff_info") as mock_cdi:
+            out = handler_module._compute_new_handler_files(job)
+        assert out == set()
+        mock_cdi.assert_not_called()
+
+    def test_failure_returns_none(self):
+        job = self._job(["lambda/new-fn/handler.py"])
+        with patch("process_pr_check_handler._compute_diff_info",
+                   side_effect=RuntimeError("provider 500")):
+            out = handler_module._compute_new_handler_files(job)
+        assert out is None
+
+    @patch("process_pr_check_handler.check_readme_freshness")
+    def test_run_check_forwards_new_files(self, mock_check):
+        mock_check.return_value = {"status": "PASS", "message": "ok", "details": []}
+        job = self._job(["lambda/new-fn/handler.py"])
+        run_check(job, new_files={"lambda/new-fn/handler.py"})
+        assert mock_check.call_args.kwargs["new_files"] == {"lambda/new-fn/handler.py"}
+
+    @patch("process_pr_check_handler.check_readme_freshness")
+    def test_run_check_defaults_new_files_to_none(self, mock_check):
+        mock_check.return_value = {"status": "PASS", "message": "ok", "details": []}
+        run_check(self._job(["lambda/new-fn/handler.py"]))
+        assert mock_check.call_args.kwargs["new_files"] is None
+
+    @patch("process_pr_check_handler.run_check")
+    def test_process_check_job_passes_new_files(self, mock_run_check):
+        mock_run_check.return_value = {"status": "PASS", "message": "ok",
+                                       "details": []}
+        job = self._job(["lambda/new-fn/handler.py"])
+        with patch("process_pr_check_handler._compute_new_handler_files",
+                   return_value={"lambda/new-fn/handler.py"}), \
+             patch("process_pr_check_handler._compute_anchors") as mock_anchors, \
+             patch("process_pr_check_handler.store_check_result"), \
+             patch("process_pr_check_handler.post_pr_comment",
+                   return_value={"id": 1, "html_url": "u"}), \
+             patch("process_pr_check_handler.get_github_token", return_value="t"):
+            process_check_job(job)
+        mock_anchors.assert_not_called()
+        kwargs = mock_run_check.call_args.kwargs
+        assert kwargs["new_files"] == {"lambda/new-fn/handler.py"}
+        assert kwargs["change_blocks"] is None
+
+
+class TestTestCoverageStillUsesComputeAnchors:
+    @patch("process_pr_check_handler.run_check")
+    def test_test_coverage_uses_compute_anchors(self, mock_run_check):
+        mock_run_check.return_value = {"status": "PASS", "message": "ok",
+                                       "details": []}
+        job = CheckJob(checkType="TEST_COVERAGE", pr_number=7,
+                       repository="owner/repo", changedFiles=["src/x.py"])
+        with patch("process_pr_check_handler._compute_anchors",
+                   return_value={"src/x.py": [1]}) as mock_anchors, \
+             patch("process_pr_check_handler._compute_new_handler_files") as mock_nf, \
+             patch("process_pr_check_handler._compute_breaking_changes_inputs") as mock_bc, \
+             patch("process_pr_check_handler.store_check_result"), \
+             patch("process_pr_check_handler.post_pr_comment",
+                   return_value={"id": 1, "html_url": "u"}), \
+             patch("process_pr_check_handler.get_github_token", return_value="t"):
+            process_check_job(job)
+        mock_anchors.assert_called_once_with(job)
+        mock_nf.assert_not_called()
+        mock_bc.assert_not_called()
+        assert mock_run_check.call_args.args[1] == {"src/x.py": [1]}
+        kwargs = mock_run_check.call_args.kwargs
+        assert kwargs["change_blocks"] is None
+        assert kwargs["new_files"] is None
 
 
 def _github_job():
