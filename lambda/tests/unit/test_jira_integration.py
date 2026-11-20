@@ -969,25 +969,28 @@ class TestHandleCallback:
         assert result["statusCode"] == 302
         assert "jira_error=callback_failed" in result["headers"]["Location"]
 
-    def test_handle_callback_prd_redirect_url(self):
-        """Test callback uses production URL when ENV is prd."""
-        handler_module.ENV = "prd"
-        event = {
-            "queryStringParameters": {"error": "access_denied"},
-        }
-        result = handle_callback(event)
-        assert "outcomeops.outcomeops.ai" in result["headers"]["Location"]
-        assert "dev." not in result["headers"]["Location"]
-        handler_module.ENV = "dev"  # Reset
+    @pytest.mark.parametrize("env", ["prd", "dev", "staging"])
+    def test_handle_callback_redirect_is_same_origin(self, env):
+        """Redirects are relative in every environment: a customer
+        deployment must land back on its own host, never a hardcoded one."""
+        handler_module.ENV = env
+        try:
+            result = handle_callback({"queryStringParameters": {"error": "access_denied"}})
+        finally:
+            handler_module.ENV = "dev"
+        location = result["headers"]["Location"]
+        assert location == "/workspaces?jira_error=access_denied"
+        assert "://" not in location
 
-    def test_handle_callback_dev_redirect_url(self):
-        """Test callback uses dev URL when ENV is dev."""
-        handler_module.ENV = "dev"
-        event = {
-            "queryStringParameters": {"error": "access_denied"},
-        }
-        result = handle_callback(event)
-        assert "dev.outcomeops.outcomeops.ai" in result["headers"]["Location"]
+    def test_handle_callback_error_value_is_url_encoded(self):
+        """The provider's error string is escaped before it goes into the
+        redirect, so it cannot add query parameters or a path."""
+        result = handle_callback(
+            {"queryStringParameters": {"error": "x&next=https://evil.example/"}}
+        )
+        assert result["headers"]["Location"] == (
+            "/workspaces?jira_error=x%26next%3Dhttps%3A%2F%2Fevil.example%2F"
+        )
 
     def test_handle_callback_post_with_body(self):
         """Test callback reads code/state from POST body when not in query params."""

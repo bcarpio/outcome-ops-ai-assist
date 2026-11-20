@@ -418,15 +418,16 @@ def handle_callback(event: Dict) -> Dict:
         except json.JSONDecodeError:
             pass
 
-    # Determine redirect base URL
-    if ENV == "prd":
-        base_url = "https://outcomeops.outcomeops.ai"
-    else:
-        base_url = "https://dev.outcomeops.outcomeops.ai"
+    # Same-origin relative redirects (as GitLab / Azure DevOps do): the UI
+    # proxy forwards Location to the browser, so the user lands back on
+    # whatever host this deployment is served from. Never hardcode a host.
+    base_url = ""
 
     if error:
         logger.warning("OAuth error: %s", error)
-        return _redirect(f"{base_url}/workspaces?jira_error={error}")
+        return _redirect(
+            f"{base_url}/workspaces?jira_error={urllib.parse.quote(str(error), safe='')}"
+        )
 
     if not code or not state:
         return _redirect(f"{base_url}/workspaces?jira_error=missing_params")
