@@ -64,6 +64,11 @@ required_adrs:
 # Controls which paths are ingested and how the symbol-graph extractor
 # treats files in this repo.
 ingestion:
+  # Where this repo keeps documentation and ADRs. The README FRESHNESS PR
+  # check treats changes here (plus any README file) as documentation.
+  docs_paths: ["docs"]
+  standards_paths: ["docs/adr"]
+
   # Symbol-graph extraction knobs. Precedence (top-most wins):
   #   1. enabled=false short-circuits everything
   #   2. ADR-009 base excludes (node_modules, .venv, build/, ...) always win

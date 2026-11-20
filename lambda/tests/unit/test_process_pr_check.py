@@ -2238,6 +2238,15 @@ class TestArchitecturalDuplicationADO:
 # ---------------------------------------------------------------------------
 
 
+def _ado_readme_fetch(provider, path, sha, **kwargs):
+    """README.md before/after; no .outcomeops.yaml in the repo."""
+    from shared.source_fetch import SourceFetchError
+
+    if path == "README.md":
+        return b"before readme\n" if sha == "base" else b"after readme\n"
+    raise SourceFetchError(f"{path} not found")
+
+
 class TestReadmeFreshnessADO:
 
     def test_ado_branch_readme_updated_runs_end_to_end(self):
@@ -2251,7 +2260,7 @@ class TestReadmeFreshnessADO:
                           return_value="ado-tok", create=True), \
              patch("shared.pr_metadata.fetch_pr_metadata", return_value=fake_pr), \
              patch("shared.source_fetch.fetch_file_at_sha",
-                   side_effect=[b"before readme\n", b"after readme\n"]), \
+                   side_effect=_ado_readme_fetch), \
              patch.object(readme_freshness_module, "analyze_readme_with_claude",
                           return_value={"adequate": True, "explanation": "documented"}):
             result = readme_freshness_module.check_readme_freshness(

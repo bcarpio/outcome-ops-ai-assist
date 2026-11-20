@@ -198,10 +198,10 @@ Check completed at 2025-01-15T10:00:00Z
 
 **Example: README Freshness WARN**
 ```markdown
-⚠️ README FRESHNESS: README.md not updated
+⚠️ README FRESHNESS: Documentation not updated
 
 Details:
-- Infrastructure files changed but README not updated
+- Infrastructure files changed (1 file(s)) but no documentation was updated (looked in README files or docs/, docs/adr/).
 
 Check completed at 2025-01-15T10:00:00Z
 ```
