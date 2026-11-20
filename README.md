@@ -41,6 +41,24 @@ This is Context Engineering. This is OutcomeOps.
 
 ---
 
+## The Organizational Intelligence Layer
+
+Five departments. One substrate. OutcomeOps is the intelligence layer underneath
+every AI tool you ship: your ADRs, standards, and code from 12 source integrations,
+anchored to the current state of the code, with every retrieval cited and every
+interaction audited in your own AWS account. PR review, chat, code generation, and
+your own coding agents all draw on the same layer.
+
+<p align="center">
+  <a href="https://www.outcomeops.ai/videos/intelligence-layer.mp4">
+    <img src="docs/images/intelligence-layer-thumbnail.jpg" alt="What a Good Organizational Intelligence Layer Looks Like (5 Pillars)" width="80%">
+  </a>
+  <br>
+  <b>What a Good Organizational Intelligence Layer Looks Like (5 Pillars)</b>
+</p>
+
+---
+
 ## See It in Action
 
 <table>
