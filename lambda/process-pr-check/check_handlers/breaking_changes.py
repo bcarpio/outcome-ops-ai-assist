@@ -389,6 +389,15 @@ def symbol_graph_consumers(
     for file_path, blocks in changed_blocks_by_file.items():
         try:
             line_cache: Dict[int, Optional[Tuple[str, str]]] = {}
+            # One defines read per (workspace, file), loaded on first use:
+            # symbol_at_line re-reads the repo's whole defines partition per
+            # line, which made a large PR take minutes.
+            file_indexes: Dict[str, Any] = {}
+
+            def _index(ws: str) -> Any:
+                if ws not in file_indexes:
+                    file_indexes[ws] = reader.file_symbol_index(ws, repo, file_path)
+                return file_indexes[ws]
 
             def _resolve(line: int) -> Optional[Tuple[str, str]]:
                 # A symbol lives in one workspace; take the first scope that
@@ -396,7 +405,7 @@ def symbol_graph_consumers(
                 if line not in line_cache:
                     hit = None
                     for ws in workspace_ids:
-                        enc = reader.symbol_at_line(ws, repo, file_path, line)
+                        enc = _index(ws).at(line)
                         if enc and enc.target_symbol_id:
                             hit = (enc.target_symbol_id, ws)
                             break

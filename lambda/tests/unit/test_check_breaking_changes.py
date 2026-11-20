@@ -580,6 +580,17 @@ class TestSymbolGraphConsumers:
             self._definitions_exc = definitions_exc
             self._raise = raise_exc
             self.lines_queried = []
+            self.index_loads = []
+
+        def file_symbol_index(self, ws, repo, file_path):
+            """One index per (ws, file); .at() delegates to symbol_at_line's
+            fake rules so line expectations stay in one place."""
+            if self._raise:
+                raise self._raise
+            self.index_loads.append((ws, file_path))
+            fake = self
+            return SimpleNamespace(
+                at=lambda line: fake.symbol_at_line(ws, repo, file_path, line))
 
         def symbol_at_line(self, ws, repo, file_path, line):
             if self._raise:
@@ -600,6 +611,17 @@ class TestSymbolGraphConsumers:
             if self._definitions_exc:
                 raise self._definitions_exc
             return self._definitions
+
+    def test_file_index_loaded_once_per_workspace_and_file(self):
+        """Many changed lines in one file cost one defines read per
+        workspace, not one per line."""
+        reader = self._FakeSGR(by_line={})
+        blocks = {"lambda/shared/x.py": [
+            _blk(removed=(3, 4, 5)), _blk(removed=(20,)), _blk(after=30)]}
+        symbol_graph_consumers(["ws-a", "ws-b"], "repo", blocks, reader=reader)
+        assert sorted(reader.index_loads) == [
+            ("ws-a", "lambda/shared/x.py"), ("ws-b", "lambda/shared/x.py")]
+        assert len(reader.lines_queried) > 2
 
     def test_callers_and_importers_become_consumers(self):
         """A changed symbol's external callers + importers are reported."""

@@ -850,7 +850,60 @@ def symbol_at_line(
     defines row in the file has ``start_line <= line``.
     """
 
-    if not workspace_id or not repo or not file_path or line is None:
+    if line is None:
+        raise ValueError(
+            "workspace_id, repo, file_path, and line are required"
+        )
+    return file_symbol_index(
+        workspace_id, repo, file_path,
+        symbol_graph_table_name=symbol_graph_table_name,
+    ).at(line)
+
+
+class FileSymbolIndex:
+    """Every ``defines`` row of one file, for resolving many lines with one
+    read. ``at(line)`` applies exactly the ``symbol_at_line`` rule."""
+
+    def __init__(self, items: List[dict]):
+        def _rank(it: dict) -> tuple:
+            return (int(it.get("line", 0)), len(str(it.get("target_symbol_id", ""))))
+
+        # Highest rank first: innermost (largest start line), then the longer
+        # canonical id when two defines share a start line.
+        self._items = sorted(items, key=_rank, reverse=True)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def at(self, line: int) -> Optional[EnclosingSymbol]:
+        """Innermost symbol whose start line is ``<= line``, or None."""
+        for top in self._items:
+            if int(top.get("line", 0)) <= int(line):
+                return EnclosingSymbol(
+                    target_symbol_id=str(top.get("target_symbol_id", "")),
+                    file_path=str(top.get("file_path", "")),
+                    line=int(top.get("line", 0)),
+                    repo=str(top.get("repo", "")),
+                    language=str(top.get("language", "")),
+                )
+        return None
+
+
+def file_symbol_index(
+    workspace_id: str,
+    repo: str,
+    file_path: str,
+    *,
+    symbol_graph_table_name: Optional[str] = None,
+) -> FileSymbolIndex:
+    """Load every ``defines`` row for ``file_path`` in one partition walk.
+
+    ``symbol_at_line`` walks the repo's whole defines partition per call, so
+    resolving N lines costs N walks. Callers resolving many lines of one
+    file (the PR breaking-changes check) load the index once and call
+    ``.at(line)`` for each line.
+    """
+    if not workspace_id or not repo or not file_path:
         raise ValueError(
             "workspace_id, repo, file_path, and line are required"
         )
@@ -883,24 +936,7 @@ def symbol_at_line(
         if not last_key:
             break
 
-    candidates = [it for it in items if int(it.get("line", 0)) <= int(line)]
-    if not candidates:
-        return None
-
-    # Innermost = largest start_line; tiebreak by longer target_symbol_id
-    # (inner member is the longer canonical when both share start line).
-    def _rank(it: dict) -> tuple:
-        return (int(it.get("line", 0)), len(str(it.get("target_symbol_id", ""))))
-
-    candidates.sort(key=_rank, reverse=True)
-    top = candidates[0]
-    return EnclosingSymbol(
-        target_symbol_id=str(top.get("target_symbol_id", "")),
-        file_path=str(top.get("file_path", "")),
-        line=int(top.get("line", 0)),
-        repo=str(top.get("repo", "")),
-        language=str(top.get("language", "")),
-    )
+    return FileSymbolIndex(items)
 
 
 def fuzzy_resolve_by_name(
