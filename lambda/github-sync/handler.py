@@ -61,6 +61,36 @@ _github_config = None
 # docs baseline. A sentinel, because None is meaningful (never completed).
 _SAME_AS_DOCS_BASELINE = object()
 
+# A manual sync treats an open ledger batch as still running only if it made
+# progress this recently. Worst case without progress is a message on its
+# third and final receive behind a 15-minute Lambda timeout (~45 minutes);
+# past this window the batch is presumed dead and the work is redone.
+_IN_FLIGHT_STALE_SECONDS = 3600
+
+
+def _pipelines_in_flight(
+    workspace_id: str, repo_name: str, pipelines: tuple, current_sha: str,
+) -> bool:
+    """True if any of ``pipelines`` has a live ledger batch for
+    ``current_sha``. Best-effort: on any error, report not running so the
+    caller redoes the work rather than skipping it."""
+    try:
+        from shared.sha_truth import batch_in_flight  # type: ignore
+
+        return any(
+            batch_in_flight(
+                workspace_id, repo_name, p, current_sha,
+                stale_after_seconds=_IN_FLIGHT_STALE_SECONDS,
+            )
+            for p in pipelines
+        )
+    except Exception as exc:
+        logger.warning(
+            "[github-sync] in-flight check failed for %s@%s: %s",
+            repo_name, current_sha, exc,
+        )
+        return False
+
 
 def _github_api() -> str:
     """GHES-aware REST base (shared.github_base). SaaS default is
@@ -1340,6 +1370,54 @@ def process_sync_request(message: Dict) -> Dict:
             docs_baseline = code_map_baseline = last_sha
             up_to_date = last_sha == current_sha
 
+        # A manual sync pressed while an earlier sync of this same commit
+        # is still running must not queue the work a second time. Only
+        # live batches count (see _IN_FLIGHT_STALE_SECONDS); a batch that
+        # stopped progressing is redone. Code maps still running are
+        # skipped by treating their baseline as HEAD, which dispatches
+        # nothing and advances nothing. Docs have no such skip (a HEAD
+        # baseline would advance last_docs_sha early), so if docs are
+        # running while code maps need redoing, docs are redone too.
+        if trigger == "manual" and not up_to_date:
+            docs_running = docs_baseline != current_sha and _pipelines_in_flight(
+                workspace_id, repo_name, ("docs",), current_sha,
+            )
+            code_maps_running = (
+                code_map_baseline != current_sha
+                and _pipelines_in_flight(
+                    workspace_id, repo_name,
+                    ("code_map_dispatch", "code_map_units"), current_sha,
+                )
+            )
+            docs_pending = docs_baseline != current_sha and not docs_running
+            code_maps_pending = (
+                code_map_baseline != current_sha and not code_maps_running
+            )
+            if not docs_pending and not code_maps_pending:
+                logger.info(
+                    f"Sync of {current_sha[:7]} already running for "
+                    f"{repo_name}; nothing queued"
+                )
+                update_sync_status(workspace_id, repo_name, "already_running")
+                log_source_sync(
+                    audit_table_name=os.environ.get("AUDIT_TABLE", ""),
+                    source="github",
+                    workspace_id=workspace_id,
+                    target=repo_name,
+                    trigger=trigger,
+                    files_synced=0,
+                    skipped_no_change=True,
+                    duration_ms=int((time.time() - sync_start) * 1000),
+                    extra_details={
+                        "commit_sha": current_sha,
+                        "repo_type": repo_type,
+                        "already_running": True,
+                    },
+                )
+                return {"status": "already_running", "commit_sha": current_sha}
+            if code_maps_running:
+                code_map_baseline = current_sha
+
         if up_to_date:
             logger.info(f"No changes since last sync ({current_sha[:7]})")
             # No SQS dispatch happens, so no ledger row is opened. We
@@ -1691,13 +1769,14 @@ def _process_application_repo(
     _queue_orphan_detection(workspace_id, repo_name, current_doc_paths)
 
     if code_map_last_sha == current_sha:
-        # Code maps already completed this commit (manual sync where only
-        # docs were behind). Nothing to dispatch.
+        # Code maps already completed this commit, or are still running
+        # from an earlier sync of it (manual sync where only docs needed
+        # redoing). Nothing to dispatch.
         update_sync_status(
             workspace_id, repo_name, "success", commit_sha=current_sha,
         )
         logger.info(
-            f"Code maps already at {current_sha[:7]} for {repo_name}; "
+            f"Code maps current or running at {current_sha[:7]} for {repo_name}; "
             f"{docs_uploaded} docs re-uploaded"
         )
         return {

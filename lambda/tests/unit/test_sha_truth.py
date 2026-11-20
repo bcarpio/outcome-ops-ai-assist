@@ -18,7 +18,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import boto3
 import pytest
@@ -464,6 +464,70 @@ def test_advance_sha_without_work_reraises_other_errors(tables):
         with pytest.raises(ClientError):
             sha_truth.advance_sha_without_work(
                 WORKSPACE_ID, REPO, "code_map", SHA_A, COMMIT_TS_NEW)
+
+
+# ===========================================================================
+# batch_in_flight
+# ===========================================================================
+
+
+def test_batch_in_flight_open_and_progressing(tables):
+    from shared.sha_truth import batch_in_flight, open_pending_batch  # type: ignore
+
+    open_pending_batch(_make_batch(pipeline="code_map_units", expected_count=2))
+    assert batch_in_flight(
+        WORKSPACE_ID, REPO, "code_map_units", SHA_A, stale_after_seconds=3600)
+
+
+def test_batch_in_flight_false_when_closed(tables):
+    from shared.sha_truth import (  # type: ignore
+        batch_in_flight,
+        mark_unit_complete,
+        open_pending_batch,
+    )
+
+    open_pending_batch(_make_batch(pipeline="docs", expected_count=1))
+    mark_unit_complete(WORKSPACE_ID, REPO, "docs", SHA_A)
+    assert not batch_in_flight(
+        WORKSPACE_ID, REPO, "docs", SHA_A, stale_after_seconds=3600)
+
+
+def test_batch_in_flight_false_when_stale(tables):
+    """An open batch with no progress inside the window is presumed dead."""
+    from shared import sha_truth  # type: ignore
+
+    sha_truth.open_pending_batch(_make_batch(pipeline="docs", expected_count=2))
+    later = sha_truth.time.time() + 7200
+    with patch.object(sha_truth.time, "time", return_value=later):
+        assert not sha_truth.batch_in_flight(
+            WORKSPACE_ID, REPO, "docs", SHA_A, stale_after_seconds=3600)
+
+
+def test_batch_in_flight_false_when_missing(tables):
+    from shared.sha_truth import batch_in_flight  # type: ignore
+
+    assert not batch_in_flight(
+        WORKSPACE_ID, REPO, "docs", SHA_A, stale_after_seconds=3600)
+
+
+def test_batch_in_flight_false_on_read_error(tables):
+    from shared import sha_truth  # type: ignore
+
+    err = ClientError(
+        {"Error": {"Code": "InternalServerError", "Message": "boom"}}, "GetItem")
+    table = MagicMock()
+    table.get_item.side_effect = err
+    with patch.object(sha_truth, "_pending_table", return_value=table):
+        assert not sha_truth.batch_in_flight(
+            WORKSPACE_ID, REPO, "docs", SHA_A, stale_after_seconds=3600)
+
+
+def test_batch_in_flight_rejects_unknown_pipeline(tables):
+    from shared.sha_truth import batch_in_flight  # type: ignore
+
+    with pytest.raises(ValueError):
+        batch_in_flight(
+            WORKSPACE_ID, REPO, "bogus", SHA_A, stale_after_seconds=3600)
 
 
 def test_try_advance_monotonic_blocks_older_sha(tables):

@@ -2440,7 +2440,8 @@ export interface GitHubRepo {
   repo_type: GitHubRepoType
   last_sync_at: string | null
   // up_to_date: a manual sync found nothing changed since the last completed build
-  last_sync_status: 'needs_configuration' | 'queued' | 'in_progress' | 'success' | 'up_to_date' | 'failed' | null
+  // already_running: a manual sync found an earlier sync of the same commit still running
+  last_sync_status: 'needs_configuration' | 'queued' | 'in_progress' | 'success' | 'up_to_date' | 'already_running' | 'failed' | null
   last_sync_error: string | null
   last_commit_sha: string | null
   added_at: string

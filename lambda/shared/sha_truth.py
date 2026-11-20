@@ -396,6 +396,45 @@ def _stage_closed(
     return True
 
 
+def batch_in_flight(
+    workspace_id: str,
+    repo: str,
+    pipeline: Pipeline,
+    target_sha: str,
+    *,
+    stale_after_seconds: int,
+) -> bool:
+    """True when a ledger batch for ``target_sha`` is open (completed +
+    failed < expected) AND made progress within ``stale_after_seconds``.
+
+    Lets a dispatcher tell "still running" from "died partway": an open
+    row whose consumers stopped reporting progress is treated as dead so
+    the caller can redo the work. A missing row, a closed row, or a read
+    error all return False (redoing is safe, skipping is not).
+    """
+
+    if pipeline not in _VALID_PIPELINES:
+        raise ValueError(f"invalid pipeline: {pipeline}")
+    try:
+        resp = _pending_table().get_item(
+            Key={
+                "PK": _ledger_pk(workspace_id, repo),
+                "SK": _pending_sk(pipeline, target_sha),
+            },
+        )
+    except ClientError:
+        return False
+    item = resp.get("Item")
+    if not item:
+        return False
+    expected = int(item.get("expected_count", 0))
+    done = int(item.get("completed_count", 0)) + int(item.get("failed_count", 0))
+    if done >= expected:
+        return False
+    last_progress = int(item.get("last_progress_at") or item.get("dispatched_at") or 0)
+    return int(time.time()) - last_progress < stale_after_seconds
+
+
 def try_advance_sha(
     ledger_item: dict,
     *,
@@ -534,6 +573,7 @@ __all__ = (
     "PendingBatch",
     "Pipeline",
     "advance_sha_without_work",
+    "batch_in_flight",
     "mark_unit_complete",
     "mark_unit_failed",
     "open_pending_batch",

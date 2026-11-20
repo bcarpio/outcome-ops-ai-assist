@@ -1691,11 +1691,18 @@ class TestProcessSyncRequest:
         assert result["status"] == "no_changes"
         assert result["commit_sha"] == "same_sha_123"
 
-    def _manual_sync(self, repo_row, trigger_key="trigger"):
+    def _manual_sync(self, repo_row, trigger_key="trigger", running=()):
         """Run process_sync_request as a manual sync at HEAD=head_sha with
         the given repo row; returns (result, update_sync_status mock,
-        _process_application_repo mock)."""
+        _process_application_repo mock). ``running`` names the ledger
+        pipelines that have a live batch for HEAD."""
+        def in_flight(_ws, _repo, pipelines, sha):
+            assert sha == "head_sha"
+            return any(p in running for p in pipelines)
+
         with patch.object(handler_module, "get_repo", return_value=repo_row), \
+                patch.object(handler_module, "_pipelines_in_flight",
+                             side_effect=in_flight), \
                 patch.object(handler_module, "update_sync_status") as status, \
                 patch.object(handler_module, "get_installation_token",
                              return_value="tok"), \
@@ -1749,6 +1756,90 @@ class TestProcessSyncRequest:
         assert kwargs["last_commit_sha"] == "head_sha"      # docs: nothing to do
         assert kwargs["code_map_last_sha"] == "older_sha"   # code maps: the gap
         assert kwargs["current_sha"] == "head_sha"
+
+    def test_manual_sync_while_code_maps_running_queues_nothing(self):
+        """Pressed again while the code maps from the previous press are
+        still running: report already_running and dispatch nothing."""
+        result, status, process_app = self._manual_sync({
+            "repo_type": "application",
+            "include_code_maps": True,
+            "last_commit_sha": "head_sha",
+            "last_docs_sha": "head_sha",
+            "last_code_map_sha": "older_sha",
+        }, running=("code_map_units",))
+
+        assert result["status"] == "already_running"
+        process_app.assert_not_called()
+        assert status.call_args.args[2] == "already_running"
+
+    def test_manual_sync_while_everything_running_queues_nothing(self):
+        result, status, process_app = self._manual_sync({
+            "repo_type": "application",
+            "include_code_maps": True,
+            "last_commit_sha": "head_sha",
+            "last_docs_sha": "older_sha",
+            "last_code_map_sha": "older_sha",
+        }, running=("docs", "code_map_dispatch"))
+
+        assert result["status"] == "already_running"
+        process_app.assert_not_called()
+
+    def test_manual_sync_redoes_docs_but_not_running_code_maps(self):
+        """Docs died, code maps are still running: redo docs only. Code
+        maps get a HEAD baseline, which dispatches nothing."""
+        result, _status, process_app = self._manual_sync({
+            "repo_type": "application",
+            "include_code_maps": True,
+            "last_commit_sha": "head_sha",
+            "last_docs_sha": "older_sha",
+            "last_code_map_sha": "older_sha",
+        }, running=("code_map_units",))
+
+        assert result["status"] == "success"
+        kwargs = process_app.call_args.kwargs
+        assert kwargs["last_commit_sha"] == "older_sha"
+        assert kwargs["code_map_last_sha"] == "head_sha"
+
+    def test_manual_sync_running_docs_do_not_block_dead_code_maps(self):
+        """Docs still running but code maps died: the code maps are redone.
+        Docs keep their completed baseline (a HEAD baseline would advance
+        last_docs_sha before the running batch finished)."""
+        result, _status, process_app = self._manual_sync({
+            "repo_type": "application",
+            "include_code_maps": True,
+            "last_commit_sha": "head_sha",
+            "last_docs_sha": "older_sha",
+            "last_code_map_sha": "older_sha",
+        }, running=("docs",))
+
+        assert result["status"] == "success"
+        kwargs = process_app.call_args.kwargs
+        assert kwargs["last_commit_sha"] == "older_sha"
+        assert kwargs["code_map_last_sha"] == "older_sha"
+
+    def test_pipelines_in_flight_checks_each_pipeline(self):
+        from shared import sha_truth  # type: ignore
+
+        with patch.object(sha_truth, "batch_in_flight",
+                          side_effect=[False, True]) as check:
+            assert handler_module._pipelines_in_flight(
+                "ws", "o/r", ("code_map_dispatch", "code_map_units"), "sha")
+        assert [c.args[2] for c in check.call_args_list] == [
+            "code_map_dispatch", "code_map_units"]
+        assert check.call_args.kwargs["stale_after_seconds"] == (
+            handler_module._IN_FLIGHT_STALE_SECONDS)
+
+    def test_pipelines_in_flight_errors_mean_not_running(self, caplog):
+        """A failed check reports not running (redo beats skip) and logs
+        which repo and commit it could not check."""
+        from shared import sha_truth  # type: ignore
+
+        with patch.object(sha_truth, "batch_in_flight",
+                          side_effect=RuntimeError("ddb down")), \
+                caplog.at_level("WARNING"):
+            assert not handler_module._pipelines_in_flight(
+                "ws", "o/r", ("docs",), "sha123")
+        assert "in-flight check failed for o/r@sha123: ddb down" in caplog.text
 
     def test_scheduled_sync_still_skips_on_dispatched_sha(self):
         """Scheduled behaviour is unchanged: last_commit_sha == HEAD skips,

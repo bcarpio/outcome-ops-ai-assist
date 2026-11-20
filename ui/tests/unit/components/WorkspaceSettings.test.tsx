@@ -1297,9 +1297,23 @@ describe('WorkspaceSettings', () => {
     })
   })
 
+  it('renders an unrecognised sync status as plain gray text', async () => {
+    mockListGitHubInstallations.mockResolvedValue([
+      { installation_id: 'inst-1', workspace_id: 'ws-1', account_login: 'my-org', account_type: 'Organization', permissions: { contents: 'read' }, created_by: 'user@test.com', created_at: '2024-01-01' },
+    ])
+    mockListGitHubRepos.mockResolvedValue([
+      { repo_name: 'my-org/my-repo', workspace_id: 'ws-1', installation_id: 'inst-1', enabled: true, include_code_maps: true, repo_type: 'application', last_sync_at: null, last_sync_status: 'needs_configuration', last_sync_error: null, last_commit_sha: null, added_at: '2024-01-01', added_by: 'user@test.com' },
+    ])
+    renderSettings('integrations')
+
+    const badge = await screen.findByText('needs_configuration')
+    expect(badge).toHaveClass('text-gray-500')
+  })
+
   it.each([
     ['up_to_date', 'my-org/my-repo is already up to date. Nothing changed since the last sync.'],
     ['success', 'Sync finished for my-org/my-repo'],
+    ['already_running', 'A sync of the latest commit is already running for my-org/my-repo. Nothing new was queued.'],
   ])('polls a single-repo sync and reports %s', async (finalStatus, message) => {
     const repo = { repo_name: 'my-org/my-repo', workspace_id: 'ws-1', installation_id: 'inst-1', enabled: true, include_code_maps: true, repo_type: 'application' as const, last_sync_at: null, last_sync_status: null, last_sync_error: null, last_commit_sha: null, added_at: '2024-01-01', added_by: 'user@test.com' }
     mockListGitHubInstallations.mockResolvedValue([
@@ -1332,6 +1346,9 @@ describe('WorkspaceSettings', () => {
       })
       if (finalStatus === 'up_to_date') {
         expect(screen.getByText('up to date')).toBeInTheDocument()
+      }
+      if (finalStatus === 'already_running') {
+        expect(screen.getByText('already running')).toBeInTheDocument()
       }
     } finally {
       vi.useRealTimers()
