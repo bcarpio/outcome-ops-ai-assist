@@ -564,6 +564,30 @@ If no code performs the SAME BUSINESS FUNCTION, return:
         raise
 
 
+def _is_self_reference(existing_ref: str, repository: str, changed_files: List[str]) -> bool:
+    """True when a finding points at a file this PR itself changes, in this
+    PR's own repo: the code being reviewed, not a duplicate of it.
+
+    ``existing_ref`` is ``<repo slug>/<path>`` (owner/repo, or a deeper
+    GitLab / Azure DevOps slug) or a bare path. The repo part matches on the
+    full slug or its last segment, so the same repo ingested under a
+    different owner prefix still counts; a differently named repo does not.
+    """
+    ref = (existing_ref or "").strip().strip("`")
+    if not ref:
+        return False
+    bare_repo = repository.rstrip("/").split("/")[-1]
+    for path in changed_files:
+        if ref == path:
+            return True
+        if not ref.endswith("/" + path):
+            continue
+        prefix = ref[: -len(path) - 1]
+        if prefix == repository or prefix.split("/")[-1] == bare_repo:
+            return True
+    return False
+
+
 def check_architectural_duplication(
     check_type: str,
     pr_number: int,
@@ -767,6 +791,21 @@ def check_architectural_duplication(
         # Step 4: Analyze KB results with Claude to determine if there are genuine similarities
         # Pass changed files so Claude can exclude them from results
         analysis = analyze_similarity_with_claude(pr_summary, combined_context, handler_files, usage_tracker, workspace_id=owning_ws)
+
+        # The prompt asks the model to skip the PR's own files, but that is
+        # not guaranteed. Enforce it: a PR's file is not a duplicate of itself.
+        if analysis.get("findings"):
+            kept = [
+                fd for fd in analysis["findings"]
+                if not _is_self_reference(fd.get("existing_ref", ""), repository, changed_files)
+            ]
+            dropped = len(analysis["findings"]) - len(kept)
+            if dropped:
+                logger.info(
+                    f"[architectural_duplication] dropped {dropped} finding(s) "
+                    f"pointing at this PR's own changed files"
+                )
+            analysis["findings"] = kept
 
         # Step 5: Return results
         details = []

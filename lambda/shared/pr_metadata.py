@@ -232,6 +232,13 @@ def _fetch_pr_from_github(
                 file_change_types[filename] = status
         files_url = next_url
 
+    # ``base.sha`` is the target branch tip, not where the PR branched off.
+    # Once the target moves on, diffing base.sha..head would fold the
+    # target's newer commits (reversed) into every per-file diff, which is
+    # not what the PR changed. Use the merge base, as GitHub's own
+    # "Files changed" view does.
+    base_sha = _github_merge_base(repository, base_sha, head_sha, github_token)
+
     return PRMetadata(
         head_sha=head_sha,
         base_sha=base_sha,
@@ -241,6 +248,54 @@ def _fetch_pr_from_github(
         title=title,
         file_change_types=file_change_types,
     )
+
+
+def _github_merge_base(repository: str, base_sha: str, head_sha: str, token: str) -> str:
+    """Merge base of ``base_sha`` and ``head_sha`` via the compare API.
+
+    Falls back to ``base_sha`` (the previous behavior) when the compare call
+    fails or returns no merge base, so this never makes metadata fetch fail.
+    """
+    url = (
+        f"{_GITHUB_API}/repos/{repository}/compare/"
+        f"{base_sha}...{head_sha}?per_page=1"
+    )
+    try:
+        body = _github_get(url, token)
+        merge_base = ((body or {}).get("merge_base_commit") or {}).get("sha")
+    except Exception as e:  # noqa: BLE001 -- best effort, keep base.sha
+        logger.warning(
+            f"[pr_metadata] GitHub merge-base lookup failed for {repository}; "
+            f"using base.sha: {e}"
+        )
+        return base_sha
+    return merge_base or base_sha
+
+
+def _ado_merge_base(
+    *, ado_org: str, ado_project: str, ado_repo: str,
+    source_sha: str, target_sha: str, access_token: str,
+) -> str:
+    """Merge base of the PR source and target commits (ADO Merge Bases API).
+
+    Falls back to ``target_sha`` (the previous behavior) on any failure.
+    """
+    url = _ado_url(
+        f"{_ADO_API}/{ado_org}/{ado_project}/_apis/git/"
+        f"repositories/{ado_repo}/commits/{source_sha}/mergebases",
+        {"otherCommitId": target_sha, "api-version": "7.1-preview.1"},
+    )
+    try:
+        body = _ado_get(url, access_token)
+        values = (body or {}).get("value") or []
+        merge_base = values[0].get("commitId") if values else None
+    except Exception as e:  # noqa: BLE001 -- best effort, keep target
+        logger.warning(
+            f"[pr_metadata] ADO merge-base lookup failed for "
+            f"{ado_org}/{ado_project}/{ado_repo}; using target commit: {e}"
+        )
+        return target_sha
+    return merge_base or target_sha
 
 
 def _fetch_pr_from_ado(
@@ -259,10 +314,10 @@ def _fetch_pr_from_ado(
 
     Notable shape deltas from GitHub:
 
-    - Head SHA is ``lastMergeSourceCommit.commitId``; base SHA is
-      ``lastMergeTargetCommit.commitId``. ADO exposes these as merge-
-      preview commits; for PR-check purposes they're the correct head
-      and base for a snapshot analysis.
+    - Head SHA is ``lastMergeSourceCommit.commitId``. Base SHA is the
+      merge base of that commit and ``lastMergeTargetCommit.commitId``
+      (falling back to the target commit if the merge-base lookup fails),
+      matching GitHub and GitLab.
     - ``targetRefName`` comes as ``refs/heads/{branch}``; strip the
       prefix to match GitHub's ``base.ref``.
     - Author is ``createdBy.uniqueName`` (the email-like Entra ID
@@ -341,6 +396,15 @@ def _fetch_pr_from_ado(
                 entry.get("changeType"),
             )
 
+    # lastMergeTargetCommit is the target branch tip, not where the PR
+    # branched off; diff from the merge base so the target's newer commits
+    # are not folded into every per-file diff.
+    base_sha = _ado_merge_base(
+        ado_org=ado_org, ado_project=ado_project, ado_repo=ado_repo,
+        source_sha=head_sha, target_sha=base_sha,
+        access_token=ado_access_token,
+    )
+
     return PRMetadata(
         head_sha=head_sha,
         base_sha=base_sha,
@@ -387,9 +451,8 @@ def _fetch_pr_from_gitlab(
     Notable shape deltas from GitHub:
 
     - Head/base SHAs live under ``diff_refs`` (``head_sha`` /
-      ``base_sha``). ``base_sha`` is the merge-base — the correct base
-      for a snapshot analysis (same semantics as GitHub's ``base.sha``
-      for the check pipeline's purposes).
+      ``base_sha``). ``base_sha`` is the merge-base, the correct base
+      for a snapshot analysis (GitHub and ADO resolve the same).
     - Target branch is a bare name (``target_branch``) — no
       ``refs/heads/`` prefix to strip.
     - Author is ``author.username``.

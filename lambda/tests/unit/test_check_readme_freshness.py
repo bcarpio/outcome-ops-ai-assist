@@ -552,7 +552,7 @@ class TestCheckReadmeFreshness:
         result = _run(["docs/guide.md", "lambda/tests/unit/test_something.py"])
         assert result["checkType"] == "README_FRESHNESS"
         assert result["status"] == "PASS"
-        assert "No infrastructure or handler changes" in result["message"]
+        assert result["message"] == "No new handlers or infrastructure changes detected"
 
     def test_terraform_without_docs(self, source):
         result = _run(["terraform/main.tf"])

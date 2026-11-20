@@ -528,7 +528,7 @@ def check_readme_freshness(
         return {
             "checkType": check_type,
             "status": "PASS",
-            "message": "No infrastructure or handler changes detected",
+            "message": "No new handlers or infrastructure changes detected",
             "details": [],
             "usage": usage_tracker
         }
