@@ -78,6 +78,14 @@ def _set_kb_bucket(monkeypatch):
     monkeypatch.setattr(repo_summary_handler, "KB_BUCKET", "test-kb-bucket", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _repo_connected(monkeypatch):
+    """Workspace repos default to connected; removal tests override this."""
+    monkeypatch.setattr(
+        repo_summary_handler, "is_repo_connected", lambda *a, **k: True,
+    )
+
+
 class TestComputeContentHash:
     """Test content hash computation."""
 
@@ -879,3 +887,164 @@ class TestAdvanceCodeMapWithoutWork:
             repo_summary_handler._advance_code_map_without_work(
                 "ws_eng", "acme/my-repo", "b" * 40, 1700000000)
         advance.assert_not_called()
+
+
+class TestRemovedRepoGuard:
+    """ADR-052: a repo-summary job for a removed repo must not discover,
+    write the architectural summary, open or advance ledger rows, or
+    dispatch batches. The presence check runs at job start, before the
+    summary write, and before dispatch."""
+
+    _UNIT = {
+        "name": "api", "group_name": "api", "batch_type": "handler-group",
+        "storage_key": "api", "file_paths": ["src/api.py"],
+    }
+
+    def _event(self, **overrides):
+        body = {
+            "repo": "my-repo",
+            "repo_project": "acme/my-repo",
+            "repo_type": "application",
+            "all_files": ["src/api.py"],
+            "workspace_id": "ws_eng",
+            "installation_id": "123",
+            "discover_code_units": True,
+            "current_commit_sha": "b" * 40,
+            "commit_timestamp": 1700000000,
+        }
+        body.update(overrides)
+        return {"Records": [{"messageId": "m1", "receiptHandle": "h1",
+                             "body": json.dumps(body)}]}
+
+    def _run(self, presence, event=None):
+        """Run the handler with every collaborator mocked. ``presence`` is
+        the side_effect for is_repo_connected (list of results/exceptions
+        consumed in call order)."""
+        mocks = {}
+        names = [
+            "get_installation_token", "discover_code_units",
+            "generate_architectural_summary", "generate_embedding",
+            "store_code_map_embedding", "_emit_ingest_audit",
+            "_open_code_map_units_ledger", "_close_code_map_dispatch_ledger",
+            "_advance_code_map_without_work", "send_code_units_to_sqs",
+            "_queue_orphan_code_map_cleanup", "_expected_code_map_vector_keys",
+            "count_expected_shard_messages",
+        ]
+        presence_mock = MagicMock(side_effect=presence)
+        put = MagicMock()
+        patches = [patch.object(repo_summary_handler, n) for n in names]
+        with patch.object(repo_summary_handler, "load_config"), \
+                patch.object(repo_summary_handler, "is_repo_connected",
+                             presence_mock), \
+                patch.object(repo_summary_handler, "_get_workspaces_table",
+                             return_value=None), \
+                patch.object(repo_summary_handler.dual_write, "s3_put_object",
+                             put), \
+                patch.object(repo_summary_handler, "_get_account_id",
+                             return_value="123456789012"):
+            for n, p in zip(names, patches):
+                mocks[n] = p.start()
+            try:
+                mocks["discover_code_units"].return_value = [dict(self._UNIT)]
+                mocks["generate_architectural_summary"].return_value = "summary"
+                mocks["generate_embedding"].return_value = [0.1] * 4
+                mocks["count_expected_shard_messages"].return_value = 1
+                mocks["_expected_code_map_vector_keys"].return_value = ["k"]
+                result = repo_summary_handler.handler(
+                    event or self._event(), None)
+            finally:
+                for p in patches:
+                    p.stop()
+        mocks["s3_put_object"] = put
+        mocks["is_repo_connected"] = presence_mock
+        return result, mocks
+
+    def _assert_no_dispatch(self, m):
+        m["_open_code_map_units_ledger"].assert_not_called()
+        m["_close_code_map_dispatch_ledger"].assert_not_called()
+        m["_advance_code_map_without_work"].assert_not_called()
+        m["send_code_units_to_sqs"].assert_not_called()
+        m["_queue_orphan_code_map_cleanup"].assert_not_called()
+
+    def test_removed_at_start_does_nothing(self):
+        result, m = self._run([False])
+        assert result["batchItemFailures"] == []
+        m["get_installation_token"].assert_not_called()
+        m["discover_code_units"].assert_not_called()
+        m["generate_architectural_summary"].assert_not_called()
+        m["store_code_map_embedding"].assert_not_called()
+        m["s3_put_object"].assert_not_called()
+        self._assert_no_dispatch(m)
+        m["is_repo_connected"].assert_called_once_with(
+            "ws_eng", "github", "acme/my-repo")
+
+    def test_removed_before_summary_write_stores_nothing(self):
+        result, m = self._run([True, False])
+        assert result["batchItemFailures"] == []
+        m["discover_code_units"].assert_called_once()
+        m["generate_architectural_summary"].assert_called_once()
+        m["generate_embedding"].assert_not_called()
+        m["_emit_ingest_audit"].assert_not_called()
+        m["store_code_map_embedding"].assert_not_called()
+        m["s3_put_object"].assert_not_called()
+        self._assert_no_dispatch(m)
+
+    def test_removed_before_dispatch_dispatches_nothing(self):
+        result, m = self._run([True, True, False])
+        assert result["batchItemFailures"] == []
+        m["store_code_map_embedding"].assert_called_once()
+        self._assert_no_dispatch(m)
+
+    def test_connected_runs_full_pipeline(self):
+        result, m = self._run([True, True, True])
+        assert result["batchItemFailures"] == []
+        assert m["is_repo_connected"].call_count == 3
+        m["store_code_map_embedding"].assert_called_once()
+        m["s3_put_object"].assert_called_once()
+        m["_open_code_map_units_ledger"].assert_called_once()
+        m["send_code_units_to_sqs"].assert_called_once()
+        m["_close_code_map_dispatch_ledger"].assert_called_once()
+        m["_queue_orphan_code_map_cleanup"].assert_called_once()
+
+    def test_presence_error_fails_record_and_writes_nothing(self):
+        from shared.repo_presence import RepoPresenceError
+
+        result, m = self._run([RepoPresenceError("ddb down")])
+        assert result["batchItemFailures"] == [{"itemIdentifier": "m1"}]
+        m["discover_code_units"].assert_not_called()
+        m["store_code_map_embedding"].assert_not_called()
+        m["s3_put_object"].assert_not_called()
+        self._assert_no_dispatch(m)
+
+    def test_presence_error_mid_job_fails_record_before_dispatch(self):
+        from shared.repo_presence import RepoPresenceError
+
+        result, m = self._run([True, True, RepoPresenceError("ddb down")])
+        assert result["batchItemFailures"] == [{"itemIdentifier": "m1"}]
+        self._assert_no_dispatch(m)
+
+    def test_gitlab_uses_full_slug(self):
+        event = self._event(
+            provider="gitlab", slug="grp/sub/my-repo",
+            repo_project="grp/sub/my-repo", installation_id=None,
+            connection_id="c1",
+        )
+        result, m = self._run([False], event=event)
+        assert result["batchItemFailures"] == []
+        m["is_repo_connected"].assert_called_once_with(
+            "ws_eng", "gitlab", "grp/sub/my-repo")
+        m["discover_code_units"].assert_not_called()
+
+    def test_legacy_global_job_skips_presence_check(self):
+        event = {"Records": [{"messageId": "m1", "receiptHandle": "h1",
+                              "body": json.dumps({
+                                  "repo": "my-repo",
+                                  "repo_project": "acme/my-repo",
+                                  "repo_type": "application",
+                                  "all_files": ["src/api.py"],
+                                  "code_units": [dict(self._UNIT)],
+                              })}]}
+        result, m = self._run([], event=event)
+        assert result["batchItemFailures"] == []
+        m["is_repo_connected"].assert_not_called()
+        m["send_code_units_to_sqs"].assert_called_once()

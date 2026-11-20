@@ -1945,3 +1945,132 @@ class TestDeletePrefixVerify:
         })
         assert result["verified_clean"] is False
         assert result["remaining_objects"] == 1
+
+
+# ============================================================================
+# Delayed recheck pass (ADR-052): skip the purge when the repo was re-added
+# ============================================================================
+
+
+class TestRecheckPass:
+    """A ``recheck`` message re-runs the cleanup unless the repo is back."""
+
+    @staticmethod
+    def _event(body, message_id="m1"):
+        return {"Records": [{"messageId": message_id, "body": json.dumps(body)}]}
+
+    @staticmethod
+    def _prefix_msg(**extra):
+        msg = {
+            "action": "delete_prefix",
+            "workspace_id": "ws_1",
+            "source": "gitlab",
+            "repo": "group/sub/project",
+            "prefix": "group/sub/project/",
+        }
+        msg.update(extra)
+        return msg
+
+    @patch("shared.repo_presence.is_repo_connected", return_value=False)
+    @patch.object(handler_module, 'handle_delete_prefix')
+    def test_recheck_repo_removed_runs_action(self, mock_handle, mock_presence):
+        mock_handle.return_value = {"status": "success"}
+        result = lambda_handler(self._event(self._prefix_msg(recheck=True)), None)
+        mock_presence.assert_called_once_with("ws_1", "gitlab", "group/sub/project")
+        mock_handle.assert_called_once()
+        assert result["batchItemFailures"] == []
+
+    @patch("shared.repo_presence.is_repo_connected", return_value=True)
+    @patch.object(handler_module, 'handle_delete_symbol_graph')
+    @patch.object(handler_module, 'handle_delete_prefix')
+    def test_recheck_repo_readded_skips_without_deleting(
+        self, mock_prefix, mock_sg, mock_presence, caplog
+    ):
+        sg_msg = {
+            "action": "delete_symbol_graph",
+            "workspace_id": "ws_1",
+            "source": "github",
+            "repo": "owner/repo",
+            "repo_bare": "repo",
+            "recheck": True,
+        }
+        event = {"Records": [
+            {"messageId": "a", "body": json.dumps(self._prefix_msg(recheck=True))},
+            {"messageId": "b", "body": json.dumps(sg_msg)},
+        ]}
+        with caplog.at_level("INFO"):
+            result = lambda_handler(event, None)
+        mock_prefix.assert_not_called()
+        mock_sg.assert_not_called()
+        mock_s3_client.delete_objects.assert_not_called()
+        mock_s3vectors_client.delete_vectors.assert_not_called()
+        assert result["batchItemFailures"] == []
+        body = json.loads(result["body"])
+        assert [r["status"] for r in body["results"]] == ["skipped", "skipped"]
+        assert "repo re-added, skipping recheck for ws_1/owner/repo" in caplog.text
+
+    @patch.object(handler_module, 'handle_delete_prefix')
+    def test_recheck_lookup_error_raises_for_retry(self, mock_handle):
+        from shared.repo_presence import RepoPresenceError
+
+        with patch(
+            "shared.repo_presence.is_repo_connected",
+            side_effect=RepoPresenceError("ddb down"),
+        ):
+            result = lambda_handler(
+                self._event(self._prefix_msg(recheck=True)), None
+            )
+        mock_handle.assert_not_called()
+        assert result["batchItemFailures"] == [{"itemIdentifier": "m1"}]
+
+    @patch("shared.repo_presence.is_repo_connected")
+    @patch.object(handler_module, 'handle_delete_prefix')
+    def test_no_recheck_never_looks_up_presence(self, mock_handle, mock_presence):
+        mock_handle.return_value = {"status": "success"}
+        lambda_handler(self._event(self._prefix_msg()), None)
+        lambda_handler(self._event(self._prefix_msg(recheck=False)), None)
+        mock_presence.assert_not_called()
+        assert mock_handle.call_count == 2
+
+    @patch("shared.repo_presence.is_repo_connected")
+    @patch.object(handler_module, 'handle_delete_symbol_graph')
+    @patch.object(handler_module, 'handle_delete_prefix')
+    def test_legacy_recheck_without_source_or_repo_runs_action(
+        self, mock_prefix, mock_sg, mock_presence
+    ):
+        mock_prefix.return_value = {"status": "success"}
+        mock_sg.return_value = {"status": "success"}
+        legacy_prefix = {
+            "action": "delete_prefix",
+            "workspace_id": "ws_1",
+            "source": "github",
+            "prefix": "owner/repo/",
+            "recheck": True,
+        }
+        legacy_sg = {
+            "action": "delete_symbol_graph",
+            "workspace_id": "ws_1",
+            "repo_bare": "repo",
+            "repo": "owner/repo",
+            "recheck": True,
+        }
+        result = lambda_handler({"Records": [
+            {"messageId": "a", "body": json.dumps(legacy_prefix)},
+            {"messageId": "b", "body": json.dumps(legacy_sg)},
+        ]}, None)
+        mock_presence.assert_not_called()
+        mock_prefix.assert_called_once()
+        mock_sg.assert_called_once()
+        assert result["batchItemFailures"] == []
+
+    @patch("shared.repo_presence.is_repo_connected")
+    @patch.object(handler_module, 'handle_delete_prefix')
+    def test_recheck_non_code_host_source_runs_action(
+        self, mock_handle, mock_presence
+    ):
+        mock_handle.return_value = {"status": "success"}
+        lambda_handler(
+            self._event(self._prefix_msg(source="confluence", recheck=True)), None
+        )
+        mock_presence.assert_not_called()
+        mock_handle.assert_called_once()

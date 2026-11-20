@@ -71,6 +71,13 @@ sys.modules["process_batch_summary_handler"] = _bsm
 _spec.loader.exec_module(_bsm)
 
 
+@pytest.fixture(autouse=True)
+def _repo_connected():
+    """The consumer's ADR-052 presence guard sees every repo as connected."""
+    with patch("shared.repo_presence.is_repo_connected", return_value=True):
+        yield
+
+
 # ============================================================================
 # Round-trip test
 # ============================================================================

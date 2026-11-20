@@ -40,6 +40,7 @@ from shared.model_client import invoke as invoke_model
 from shared.model_client import resolve_profile_arn
 from shared.pii import MODE_STRICT, read_workspace_mode, redact
 from shared.prompts import CODE_MAP_LITERAL_DISCIPLINE
+from shared import repo_presence
 
 # Symbol-graph extractor. The extractor emits typed Facts only —
 # storage and the SQS hand-off are handled downstream.
@@ -1985,9 +1986,44 @@ def _load_symbol_graph_filter(
         return DEFAULT_SYMBOL_GRAPH_FILTER
 
 
+def _repo_removed(batch: Dict[str, Any]) -> bool:
+    """True when the batch's workspace no longer has its repo connected.
+
+    ADR-052: removing a repo purges every derived artifact, so a writer
+    that lands after the delete must not recreate any of them. The repo
+    row is keyed by the provider (``provider``, default ``github``) and
+    the full slug (``slug`` for GitLab / Azure DevOps, ``repo_project``
+    = ``owner/repo`` for GitHub). Legacy messages without a
+    ``workspace_id`` have no repo row and are never dropped.
+
+    ``RepoPresenceError`` (lookup failed) and ``ValueError`` (unknown
+    provider or empty slug) propagate so SQS retries the record; a
+    failed lookup is never read as "removed" or as "connected".
+    """
+    workspace_id = batch.get("workspace_id") or ""
+    if not workspace_id:
+        return False
+    source = batch.get("provider") or "github"
+    slug = batch.get("slug") or batch.get("repo_project") or ""
+    if repo_presence.is_repo_connected(workspace_id, source, slug):
+        return False
+    logger.info(
+        "[process-batch-summary] repo removed, dropping batch for %s/%s",
+        workspace_id,
+        slug,
+    )
+    return True
+
+
 def process_batch_record(record: Dict[str, Any]) -> None:
     """
     Process a single SQS record.
+
+    Shard and merge records for a repo the workspace no longer has
+    connected are acknowledged without writing anything (no vectors,
+    no symbol-graph facts or pointer commit, no ledger close). The
+    presence check runs once at the start and again after the LLM call,
+    immediately before the first summary write.
 
     Args:
         record: SQS record containing batch message
@@ -2004,15 +2040,6 @@ def process_batch_record(record: Dict[str, Any]) -> None:
     # entries from before this migration) default to single-shard --
     # they still process end-to-end via the existing summarize path.
     message_type = batch.get("message_type", "shard")
-    if message_type == "merge":
-        # fan-in merge. Reads N shard summaries by key,
-        # generates one unified summary via Bedrock, stores at parent
-        # vector key. Requeue-with-delay when shards not yet complete.
-        # Marks ledger on the final iteration (success OR max-attempts
-        # give-up); the requeue path does NOT mark so the ledger tracks
-        # the merge as still pending.
-        handle_merge_message(batch)
-        return
 
     if message_type == "xrepo_reresolve":
         # ADR-056 v2 producer-push re-resolution. A producer repo just
@@ -2021,6 +2048,19 @@ def process_batch_record(record: Dict[str, Any]) -> None:
         # re-ingesting each consumer. Importer-narrowed via the target GSI;
         # best-effort and self-contained (never marks a code-map ledger).
         handle_xrepo_reresolve_message(batch)
+        return
+
+    if _repo_removed(batch):
+        return
+
+    if message_type == "merge":
+        # fan-in merge. Reads N shard summaries by key,
+        # generates one unified summary via Bedrock, stores at parent
+        # vector key. Requeue-with-delay when shards not yet complete.
+        # Marks ledger on the final iteration (success OR max-attempts
+        # give-up); the requeue path does NOT mark so the ledger tracks
+        # the merge as still pending.
+        handle_merge_message(batch)
         return
 
     shard_index = batch.get("shard_index", 0)
@@ -2132,7 +2172,25 @@ def process_batch_record(record: Dict[str, Any]) -> None:
             _abandon_symbol_graph_swap(sg_workspace, sg_repo)
         raise
 
-    # PII redaction (plan/ ). Code summaries occasionally include
+    # Second presence check: the repo may have been removed while the
+    # LLM call ran. Nothing has been written for this record beyond the
+    # pointer claim, so dropping here leaves no summary, facts or ledger
+    # close behind. The pending claim is deliberately not abandoned:
+    # abandon_swap upserts the pointer row, which would recreate a row
+    # the delete already swept. A delete that has not swept yet removes
+    # the row together with the pending claim.
+    # A lookup failure abandons the claim like any other failure so the
+    # SQS retry starts clean.
+    try:
+        removed = _repo_removed(batch)
+    except Exception:
+        if sg_claimed:
+            _abandon_symbol_graph_swap(sg_workspace, sg_repo)
+        raise
+    if removed:
+        return
+
+    # PII redaction. Code summaries occasionally include
     # accidentally-pasted credentials / customer data from inline
     # comments; redact before embedding so neither S3 Vectors nor the
     # downstream RAG flow sees raw identifiers. Honors the workspace's
@@ -2505,6 +2563,11 @@ def handle_merge_message(batch: Dict[str, Any]) -> None:
     merge_batch["file_paths"] = [
         "*"
     ] * sum(s["file_count"] for s in shard_summaries)  # sizing hint only
+
+    # The repo may have been removed during the merge LLM call; drop
+    # without writing the merged vector or closing the ledger.
+    if _repo_removed(batch):
+        return
 
     embedding = generate_embedding(merged_summary)
     if not store_batch_summary(merge_batch, merged_summary, embedding):

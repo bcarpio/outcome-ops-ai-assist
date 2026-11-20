@@ -623,6 +623,7 @@ class TestHandlerExtended:
         # bucket). Give the handler a real bucket name so the upload path
         # exercises cleanly, mirroring the deployed env.
         monkeypatch.setattr(rsh, "KB_BUCKET", "test-kb-bucket")
+        monkeypatch.setattr(rsh, "is_repo_connected", lambda *a, **k: True)
 
     @patch.object(rsh, 'load_config')
     @patch.object(rsh, 'generate_architectural_summary')

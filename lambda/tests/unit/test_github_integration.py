@@ -677,7 +677,18 @@ class TestSqsOperations:
             json.loads(c.kwargs["MessageBody"])
             for c in mock_sqs.send_message.call_args_list
         ]
-        assert len(bodies) == 3
+        # Each message is sent twice: immediately and as a delayed recheck.
+        assert len(bodies) == 6
+        calls = mock_sqs.send_message.call_args_list
+        immediate = [c for c in calls if "DelaySeconds" not in c.kwargs]
+        delayed = [c for c in calls if c.kwargs.get("DelaySeconds") == 900]
+        assert len(immediate) == 3 and len(delayed) == 3
+        imm_bodies = [json.loads(c.kwargs["MessageBody"]) for c in immediate]
+        del_bodies = [json.loads(c.kwargs["MessageBody"]) for c in delayed]
+        assert all("recheck" not in b for b in imm_bodies)
+        assert all(b.pop("recheck") is True for b in del_bodies)
+        assert del_bodies == imm_bodies  # same cleanup, re-run later
+        bodies = imm_bodies
         assert all(b["workspace_id"] == "ws_test" for b in bodies)
         prefixes = {b["prefix"] for b in bodies if b["action"] == "delete_prefix"}
         assert prefixes == {"test-org/my-repo/", "my-repo/"}  # owner + bare

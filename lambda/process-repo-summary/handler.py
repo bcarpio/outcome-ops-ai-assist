@@ -62,6 +62,7 @@ from shared.audit_writer import (
     log_admin_action,
 )
 from shared.pii import MODE_STRICT, read_workspace_mode, redact
+from shared.repo_presence import is_repo_connected
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -1360,6 +1361,35 @@ def _build_shard_messages_for_unit(
     return messages
 
 
+def _repo_removed(
+    workspace_id: Optional[str],
+    provider: str,
+    repo_slug: str,
+    stage: str,
+) -> bool:
+    """True when a workspace repo is no longer connected (ADR-052).
+
+    A repo-summary job can sit in the queue, or spend minutes in discovery
+    and summary generation, while the repo is disconnected. Writing after
+    that point would recreate the code maps, summaries and ledger rows the
+    delete already purged, so the handler drops the job instead.
+
+    Legacy global code maps (no ``workspace_id``) have no repo row and are
+    never dropped. ``RepoPresenceError`` from the lookup propagates so the
+    record is retried; it is never read as removed or connected.
+    """
+    if not workspace_id:
+        return False
+    if is_repo_connected(workspace_id, provider, repo_slug):
+        return False
+    logger.info(
+        "[process-repo-summary] repo removed, dropping repo summary for "
+        "%s/%s (%s)",
+        workspace_id, repo_slug, stage,
+    )
+    return True
+
+
 def handler(event, context):
     """
     Process repository architectural summary requests from SQS.
@@ -1416,6 +1446,15 @@ def handler(event, context):
             provider = message_body.get("provider", "github")
             slug = message_body.get("slug")
             connection_id = message_body.get("connection_id")
+            # Full provider slug of the repo row: gitlab/azure-devops-sync
+            # send it as ``slug``; github-sync sends ``owner/repo`` only as
+            # ``repo_project``.
+            repo_slug = slug or repo_project
+
+            if _repo_removed(
+                workspace_id, provider, repo_slug, "before discovery",
+            ):
+                continue
 
             # Read commit SHAs for incremental processing
             last_commit_sha = message_body.get("last_commit_sha")
@@ -1535,6 +1574,13 @@ def handler(event, context):
                 repo, repo_type, all_files, workspace_id=workspace_id or ""
             )
 
+            # Discovery and summary generation are slow; the repo may have
+            # been removed meanwhile. Check before any persistent write.
+            if _repo_removed(
+                workspace_id, provider, repo_slug, "before summary write",
+            ):
+                continue
+
             # PII redaction (plan/ ). Architectural summaries can
             # echo back inline comments / repo metadata that occasionally
             # carry credentials or customer data. Redact BEFORE both the
@@ -1614,6 +1660,14 @@ def handler(event, context):
             )
 
             logger.info(f"Stored architectural summary for {repo} at {s3_key}")
+
+            # Last check before any ledger row or batch dispatch: a dropped
+            # job must not open/advance the code_map ledger, fan out batches
+            # or queue orphan cleanup.
+            if _repo_removed(
+                workspace_id, provider, repo_slug, "before dispatch",
+            ):
+                continue
 
             # Send code units to SQS for detailed processing
             if code_units:

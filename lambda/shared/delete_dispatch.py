@@ -35,6 +35,12 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Tuple
 
+# Delay before the second (recheck) pass of a repo delete. SQS caps
+# per-message DelaySeconds at 900 (15 minutes). The second pass sweeps
+# anything an in-flight ingestion writer slipped in after the first pass;
+# the delete-worker skips it if the repo was re-added in the meantime.
+RECHECK_DELAY_SECONDS = 900
+
 
 def build_repo_delete_messages(
     workspace_id: str, repo_name: str, source: str = "github"
@@ -54,6 +60,11 @@ def build_repo_delete_messages(
       omitted when the slug has no owner/group segment
     - ``delete_symbol_graph`` for the DynamoDB facts + code-maps pointer
       (keyed by the BARE repo name)
+
+    Every message carries ``source`` and ``repo`` (the full slug) so the
+    delete-worker can check, on the delayed recheck pass, whether the repo
+    was re-added. Both fields are additive; the worker still accepts
+    messages without them.
     """
     repo_bare = repo_name.rsplit("/", 1)[-1]
     messages: List[Dict[str, Any]] = [
@@ -61,6 +72,7 @@ def build_repo_delete_messages(
             "action": "delete_prefix",
             "workspace_id": workspace_id,
             "source": source,
+            "repo": repo_name,
             "prefix": repo_name + "/",
         }
     ]
@@ -70,6 +82,7 @@ def build_repo_delete_messages(
                 "action": "delete_prefix",
                 "workspace_id": workspace_id,
                 "source": source,
+                "repo": repo_name,
                 "prefix": repo_bare + "/",
             }
         )
@@ -77,6 +90,7 @@ def build_repo_delete_messages(
         {
             "action": "delete_symbol_graph",
             "workspace_id": workspace_id,
+            "source": source,
             "repo_bare": repo_bare,
             "repo": repo_name,
         }
@@ -90,14 +104,22 @@ def dispatch_repo_delete(
     targets: List[Tuple[Any, str]],
     source: str = "github",
 ) -> int:
-    """Send every repo-delete message to every target queue.
+    """Send every repo-delete message to every target queue, twice.
 
     ``targets`` is a list of ``(sqs_client, queue_url)`` — typically the
     primary queue and, under HA, the secondary-region queue. Each
     region's delete-worker then cleans its own region's stores. Targets
     with an empty ``queue_url`` are skipped (single-region mode).
     ``source`` selects the code host (``github`` / ``gitlab`` /
-    ``azure_devops``). Returns the number of messages sent.
+    ``azure_devops``).
+
+    Each message goes out once immediately and once more with
+    ``DelaySeconds=RECHECK_DELAY_SECONDS`` and ``"recheck": true``. The
+    delayed copy re-runs the same cleanup to remove anything an in-flight
+    writer wrote after the first pass; the delete-worker skips it when the
+    repo row exists again (the repo was re-added). Both passes come from
+    this one helper so they cannot drift (ADR-052). Returns the number of
+    messages sent (immediate plus delayed).
     """
     messages = build_repo_delete_messages(workspace_id, repo_name, source)
     sent = 0
@@ -106,6 +128,13 @@ def dispatch_repo_delete(
             continue
         for message in messages:
             client.send_message(QueueUrl=queue_url, MessageBody=json.dumps(message))
+            sent += 1
+        for message in messages:
+            client.send_message(
+                QueueUrl=queue_url,
+                MessageBody=json.dumps({**message, "recheck": True}),
+                DelaySeconds=RECHECK_DELAY_SECONDS,
+            )
             sent += 1
     return sent
 

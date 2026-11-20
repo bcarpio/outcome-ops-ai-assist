@@ -77,6 +77,7 @@ _BOTO_CONFIG = Config(connect_timeout=10, read_timeout=60, retries={"max_attempt
 # terraform source_path.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from shared import dual_write  # noqa: E402
+from shared.repo_presence import is_repo_connected  # noqa: E402
 
 from shared.azure_devops_api import (  # noqa: E402
     AzureDevOpsAPIError,
@@ -178,6 +179,38 @@ def _now_iso() -> str:
 # ---------------------------------------------------------------------------
 # Repo row helpers
 # ---------------------------------------------------------------------------
+
+
+# Source key for shared.repo_presence (ADR-052).
+_PRESENCE_SOURCE = "azure_devops"
+
+
+def _repo_still_connected(workspace_id: str, slug: str, checkpoint: str) -> bool:
+    """Fresh, strongly consistent check that the repo row still exists.
+
+    A repo disconnected while its sync is running must not get documents
+    uploaded or code-map work dispatched after the delete swept it
+    (ADR-052). ``RepoPresenceError`` propagates so SQS retries the message
+    rather than the worker guessing.
+    """
+    if is_repo_connected(workspace_id, _PRESENCE_SOURCE, slug):
+        return True
+    logger.info(
+        "[azure-devops-sync] repo removed, dropping sync for %s/%s (%s)",
+        workspace_id, slug, checkpoint,
+    )
+    return False
+
+
+def _repo_removed_result(slug: str, checkpoint: str, sync_id: str) -> Dict[str, Any]:
+    # Returned (not raised): a removed repo is final for this message, so
+    # it must not land in batchItemFailures.
+    return {
+        "slug": slug,
+        "status": "repo_removed",
+        "checkpoint": checkpoint,
+        "sync_id": sync_id,
+    }
 
 
 def _get_repo_row(workspace_id: str, slug: str) -> Optional[Dict[str, Any]]:
@@ -432,6 +465,11 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
     }
     logger.info("ADO sync start", extra=log_extra)
 
+    # Drop the message before any ADO API call if the repo was removed
+    # after it was queued. A lookup error raises (retryable).
+    if not _repo_still_connected(workspace_id, slug, "start"):
+        return _repo_removed_result(slug, "start", sync_id)
+
     repo_row = _get_repo_row(workspace_id, slug)
     if repo_row is None:
         logger.warning("ADO sync skip -- repo row missing: %s/%s", workspace_id, slug)
@@ -485,6 +523,10 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
         # Changed (or manual): walk tree, upload each indexable file.
         tree = get_tree_recursive(access_token, org, project, repo, default_branch)
         indexable = [t for t in tree if _is_indexable(t)]
+
+        # The repo can be removed mid-sync: re-check right before uploading.
+        if not _repo_still_connected(workspace_id, slug, "before_upload"):
+            return _repo_removed_result(slug, "before_upload", sync_id)
 
         uploaded = 0
         upload_errors = 0
@@ -549,6 +591,11 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
             # the same normalized form. Burned 2026-06-05 on the first
             # marketplace-events query.
             indexable_paths = [item["path"].lstrip("/") for item in indexable]
+            # Re-check right before dispatch: the upload loop can take
+            # long enough for a removal to land, and dispatching would
+            # regenerate code maps the delete already swept.
+            if not _repo_still_connected(workspace_id, slug, "before_dispatch"):
+                return _repo_removed_result(slug, "before_dispatch", sync_id)
             _enqueue_repo_summaries_job(
                 workspace_id=workspace_id,
                 slug=slug,

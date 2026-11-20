@@ -67,6 +67,15 @@ CHUNK_SIZE = handler_module.CHUNK_SIZE
 CHUNK_OVERLAP = handler_module.CHUNK_OVERLAP
 
 
+@pytest.fixture(autouse=True)
+def _repo_connected():
+    """Every repo is connected unless a test says otherwise (ADR-052
+    presence guard). Patched on the shared module because the handler
+    calls it through ``repo_presence.is_repo_connected``."""
+    with patch("shared.repo_presence.is_repo_connected", return_value=True) as m:
+        yield m
+
+
 class TestChunkLargeContent:
     """Test large file chunking."""
 
@@ -1497,3 +1506,280 @@ class TestBatchSummaryWorkspaceAttribution:
         generate_batch_summary(batch)
 
         assert mock_audit.call_args.kwargs["workspace_id"] == ""
+
+
+class TestRemovedRepoGuard:
+    """ADR-052: a batch for a repo the workspace no longer has connected
+    writes nothing. The presence check runs at record start and again
+    after the LLM call, immediately before the first summary write; a
+    lookup failure fails the record so SQS retries it."""
+
+    def _shard_body(self, **overrides):
+        body = {
+            "message_type": "shard",
+            "repo": "repo",
+            "repo_project": "owner/repo",
+            "batch_type": "shared",
+            "group_name": "utils",
+            "file_paths": ["x.py"],
+            "storage_key": "summary#utils",
+            "workspace_id": "ws-1",
+            "commit_sha": "deadbeef",
+        }
+        body.update(overrides)
+        return body
+
+    def _merge_body(self):
+        return {
+            "message_type": "merge",
+            "repo": "repo",
+            "repo_project": "owner/repo",
+            "batch_type": "handler-group",
+            "group_name": "tests",
+            "parent_group_name": "tests",
+            "storage_key": "summary#tests",
+            "parent_storage_key": "summary#tests",
+            "shard_count": 2,
+            "workspace_id": "ws-1",
+            "commit_sha": "abc",
+        }
+
+    def _patch_writers(self):
+        """Patch every LLM / write seam of the shard path. Returns a dict
+        of the started mocks; caller stops them via the returned list."""
+        names = {
+            "summary": "process_batch_summary_handler.generate_batch_summary",
+            "embedding": "process_batch_summary_handler.generate_embedding",
+            "store": "process_batch_summary_handler.store_batch_summary",
+            "emit": "process_batch_summary_handler._emit_facts",
+            "commit": "process_batch_summary_handler._commit_symbol_graph_swap",
+            "abandon": "process_batch_summary_handler._abandon_symbol_graph_swap",
+            "mark": "process_batch_summary_handler._mark_code_map_unit_done",
+            "branch": "process_batch_summary_handler.get_default_branch",
+            "filter": "process_batch_summary_handler._load_symbol_graph_filter",
+            "begin": "shared.symbol_graph_pointer.begin_swap",
+            "prev": "shared.symbol_graph_pointer.get_previous_graph_sha",
+        }
+        patchers = {k: patch(v) for k, v in names.items()}
+        mocks = {k: p.start() for k, p in patchers.items()}
+        mocks["summary"].return_value = "summary text"
+        mocks["embedding"].return_value = [0.1] * 1024
+        mocks["store"].return_value = True
+        mocks["branch"].return_value = "main"
+        mocks["begin"].return_value = True
+        mocks["prev"].return_value = None
+        return mocks, list(patchers.values())
+
+    def _run(self, body, presence):
+        mocks, patchers = self._patch_writers()
+        try:
+            with patch(
+                "shared.repo_presence.is_repo_connected", side_effect=presence
+            ) as mock_presence:
+                mocks["presence"] = mock_presence
+                process_batch_record({"body": json.dumps(body)})
+        finally:
+            for p in patchers:
+                p.stop()
+        return mocks
+
+    def _run_raises(self, body, presence, exc_type):
+        mocks, patchers = self._patch_writers()
+        try:
+            with patch(
+                "shared.repo_presence.is_repo_connected", side_effect=presence
+            ) as mock_presence:
+                mocks["presence"] = mock_presence
+                with pytest.raises(exc_type):
+                    process_batch_record({"body": json.dumps(body)})
+        finally:
+            for p in patchers:
+                p.stop()
+        return mocks
+
+    def _assert_nothing_written(self, mocks):
+        mocks["store"].assert_not_called()
+        mocks["emit"].assert_not_called()
+        mocks["commit"].assert_not_called()
+        mocks["mark"].assert_not_called()
+
+    def test_removed_at_start_skips_llm_and_all_writes(self):
+        mocks = self._run(self._shard_body(), [False])
+
+        mocks["summary"].assert_not_called()
+        mocks["embedding"].assert_not_called()
+        mocks["begin"].assert_not_called()
+        self._assert_nothing_written(mocks)
+        mocks["presence"].assert_called_once_with("ws-1", "github", "owner/repo")
+
+    def test_removed_during_llm_call_drops_before_any_write(self):
+        mocks = self._run(self._shard_body(), [True, False])
+
+        mocks["summary"].assert_called_once()
+        mocks["embedding"].assert_not_called()
+        self._assert_nothing_written(mocks)
+        # abandon_swap upserts the pointer row; it must not run on a drop.
+        mocks["abandon"].assert_not_called()
+        assert mocks["presence"].call_count == 2
+
+    def test_connected_both_checks_writes_as_before(self):
+        mocks = self._run(self._shard_body(), [True, True])
+
+        mocks["store"].assert_called_once()
+        mocks["emit"].assert_called_once()
+        mocks["commit"].assert_called_once_with("ws-1", "repo", "deadbeef")
+        mocks["mark"].assert_called_once()
+        assert mocks["presence"].call_count == 2
+
+    def test_presence_error_at_start_fails_record_without_writes(self):
+        from shared.repo_presence import RepoPresenceError
+
+        mocks = self._run_raises(
+            self._shard_body(), RepoPresenceError("ddb down"), RepoPresenceError
+        )
+
+        mocks["summary"].assert_not_called()
+        mocks["begin"].assert_not_called()
+        self._assert_nothing_written(mocks)
+
+    def test_presence_error_at_pre_write_check_fails_record_and_abandons(self):
+        from shared.repo_presence import RepoPresenceError
+
+        mocks = self._run_raises(
+            self._shard_body(),
+            [True, RepoPresenceError("ddb down")],
+            RepoPresenceError,
+        )
+
+        mocks["summary"].assert_called_once()
+        self._assert_nothing_written(mocks)
+        mocks["abandon"].assert_called_once_with("ws-1", "repo")
+
+    def test_presence_error_without_symbol_graph_claim_does_not_abandon(self):
+        from shared.repo_presence import RepoPresenceError
+
+        body = self._shard_body()
+        del body["commit_sha"]
+        mocks = self._run_raises(
+            body, [True, RepoPresenceError("ddb down")], RepoPresenceError
+        )
+
+        self._assert_nothing_written(mocks)
+        mocks["abandon"].assert_not_called()
+
+    def test_gitlab_record_checks_full_slug_with_provider(self):
+        body = self._shard_body(
+            repo="group/sub/proj",
+            repo_project="group/sub/proj",
+            provider="gitlab",
+            slug="group/sub/proj",
+        )
+        mocks = self._run(body, [False])
+
+        mocks["presence"].assert_called_once_with(
+            "ws-1", "gitlab", "group/sub/proj"
+        )
+        self._assert_nothing_written(mocks)
+
+    def test_slug_preferred_over_repo_project(self):
+        body = self._shard_body(
+            provider="azure_devops", slug="org/project/repo"
+        )
+        mocks = self._run(body, [False])
+
+        mocks["presence"].assert_called_once_with(
+            "ws-1", "azure_devops", "org/project/repo"
+        )
+
+    def test_legacy_record_without_workspace_skips_presence_check(self):
+        body = self._shard_body()
+        del body["workspace_id"]
+        mocks = self._run(body, [])
+
+        mocks["presence"].assert_not_called()
+        mocks["store"].assert_called_once()
+
+    def test_xrepo_reresolve_message_is_not_presence_checked(self):
+        body = {"message_type": "xrepo_reresolve", "workspace_id": "ws-1", "repo": "repo"}
+        with patch(
+            "process_batch_summary_handler.handle_xrepo_reresolve_message"
+        ) as mock_xrepo, patch(
+            "shared.repo_presence.is_repo_connected"
+        ) as mock_presence:
+            process_batch_record({"body": json.dumps(body)})
+
+        mock_xrepo.assert_called_once()
+        mock_presence.assert_not_called()
+
+    def test_merge_for_removed_repo_dropped_at_start(self):
+        with patch(
+            "process_batch_summary_handler.handle_merge_message"
+        ) as mock_merge, patch(
+            "shared.repo_presence.is_repo_connected", return_value=False
+        ):
+            process_batch_record({"body": json.dumps(self._merge_body())})
+
+        mock_merge.assert_not_called()
+
+    @patch("process_batch_summary_handler._mark_code_map_unit_done")
+    @patch("process_batch_summary_handler._call_bedrock_and_audit")
+    @patch("process_batch_summary_handler.generate_embedding")
+    @patch("process_batch_summary_handler.store_batch_summary")
+    @patch("process_batch_summary_handler._fetch_shard_summaries")
+    def test_merge_removed_during_llm_call_writes_nothing(
+        self, mock_fetch, mock_store, mock_embed, mock_bedrock, mock_mark,
+    ):
+        mock_fetch.return_value = [
+            {"content": "a", "file_count": 1, "key": "k0"},
+            {"content": "b", "file_count": 1, "key": "k1"},
+        ]
+        mock_bedrock.return_value = "merged"
+        with patch(
+            "shared.repo_presence.is_repo_connected", side_effect=[True, False]
+        ):
+            process_batch_record({"body": json.dumps(self._merge_body())})
+
+        mock_bedrock.assert_called_once()
+        mock_embed.assert_not_called()
+        mock_store.assert_not_called()
+        mock_mark.assert_not_called()
+
+    @patch("process_batch_summary_handler.CODE_MAPS_TABLE", "dev-code-maps")
+    def test_handler_acknowledges_dropped_record(self):
+        event = {"Records": [{"body": json.dumps(self._shard_body())}]}
+        mocks, patchers = self._patch_writers()
+        try:
+            with patch(
+                "shared.repo_presence.is_repo_connected", return_value=False
+            ):
+                result = handler_module.handler(event, {})
+        finally:
+            for p in patchers:
+                p.stop()
+
+        assert result["statusCode"] == 200
+        self._assert_nothing_written(mocks)
+
+    @patch("process_batch_summary_handler.CODE_MAPS_TABLE", "dev-code-maps")
+    def test_handler_fails_record_on_presence_error(self):
+        from shared.repo_presence import RepoPresenceError
+
+        event = {
+            "Records": [{
+                "body": json.dumps(self._shard_body()),
+                "attributes": {"ApproximateReceiveCount": "1"},
+            }]
+        }
+        mocks, patchers = self._patch_writers()
+        try:
+            with patch(
+                "shared.repo_presence.is_repo_connected",
+                side_effect=RepoPresenceError("ddb down"),
+            ):
+                with pytest.raises(Exception, match="Failed to process 1 out of 1"):
+                    handler_module.handler(event, {})
+        finally:
+            for p in patchers:
+                p.stop()
+
+        self._assert_nothing_written(mocks)
