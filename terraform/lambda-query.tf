@@ -192,6 +192,10 @@ module "query_kb_lambda" {
       # Wire the us.* system-profile fallback -- same as chat (lambda-chat.tf)
       # and ask-claude above -- or hybrid fails augment_error -> RAG-only.
       BEDROCK_BASIC_MODEL_ID = var.bedrock_basic_model_id
+      # The router audits each classify call; shared.audit prices it from
+      # these, falling back to built-in Claude prices when they are unset.
+      BEDROCK_BASIC_INPUT_PRICE  = tostring(var.bedrock_basic_input_price)
+      BEDROCK_BASIC_OUTPUT_PRICE = tostring(var.bedrock_basic_output_price)
     },
     # ADR-016 v1.2 -- query-kb is chat's retrieval endpoint (embed + rerank).
     local.bedrock_chat_env,

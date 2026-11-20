@@ -143,6 +143,10 @@ module "mcp_outcomeops_secondary" {
     # primary (mcp-outcomeops.tf). Without it the symbol-graph lane fails
     # augment_error on failover.
     BEDROCK_BASIC_MODEL_ID = var.bedrock_basic_model_id
+    # Audit pricing for router classify and rerank (mirror of primary).
+    BEDROCK_BASIC_INPUT_PRICE   = tostring(var.bedrock_basic_input_price)
+    BEDROCK_BASIC_OUTPUT_PRICE  = tostring(var.bedrock_basic_output_price)
+    BEDROCK_RERANK_PRICE_PER_1K = tostring(var.bedrock_rerank_price_per_1k)
     # ADR-030 v1.1 (HA parity): ADO branch of read_source needs the
     # same env plumbing on the secondary. Region-neutral values flow
     # from the same tfvars as the primary.

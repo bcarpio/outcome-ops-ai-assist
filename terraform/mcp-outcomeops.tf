@@ -121,6 +121,11 @@ module "mcp_outcomeops" {
     # (lambda-chat.tf) and query-kb (lambda-query.tf) use. Without it the
     # symbol-graph lane fails with augment_error.
     BEDROCK_BASIC_MODEL_ID = var.bedrock_basic_model_id
+    # Router classify and rerank calls are audited; shared.audit prices
+    # them from these, falling back to built-in Claude prices when unset.
+    BEDROCK_BASIC_INPUT_PRICE   = tostring(var.bedrock_basic_input_price)
+    BEDROCK_BASIC_OUTPUT_PRICE  = tostring(var.bedrock_basic_output_price)
+    BEDROCK_RERANK_PRICE_PER_1K = tostring(var.bedrock_rerank_price_per_1k)
     # ADR-030 v1.1: read_source is platform-agnostic. When the
     # workspace's connection is Azure DevOps, the tool refreshes an
     # Entra ID OAuth access token via shared.entra_id_oauth. The
