@@ -1,0 +1,48 @@
+# Talisman allowlist. Every entry was reviewed and is NOT a secret.
+# Keep entries narrow: exact values or tightly scoped patterns, never whole
+# directories. Files pinned by checksum are scanned again after any edit.
+version: "1.0"
+# Fail only on high or critical findings.
+threshold: high
+allowed_patterns:
+  # Hash-locked pip requirements (pip-compile --generate-hashes).
+  - '--hash=sha256:[0-9a-f]{64}'
+  # npm lockfile integrity hashes.
+  - '"integrity": "sha(1|256|384|512)-[A-Za-z0-9+/=]+"'
+  # GitHub Actions pinned to full commit SHAs.
+  - 'uses: [A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}'
+  # Checksums of downloads verified in the run-tests image build.
+  - '(GIT|TERRAFORM)_SHA256=[0-9a-f]{64}'
+  # Fake OutcomeOps API keys used as test fixtures.
+  - 'ooa_abc123def456abc123def456abc123def456abcd'
+  - 'ooa_(expired|revoked|test)1234567890abcdef1234567890(ab|abcdef)'
+  - 'ooa_(nonexistent|doesnotexist)[0-9a-z]*'
+  # Fake GitHub tokens used as test fixtures.
+  - 'ghp_abcdefghijklmnopqrstuvwxyz[0-9]+'
+  - 'github_pat_abcdefghijklmnopqrstuvw'
+  # Fake commit SHA used as a source-fetch test fixture.
+  - 'abc1234deadbeefcafebabe0000000000000000'
+  # Character-set literal in a key-format test.
+  - 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_'
+fileignoreconfig:
+  # This file: the allowlist patterns above are themselves fake-secret-shaped.
+  - filename: .talismanrc
+    ignore_detectors: [filecontent]
+  # AWS's published documentation example access key pair in the PII
+  # redaction test plan.
+  - filename: docs/pii-redaction-verification.md
+    checksum: b12c460f9b31e88335a6819789fa4610c2328ad60e1f39cf61b8cfdad3ad1bee
+  # Prose mentioning "AWS Secrets Manager".
+  - filename: docs/technical-reference.md
+    checksum: 0407e076d6b369485177135d74480628baf6312197cc749a3493c459511e6741
+  # Upstream commit SHAs cited as references.
+  - filename: docs/adr/ADR-020-abap-parser-strategy.md
+    checksum: 931213961e63b01d2cc86d058970dd8302d5f77104c82ce437ce28c5adc263b9
+  - filename: docs/adr/ADR-035-bedrock-converse-vs-responses-dispatch.md
+    checksum: 2b7d46a17dc6f769960cf8b33d0c1e3288f845a98915dba81ed8fbdf5ff55ad2
+  # Placeholder RSA key whose body is the literal string "fake".
+  - filename: lambda/tests/unit/test_github_app.py
+    checksum: 12113449f62a38effcdd8fcee1ee0c5b0a8255fd5eacfccb6b550f8a162587e8
+  # Synthetic Outlook message id fixture.
+  - filename: lambda/tests/unit/test_file_ingestion_outlook.py
+    checksum: 2f0075c4cc16811b11048d4d0fd246b28166f051fc8f1940e8faadfbbce47913

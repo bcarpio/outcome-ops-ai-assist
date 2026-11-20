@@ -31,54 +31,36 @@ jobs:
     name: Run Talisman
     runs-on: ubuntu-latest
     environment: dev
+    env:
+      TALISMAN_VERSION: v1.37.0
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install Talisman
+      - name: Install Talisman (pinned, checksum verified)
         run: |
-          curl -Lo talisman https://github.com/thoughtworks/talisman/releases/latest/download/talisman_linux_amd64
-          chmod +x talisman
-          sudo mv talisman /usr/local/bin/
+          base="https://github.com/thoughtworks/talisman/releases/download/${TALISMAN_VERSION}"
+          curl -fsSLO "${base}/talisman_linux_amd64"
+          curl -fsSLO "${base}/checksums"
+          grep ' talisman_linux_amd64$' checksums | sha256sum -c -
+          sudo install -m 0755 talisman_linux_amd64 /usr/local/bin/talisman
+          rm talisman_linux_amd64 checksums
 
-      - name: Run Talisman Scan
+      - name: Scan every tracked file
+        # Talisman's pre-commit hook scans staged changes, and a fresh CI
+        # checkout has none, so the hook alone passes without scanning
+        # anything. Stage the whole tree against an empty root commit so
+        # every tracked file is checked, with .talismanrc (reviewed
+        # allowlist, threshold: high) applied. A finding fails the job.
         run: |
-          talisman --githook pre-commit || true
-
-      - name: Process Talisman Report
-        run: |
-          if [ ! -f talisman_report/talisman_reports/data/report.json ]; then
-            echo "✅ No high severity issues detected by Talisman."
-            exit 0
-          fi
-
-          echo "🔎 Processing Talisman findings..."
-
-          # Extract the summary types
-          echo "Summary of Detected Types:" > talisman_violations.txt
-          jq -r '.summary.types | to_entries[] | "\(.key): \(.value)"' talisman_report/talisman_reports/data/report.json >> talisman_violations.txt
-
-          echo "" >> talisman_violations.txt
-          echo "Detailed Failures:" >> talisman_violations.txt
-
-          # Extract filename, severity, and message for high/critical severities
-          jq -r '.results[]
-            | select(.failure_list != null)
-            | . as $result
-            | $result.failure_list[]
-            | select(.severity == "high" or .severity == "critical")
-            | "Filename: \($result.filename)\nSeverity: \(.severity)\nMessage: \(.message)\n"' talisman_report/talisman_reports/data/report.json >> talisman_violations.txt
-
-          echo ""
-          cat talisman_violations.txt
-
-          # Fail if any high/critical findings
-          if grep -q "Severity: high\|Severity: critical" talisman_violations.txt; then
-            echo "🚨 High severity issues found in Talisman scan!"
-            exit 1
-          else
-            echo "✅ No high severity issues detected by Talisman."
-          fi
+          git config user.name ci
+          git config user.email ci@example.invalid
+          git checkout -q --orphan talisman-scan
+          git rm -rq --cached .
+          git commit -q --allow-empty -m "empty root for scanning"
+          git add -A
+          echo "Scanning $(git diff --cached --name-only | wc -l) files"
+          talisman --githook pre-commit
 
   ui-tests:
     name: UI Tests
