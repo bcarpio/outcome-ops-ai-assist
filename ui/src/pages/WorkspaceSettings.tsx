@@ -232,6 +232,29 @@ const STALLED_REASON_TEXT: Record<string, string> = {
 }
 const STALLED_REASON_FALLBACK = 'Syncing the latest commit stalled. Press Sync now to retry.'
 
+const SYNC_STATUS_CLASSES: Record<string, string> = {
+  success: 'text-green-600',
+  up_to_date: 'text-green-600',
+  failed: 'text-red-600',
+  stalled: 'text-amber-600',
+  in_progress: 'text-blue-600',
+  queued: 'text-blue-600',
+  already_running: 'text-blue-600',
+}
+
+const SYNC_STATUS_LABELS: Record<string, string> = {
+  up_to_date: 'up to date',
+  already_running: 'already running',
+}
+
+function syncStatusClass(status: string): string {
+  return SYNC_STATUS_CLASSES[status] ?? 'text-gray-500'
+}
+
+function syncStatusLabel(status: string): string {
+  return SYNC_STATUS_LABELS[status] ?? status
+}
+
 export default function WorkspaceSettings() {
   const { workspaceId } = useParams()
   const navigate = useNavigate()
@@ -3495,17 +3518,8 @@ export default function WorkspaceSettings() {
                               <p className="text-sm text-gray-500">
                                 {repo.last_sync_status ? (
                                   <>
-                                    <span className={
-                                      repo.last_sync_status === 'success' || repo.last_sync_status === 'up_to_date' ? 'text-green-600' :
-                                      repo.last_sync_status === 'failed' ? 'text-red-600' :
-                                      repo.last_sync_status === 'stalled' ? 'text-amber-600' :
-                                      repo.last_sync_status === 'in_progress' || repo.last_sync_status === 'queued' || repo.last_sync_status === 'already_running' ? 'text-blue-600' :
-                                      'text-gray-500'
-                                    }>
-                                      {repo.last_sync_status === 'up_to_date' ? 'up to date' :
-                                        repo.last_sync_status === 'already_running' ? 'already running' :
-                                        repo.last_sync_status === 'stalled' ? 'stalled' :
-                                        repo.last_sync_status}
+                                    <span className={syncStatusClass(repo.last_sync_status)}>
+                                      {syncStatusLabel(repo.last_sync_status)}
                                     </span>
                                     {repo.last_sync_at && <> | {new Date(repo.last_sync_at).toLocaleDateString()}</>}
                                   </>

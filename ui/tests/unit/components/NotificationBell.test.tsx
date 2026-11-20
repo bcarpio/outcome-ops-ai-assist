@@ -87,6 +87,29 @@ describe('NotificationBell', () => {
     )
   })
 
+  it('closes the panel when Escape is pressed', async () => {
+    const user = userEvent.setup()
+    mockList.mockResolvedValue([makeNotification()])
+    renderWithRouter(<NotificationBell />)
+    await user.click(await screen.findByRole('button', { name: 'Notifications (1)' }))
+    expect(screen.getByRole('region', { name: 'Notifications' })).toBeInTheDocument()
+
+    await user.keyboard('{Escape}')
+
+    expect(screen.queryByRole('region', { name: 'Notifications' })).not.toBeInTheDocument()
+  })
+
+  it('closes the panel when the backdrop is clicked', async () => {
+    const user = userEvent.setup()
+    mockList.mockResolvedValue([makeNotification()])
+    renderWithRouter(<NotificationBell />)
+    await user.click(await screen.findByRole('button', { name: 'Notifications (1)' }))
+
+    await user.click(screen.getByRole('button', { name: 'Close notifications' }))
+
+    expect(screen.queryByRole('region', { name: 'Notifications' })).not.toBeInTheDocument()
+  })
+
   it('dismiss calls the API and removes the item', async () => {
     const user = userEvent.setup()
     mockList.mockResolvedValue([

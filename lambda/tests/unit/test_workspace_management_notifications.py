@@ -183,6 +183,13 @@ class TestListNotifications:
     def test_missing_user_returns_401(self, env):
         assert _call("GET", "/notifications", None)["statusCode"] == 401
 
+    def test_unexpected_error_returns_500(self, env):
+        with patch.object(handler, "_query_workspace_notifications",
+                          side_effect=RuntimeError("boom")):
+            resp = _call("GET", "/notifications", ADMIN_A)
+        assert resp["statusCode"] == 500
+        assert json.loads(resp["body"]) == {"error": "Internal server error"}
+
     def test_unconfigured_table_returns_empty(self, env, monkeypatch):
         monkeypatch.delenv("NOTIFICATIONS_TABLE")
         assert _list_ids(ADMIN_A) == []
@@ -295,6 +302,19 @@ class TestDismissNotification:
             resp = _call("DELETE", "/workspaces/ws-a/notifications/a1", ADMIN_A)
         assert resp["statusCode"] == 403
         assert self._exists(env, "ws-a", "a1")
+
+    def test_success_returns_empty_204_with_json_headers(self, env):
+        resp = _call("DELETE", "/workspaces/ws-a/notifications/a1", ADMIN_A)
+        assert resp["statusCode"] == 204
+        assert resp["body"] == ""
+        assert resp["headers"] == {"Content-Type": "application/json"}
+
+    def test_unexpected_error_returns_500(self, env):
+        with patch.object(handler.dual_write, "ddb_delete_item",
+                          side_effect=RuntimeError("boom")):
+            resp = _call("DELETE", "/workspaces/ws-a/notifications/a1", ADMIN_A)
+        assert resp["statusCode"] == 500
+        assert _dismiss_audit_calls(env["audit"]) == []
 
     def test_unconfigured_table_returns_503(self, env, monkeypatch):
         monkeypatch.delenv("NOTIFICATIONS_TABLE")

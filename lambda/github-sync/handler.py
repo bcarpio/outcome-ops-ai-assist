@@ -24,7 +24,7 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
 import yaml
@@ -45,6 +45,8 @@ APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 WORKSPACES_TABLE = os.environ.get("WORKSPACES_TABLE")
 FILE_INGESTION_QUEUE = os.environ.get("FILE_INGESTION_QUEUE")
 REPO_SUMMARIES_QUEUE = os.environ.get("REPO_SUMMARIES_QUEUE")
+# Guards repo-row updates so a removed repo is never recreated as a stub.
+_REPO_ROW_EXISTS = "attribute_exists(repo_name)"
 DELETE_QUEUE = os.environ.get("DELETE_QUEUE")
 KB_BUCKET = os.environ.get("KB_BUCKET")
 
@@ -607,7 +609,7 @@ def _backfill_default_branch(
             {"PK": f"WS#{workspace_id}", "SK": f"GITHUB_REPO#{repo_name}"},
             UpdateExpression="SET default_branch = :b",
             ExpressionAttributeValues={":b": default_branch},
-            ConditionExpression="attribute_exists(repo_name)",
+            ConditionExpression=_REPO_ROW_EXISTS,
         )
     except Exception as e:
         logger.warning(
@@ -729,7 +731,7 @@ def update_sync_status(
             {"PK": f"WS#{workspace_id}", "SK": f"GITHUB_REPO#{repo_name}"},
             UpdateExpression=update_expr,
             ExpressionAttributeValues=expr_values,
-            ConditionExpression="attribute_exists(repo_name)",
+            ConditionExpression=_REPO_ROW_EXISTS,
         )
     except table.meta.client.exceptions.ConditionalCheckFailedException:
         logger.warning("Skipping sync status update for deleted repo %s in workspace %s", repo_name, workspace_id)
@@ -790,7 +792,7 @@ def _clear_heal_state(workspace_id: str, repo_name: str) -> None:
             WORKSPACES_TABLE,
             _repo_key(workspace_id, repo_name),
             UpdateExpression="REMOVE " + ", ".join(_HEAL_ATTRS),
-            ConditionExpression="attribute_exists(repo_name)",
+            ConditionExpression=_REPO_ROW_EXISTS,
         )
     except Exception as exc:
         if _is_conditional_failure(exc):
@@ -965,6 +967,54 @@ def _advance_past_failures(
     return result.reason == "ok"
 
 
+def _exhausted_heal_reason(
+    workspace_id: str,
+    repo_name: str,
+    behind: List[Tuple[str, Optional[str]]],
+    current_sha: str,
+    current_commit_timestamp: int,
+) -> str:
+    """Stall reason once the heal budget is spent.
+
+    Every behind pipeline is evaluated (no short-circuit): each one whose
+    batch closed with failures is advanced past them.
+    """
+    advanced = False
+    for pipeline, _baseline in behind:
+        if _advance_past_failures(
+            workspace_id, repo_name, pipeline, current_sha,
+            current_commit_timestamp,
+        ):
+            advanced = True
+    return "units_failed" if advanced else "heal_budget_exhausted"
+
+
+def _preflight_compare(
+    token: str,
+    owner: str,
+    repo_short: str,
+    behind: List[Tuple[str, Optional[str]]],
+    current_sha: str,
+) -> Optional[Dict[str, set]]:
+    """Compare each distinct behind baseline with ``current_sha``.
+
+    Returns ``{baseline: changed_paths}``, or None when a baseline is
+    missing or unreachable. A missing baseline or a failed compare would
+    make the dispatch fall back to a full upload; a heal never does that.
+    """
+    compared: Dict[str, set] = {}
+    for _pipeline, baseline in behind:
+        if baseline in compared:
+            continue
+        if not baseline:
+            return None
+        changed = fetch_changed_files(token, owner, repo_short, baseline, current_sha)
+        if changed is None:
+            return None
+        compared[baseline] = changed
+    return compared
+
+
 def _heal_preflight(
     workspace_id: str,
     repo_name: str,
@@ -1004,16 +1054,10 @@ def _heal_preflight(
     ]
 
     if attempts >= GITHUB_SYNC_HEAL_MAX_ATTEMPTS:
-        # Evaluate every behind pipeline (no short-circuit): each one whose
-        # batch closed with failures is advanced.
-        advanced = [
-            _advance_past_failures(
-                workspace_id, repo_name, pipeline, current_sha,
-                current_commit_timestamp,
-            )
-            for pipeline, _ in behind
-        ]
-        reason = "units_failed" if any(advanced) else "heal_budget_exhausted"
+        reason = _exhausted_heal_reason(
+            workspace_id, repo_name, behind, current_sha,
+            current_commit_timestamp,
+        )
         return _mark_stalled(workspace_id, repo_name, repo, reason, current_sha), None
 
     now = int(time.time())
@@ -1021,21 +1065,11 @@ def _heal_preflight(
         _restore_sync_status(workspace_id, repo_name, repo.get("last_sync_status"))
         return {"status": "heal_backoff", "commit_sha": current_sha}, None
 
-    # Pre-flight compare. A missing baseline or a failed compare would make
-    # the dispatch fall back to a full upload; a heal never does that.
-    compared: Dict[str, set] = {}
-    for _pipeline, baseline in behind:
-        if baseline in compared:
-            continue
-        changed = (
-            fetch_changed_files(token, owner, repo_short, baseline, current_sha)
-            if baseline else None
-        )
-        if changed is None:
-            return _mark_stalled(
-                workspace_id, repo_name, repo, "baseline_unreachable", current_sha,
-            ), None
-        compared[baseline] = changed
+    compared = _preflight_compare(token, owner, repo_short, behind, current_sha)
+    if compared is None:
+        return _mark_stalled(
+            workspace_id, repo_name, repo, "baseline_unreachable", current_sha,
+        ), None
 
     if not _record_heal_attempt(
         workspace_id, repo_name, current_sha, attempts, same_target,

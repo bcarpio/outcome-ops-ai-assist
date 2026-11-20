@@ -590,6 +590,13 @@ def _response(status_code: int, body: Dict) -> Dict:
     }
 
 
+def _no_content() -> Dict:
+    """Build a 204 response with the same headers as ``_response``."""
+    response = _response(204, {})
+    response["body"] = ""
+    return response
+
+
 def _error(status_code: int, message: str) -> Dict:
     """Build error response."""
     return _response(status_code, {"error": message})
@@ -4498,11 +4505,15 @@ _NOTIFICATION_HIDDEN_FIELDS = ("PK", "SK", "ttl")
 
 
 def _get_notifications_table() -> str:
-    """Notifications table name from NOTIFICATIONS_TABLE (read per call)."""
+    """Notifications table name from NOTIFICATIONS_TABLE.
+
+    Read per call, like ``_get_workspaces_table``, so tests can set the
+    variable per case.
+    """
     return os.environ.get("NOTIFICATIONS_TABLE", "")
 
 
-def _query_workspace_notifications(notif_table, workspace_id: str) -> List[Dict]:
+def _query_workspace_notifications(notif_table: Any, workspace_id: str) -> List[Dict]:
     """All NOTIF# rows for one workspace, following LastEvaluatedKey."""
     items: List[Dict] = []
     query_kwargs = {
@@ -4522,6 +4533,7 @@ def _query_workspace_notifications(notif_table, workspace_id: str) -> List[Dict]
 
 
 def _public_notification(item: Dict) -> Dict:
+    """Return a notification row without its key and TTL attributes."""
     return {
         k: v for k, v in item.items() if k not in _NOTIFICATION_HIDDEN_FIELDS
     }
@@ -4572,9 +4584,14 @@ def list_notifications(user_email: str) -> Dict:
             reverse=True,
         )
         return _response(200, {"notifications": notifications})
-    except ClientError as e:
-        logger.error(f"Error listing notifications: {e}")
+    except ClientError:
+        logger.exception("[workspace-management] Error listing notifications")
         return _error(500, "Failed to list notifications")
+    except Exception:
+        logger.exception(
+            "[workspace-management] Unexpected error listing notifications"
+        )
+        return _error(500, "Internal server error")
 
 
 def dismiss_notification(
@@ -4638,14 +4655,15 @@ def dismiss_notification(
             f"Dismissed notification {notification_id} in workspace "
             f"{workspace_id} by {user_email}"
         )
-        return {
-            "statusCode": 204,
-            "headers": {"Content-Type": "application/json"},
-            "body": "",
-        }
-    except ClientError as e:
-        logger.error(f"Error dismissing notification: {e}")
+        return _no_content()
+    except ClientError:
+        logger.exception("[workspace-management] Error dismissing notification")
         return _error(500, "Failed to dismiss notification")
+    except Exception:
+        logger.exception(
+            "[workspace-management] Unexpected error dismissing notification"
+        )
+        return _error(500, "Internal server error")
 
 
 # ============================================================================

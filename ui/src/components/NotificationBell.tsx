@@ -53,6 +53,15 @@ export default function NotificationBell() {
     }
   }, [refresh])
 
+  useEffect(() => {
+    if (!open) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [open])
+
   const handleDismiss = async (item: Notification) => {
     setError(null)
     setNotifications((prev) => prev.filter((n) => n.notification_id !== item.notification_id))
@@ -94,9 +103,14 @@ export default function NotificationBell() {
 
       {open && (
         <>
-          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div
-            role="region"
+          <button
+            type="button"
+            aria-label="Close notifications"
+            tabIndex={-1}
+            className="fixed inset-0 z-10 cursor-default"
+            onClick={() => setOpen(false)}
+          />
+          <section
             aria-label="Notifications"
             className="absolute right-0 mt-2 w-96 max-h-[70vh] overflow-y-auto bg-white border border-gray-200 rounded-lg shadow-lg z-20"
           >
@@ -171,7 +185,7 @@ export default function NotificationBell() {
                 })}
               </ul>
             )}
-          </div>
+          </section>
         </>
       )}
     </div>

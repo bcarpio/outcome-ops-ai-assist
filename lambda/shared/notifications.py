@@ -198,14 +198,13 @@ def notify_workspace(
         )
         return True
     except Exception:
-        logger.error(
+        logger.exception(
             "[notifications] failed to write notification workspace=%s "
             "repo=%s reason=%s sha=%s",
             workspace_id,
             repo_name,
             reason,
             target_sha,
-            exc_info=True,
         )
         return False
 
