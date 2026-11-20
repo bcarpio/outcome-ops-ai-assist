@@ -1,4 +1,4 @@
-.PHONY: help setup install fmt lint validate check-ha-parity test test-unit test-coverage coverage-new test-ui audit build-run-tests-image build-ui-image build-mcp-server-image build-snyk-image build-database-images build-runtime-layer build-terraform-layer build-all-layers build-platform-layer build-all-images _ensure-image-tag-params pre-deploy deliver clean all ha-status ha-replay-dlq ha-list-secrets ha-sync-secrets ha-bootstrap ha-kms-migrate _ha-env-check
+.PHONY: help setup install fmt lint validate check-ha-parity test test-unit test-slow test-coverage coverage-new test-ui audit build-run-tests-image build-ui-image build-mcp-server-image build-snyk-image build-database-images build-runtime-layer build-terraform-layer build-all-layers build-platform-layer build-all-images _ensure-image-tag-params pre-deploy deliver clean all ha-status ha-replay-dlq ha-list-secrets ha-sync-secrets ha-bootstrap ha-kms-migrate _ha-env-check
 
 APP_NAME ?= outcome-ops-ai-assist
 AWS_REGION ?= us-west-2
@@ -20,7 +20,8 @@ help:
 	@echo ""
 	@echo "Testing (Lambda Functions):"
 	@echo "  make test             Run all Lambda function tests"
-	@echo "  make test-unit        Run only unit tests"
+	@echo "  make test-unit        Run only unit tests (skips slow benchmarks)"
+	@echo "  make test-slow        Run the slow latency benchmarks on their own"
 	@echo "  make test-coverage    Run tests with coverage report"
 	@echo "  make coverage-new     Check the Sonar gate locally: >=80% coverage on changed lines"
 	@echo "  make test-ui          Run UI tests (React/Vitest)"
@@ -175,6 +176,10 @@ test: test-unit
 test-unit:
 	@echo "Running unit tests..."
 	$(MAKE) -C lambda/tests test-unit
+
+test-slow:
+	@echo "Running slow latency benchmarks..."
+	$(MAKE) -C lambda/tests test-slow
 
 test-coverage:
 	@echo "Running tests with coverage report..."

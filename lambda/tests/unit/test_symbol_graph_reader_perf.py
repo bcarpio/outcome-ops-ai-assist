@@ -24,7 +24,8 @@ production-latency claim. The production p99 target (< 50ms on real
 DynamoDB) is exercised in the end-to-end benchmark documented in
 docs/symbol-graph-validation.md.
 
-Marked ``slow`` so it can be deselected via ``pytest -m "not slow"``.
+Marked ``slow``: ``make test-unit`` and ``make test-coverage`` skip it, and
+``make test-slow`` runs it on its own.
 """
 
 from __future__ import annotations
