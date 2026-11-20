@@ -457,7 +457,7 @@ class TestCheckReadmeFreshness:
         assert any("Infrastructure files changed" in detail for detail in result["details"])
 
     def test_check_readme_freshness_handler_without_readme(self):
-        """Test: Handler changed but README not updated"""
+        """Test: Handler changed, README not updated, newness unknown (new_files omitted)"""
         # Arrange
         changed_files = ["lambda/hello/handler.py"]
 
@@ -474,7 +474,170 @@ class TestCheckReadmeFreshness:
         assert result["checkType"] == "README_FRESHNESS"
         assert result["status"] == "WARN"
         assert "README.md not updated" in result["message"]
-        assert any("Lambda handlers added" in detail for detail in result["details"])
+        assert any(
+            "Lambda handler files changed (1 file(s))" in detail
+            and "could not determine whether any are new" in detail
+            for detail in result["details"]
+        )
+        assert not any("New Lambda handlers" in detail for detail in result["details"])
+
+    def test_check_readme_freshness_modified_handlers_only_pass(self):
+        """Test: Only existing handlers modified (new_files empty), no terraform -> PASS"""
+        # Arrange
+        changed_files = [
+            "lambda/hello/handler.py",
+            "lambda/world/handler.py",
+            "lambda/foo/handler.py",
+            "lambda/bar/handler.py",
+        ]
+
+        # Act
+        result = check_readme_freshness(
+            "README_FRESHNESS",
+            123,
+            "owner/repo",
+            changed_files,
+            "/dev/github/token",
+            new_files=set(),
+        )
+
+        # Assert
+        assert result["checkType"] == "README_FRESHNESS"
+        assert result["status"] == "PASS"
+        assert "No infrastructure or handler changes" in result["message"]
+
+    def test_check_readme_freshness_one_new_one_modified_handler(self):
+        """Test: One new + one modified handler, README not updated -> WARN counts only the new one"""
+        # Arrange
+        changed_files = ["lambda/hello/handler.py", "lambda/brand-new/handler.py"]
+
+        # Act
+        result = check_readme_freshness(
+            "README_FRESHNESS",
+            123,
+            "owner/repo",
+            changed_files,
+            "/dev/github/token",
+            new_files={"lambda/brand-new/handler.py"},
+        )
+
+        # Assert
+        assert result["status"] == "WARN"
+        assert "README.md not updated" in result["message"]
+        assert any(
+            "New Lambda handlers added (1 file(s)) but README.md was not updated." in detail
+            for detail in result["details"]
+        )
+        assert not any("could not determine" in detail for detail in result["details"])
+
+    def test_check_readme_freshness_terraform_with_modified_handlers_only(self):
+        """Test: Terraform changed, handlers only modified -> WARN about infra, not new handlers"""
+        # Arrange
+        changed_files = ["terraform/main.tf", "lambda/hello/handler.py"]
+
+        # Act
+        result = check_readme_freshness(
+            "README_FRESHNESS",
+            123,
+            "owner/repo",
+            changed_files,
+            "/dev/github/token",
+            new_files=set(),
+        )
+
+        # Assert
+        assert result["status"] == "WARN"
+        assert any("Infrastructure files changed (1 file(s))" in detail for detail in result["details"])
+        assert not any("New Lambda handlers" in detail for detail in result["details"])
+        assert not any("Lambda handler files changed" in detail for detail in result["details"])
+
+    def test_check_readme_freshness_new_files_none_never_claims_new(self):
+        """Test: new_files=None explicitly -> unknown-newness wording, never 'New Lambda handlers'"""
+        # Arrange
+        changed_files = ["lambda/hello/handler.py", "lambda/world/handler.py"]
+
+        # Act
+        result = check_readme_freshness(
+            "README_FRESHNESS",
+            123,
+            "owner/repo",
+            changed_files,
+            "/dev/github/token",
+            new_files=None,
+        )
+
+        # Assert
+        assert result["status"] == "WARN"
+        assert any(
+            "Lambda handler files changed (2 file(s)) but README.md was not updated; "
+            "could not determine whether any are new." in detail
+            for detail in result["details"]
+        )
+        assert not any("New Lambda handlers" in detail for detail in result["details"])
+
+    def test_check_readme_freshness_new_file_that_is_not_a_handler_ignored(self):
+        """Test: new_files contains only non-handler files -> modified handler still not a trigger"""
+        # Arrange
+        changed_files = ["lambda/hello/handler.py", "lambda/hello/util.py"]
+
+        # Act
+        result = check_readme_freshness(
+            "README_FRESHNESS",
+            123,
+            "owner/repo",
+            changed_files,
+            "/dev/github/token",
+            new_files={"lambda/hello/util.py"},
+        )
+
+        # Assert
+        assert result["status"] == "PASS"
+
+    @patch('readme_freshness_handler._fetch_readme_diff')
+    @patch('readme_freshness_handler.analyze_readme_with_claude')
+    def test_check_readme_freshness_claude_path_gets_only_new_handlers(
+        self, mock_analyze, mock_fetch
+    ):
+        """Test: README updated -> Claude is asked about new handlers only, not modified ones"""
+        # Arrange
+        mock_fetch.return_value = "+## brand-new\n+- brand-new: does things"
+        mock_analyze.return_value = {"adequate": True, "explanation": "documented"}
+
+        # Act
+        result = check_readme_freshness(
+            "README_FRESHNESS",
+            123,
+            "owner/repo",
+            ["lambda/hello/handler.py", "lambda/brand-new/handler.py", "README.md"],
+            "/dev/github/token",
+            new_files={"lambda/brand-new/handler.py"},
+        )
+
+        # Assert
+        assert result["status"] == "PASS"
+        handler_names = mock_analyze.call_args.args[1]
+        assert handler_names == ["brand-new"]
+
+    @patch('readme_freshness_handler._fetch_readme_diff')
+    @patch('readme_freshness_handler.analyze_readme_with_claude')
+    def test_check_readme_freshness_readme_updated_modified_only_skips_claude(
+        self, mock_analyze, mock_fetch
+    ):
+        """Test: README updated but only modified handlers -> PASS without calling Claude"""
+        # Act
+        result = check_readme_freshness(
+            "README_FRESHNESS",
+            123,
+            "owner/repo",
+            ["lambda/hello/handler.py", "README.md"],
+            "/dev/github/token",
+            new_files=set(),
+        )
+
+        # Assert
+        assert result["status"] == "PASS"
+        mock_analyze.assert_not_called()
+        mock_fetch.assert_not_called()
 
     @patch('readme_freshness_handler.get_github_token')
     @patch('readme_freshness_handler.fetch_pr_file_diff')

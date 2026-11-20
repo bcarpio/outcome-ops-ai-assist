@@ -32,7 +32,9 @@ Design decisions:
 
 import difflib
 import logging
-from typing import Any, Dict, List, Optional
+import re
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
 
 logger = logging.getLogger(__name__)
@@ -175,6 +177,234 @@ def added_line_numbers(file_diff: str) -> List[int]:
     return added
 
 
+_HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+
+@dataclass(frozen=True)
+class ChangeBlock:
+    """One contiguous run of +/- lines inside a hunk.
+
+    Attributes:
+        removed_base_lines: 1-based BASE line numbers removed in this run,
+            in order. Empty for a pure insertion.
+        insert_after_base_line: Set only for a pure insertion (no removed
+            lines): the BASE line immediately before the insertion point,
+            0 when inserted at the top of the file. ``None`` otherwise.
+        head_anchor: First added HEAD (RIGHT-side) line in this run, or
+            ``None`` for a deletion-only run (ADR-031: never fabricate a line).
+    """
+
+    removed_base_lines: Tuple[int, ...]
+    insert_after_base_line: Optional[int]
+    head_anchor: Optional[int]
+
+
+@dataclass(frozen=True)
+class FileDiffInfo:
+    """Per-file diff description built from one base/head fetch.
+
+    Attributes:
+        added_lines: Same list :func:`added_line_numbers` returns.
+        blocks: Change blocks in file order.
+        is_new: True when the file was absent at base and present at head.
+    """
+
+    added_lines: List[int]
+    blocks: List[ChangeBlock]
+    is_new: bool
+
+
+def _parse_hunk_header(raw: str) -> Optional[Tuple[int, int, int, int]]:
+    """Return (next_base, base_count, next_head, head_count) or None.
+
+    A zero count means the side is empty and its start number names the
+    line BEFORE the hunk, so the next line on that side is start + 1.
+    """
+    match = _HUNK_HEADER_RE.match(raw)
+    if not match:
+        return None
+    base_start = int(match.group(1))
+    base_count = int(match.group(2)) if match.group(2) is not None else 1
+    head_start = int(match.group(3))
+    head_count = int(match.group(4)) if match.group(4) is not None else 1
+    next_base = base_start if base_count > 0 else base_start + 1
+    next_head = head_start if head_count > 0 else head_start + 1
+    return next_base, base_count, next_head, head_count
+
+
+def change_blocks(file_diff: str) -> List[ChangeBlock]:
+    """Split a unified diff into contiguous change runs with base-side lines.
+
+    A run is a maximal sequence of consecutive ``+``/``-`` lines inside a
+    hunk; context lines and hunk headers end it. The base counter (from
+    ``-a``) advances on ``-`` and context lines, the head counter (from
+    ``+c``) on ``+`` and context lines. Hunk line counts bound the body, so
+    ``---``/``+++`` file headers between hunks are skipped while a body line
+    whose content starts with ``--``/``++`` is still counted.
+    ``\\ No newline at end of file`` markers and blank separator lines are
+    skipped without ending a run.
+    """
+    blocks: List[ChangeBlock] = []
+    base_line = 0
+    head_line = 0
+    base_left = 0
+    head_left = 0
+
+    removed: List[int] = []
+    insert_after: Optional[int] = None
+    anchor: Optional[int] = None
+    in_run = False
+
+    def _flush() -> None:
+        nonlocal removed, insert_after, anchor, in_run
+        if in_run:
+            blocks.append(ChangeBlock(
+                removed_base_lines=tuple(removed),
+                insert_after_base_line=None if removed else insert_after,
+                head_anchor=anchor,
+            ))
+        removed = []
+        insert_after = None
+        anchor = None
+        in_run = False
+
+    for raw in file_diff.split("\n"):
+        if raw.startswith("@@"):
+            _flush()
+            parsed = _parse_hunk_header(raw)
+            if parsed is None:
+                base_left = head_left = 0
+            else:
+                base_line, base_left, head_line, head_left = parsed
+            continue
+        if raw.startswith("\\") or raw == "":
+            # "\ No newline at end of file", or the blank separator that
+            # compute_file_diff emits between body lines (difflib keeps each
+            # line's own newline and the join adds another). Neither ends a
+            # run nor advances a counter; an empty source line is " ".
+            continue
+        if base_left <= 0 and head_left <= 0:
+            # Outside a hunk body: file headers, git metadata, blank tail.
+            _flush()
+            continue
+        if raw.startswith("-") and base_left > 0:
+            if not in_run:
+                in_run = True
+                insert_after = base_line - 1
+            removed.append(base_line)
+            base_line += 1
+            base_left -= 1
+        elif raw.startswith("+") and head_left > 0:
+            if not in_run:
+                in_run = True
+                insert_after = base_line - 1
+            if anchor is None:
+                anchor = head_line
+            head_line += 1
+            head_left -= 1
+        elif raw.startswith(" "):
+            _flush()
+            base_line += 1
+            head_line += 1
+            base_left -= 1
+            head_left -= 1
+        else:
+            # Unparseable body line: end the run, advance nothing.
+            _flush()
+    _flush()
+    return blocks
+
+
+def _fetch_kwargs_for(
+    provider: str,
+    repository: str,
+    *,
+    github_token: Optional[str],
+    ado_org: Optional[str],
+    ado_project: Optional[str],
+    ado_repo: Optional[str],
+    ado_access_token: Optional[str],
+    gitlab_access_token: Optional[str],
+    gitlab_base_url: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    if provider == "github":
+        return {"repository": repository, "github_token": github_token}
+    if provider == "azure_devops":
+        return {
+            "ado_org": ado_org, "ado_project": ado_project,
+            "ado_repo": ado_repo, "ado_access_token": ado_access_token,
+        }
+    if provider == "gitlab":
+        return {
+            "gitlab_project_path": repository,
+            "gitlab_access_token": gitlab_access_token,
+            "gitlab_base_url": gitlab_base_url,
+        }
+    return None
+
+
+def diff_info_by_file(
+    provider: str,
+    repository: str,
+    base_sha: str,
+    head_sha: str,
+    changed_files: List[str],
+    *,
+    github_token: Optional[str] = None,
+    ado_org: Optional[str] = None,
+    ado_project: Optional[str] = None,
+    ado_repo: Optional[str] = None,
+    ado_access_token: Optional[str] = None,
+    gitlab_access_token: Optional[str] = None,
+    gitlab_base_url: Optional[str] = None,
+) -> Dict[str, FileDiffInfo]:
+    """Map each changed file -> its :class:`FileDiffInfo`.
+
+    Provider-agnostic (github / azure_devops / gitlab): fetches base + head
+    bytes via ``shared.source_fetch.fetch_file_at_sha`` and diffs them with
+    ``compute_file_diff``. A ``SourceFetchError`` on base means the file is
+    new in the PR; on head, that it was deleted.
+
+    Every file that diffed without error is included, even with no added
+    lines. Best-effort: a per-file fetch/parse failure is logged and that
+    file skipped, never raised. An unknown provider returns ``{}``.
+    """
+    from shared.source_fetch import SourceFetchError, fetch_file_at_sha
+
+    fetch_kwargs = _fetch_kwargs_for(
+        provider, repository,
+        github_token=github_token, ado_org=ado_org, ado_project=ado_project,
+        ado_repo=ado_repo, ado_access_token=ado_access_token,
+        gitlab_access_token=gitlab_access_token,
+        gitlab_base_url=gitlab_base_url,
+    )
+    if fetch_kwargs is None:
+        logger.warning("diff_info_by_file: unknown provider %r", provider)
+        return {}
+
+    result: Dict[str, FileDiffInfo] = {}
+    for path in changed_files or []:
+        try:
+            try:
+                base_bytes = fetch_file_at_sha(provider, path, base_sha, **fetch_kwargs)
+            except SourceFetchError:
+                base_bytes = None  # file added -- absent at base
+            try:
+                head_bytes = fetch_file_at_sha(provider, path, head_sha, **fetch_kwargs)
+            except SourceFetchError:
+                head_bytes = None  # file deleted in head
+            file_diff = compute_file_diff(base_bytes, head_bytes, path)
+            result[path] = FileDiffInfo(
+                added_lines=added_line_numbers(file_diff),
+                blocks=change_blocks(file_diff),
+                is_new=base_bytes is None and head_bytes is not None,
+            )
+        except Exception as e:  # provider/network/parse -- skip this file
+            logger.warning(
+                "diff_info_by_file: skipping %s: %s", path, e, exc_info=True)
+    return result
+
+
 def added_lines_by_file(
     provider: str,
     repository: str,
@@ -204,44 +434,14 @@ def added_lines_by_file(
     raised. Files with no added lines (pure deletion, binary, or unchanged) are
     omitted from the result (ADR-031: never fabricate a line).
     """
-    from shared.source_fetch import SourceFetchError, fetch_file_at_sha
-
-    if provider == "github":
-        fetch_kwargs = {"repository": repository, "github_token": github_token}
-    elif provider == "azure_devops":
-        fetch_kwargs = {
-            "ado_org": ado_org, "ado_project": ado_project,
-            "ado_repo": ado_repo, "ado_access_token": ado_access_token,
-        }
-    elif provider == "gitlab":
-        fetch_kwargs = {
-            "gitlab_project_path": repository,
-            "gitlab_access_token": gitlab_access_token,
-            "gitlab_base_url": gitlab_base_url,
-        }
-    else:
-        logger.warning("added_lines_by_file: unknown provider %r", provider)
-        return {}
-
-    result: Dict[str, List[int]] = {}
-    for path in changed_files or []:
-        try:
-            try:
-                base_bytes = fetch_file_at_sha(provider, path, base_sha, **fetch_kwargs)
-            except SourceFetchError:
-                base_bytes = None  # file added -- absent at base
-            try:
-                head_bytes = fetch_file_at_sha(provider, path, head_sha, **fetch_kwargs)
-            except SourceFetchError:
-                head_bytes = None  # file deleted in head
-            added = added_line_numbers(
-                compute_file_diff(base_bytes, head_bytes, path))
-            if added:
-                result[path] = added
-        except Exception as e:  # provider/network/parse -- skip this file
-            logger.warning("added_lines_by_file: skipping %s: %s", path, e)
-    return result
-
+    infos = diff_info_by_file(
+        provider, repository, base_sha, head_sha, changed_files,
+        github_token=github_token, ado_org=ado_org, ado_project=ado_project,
+        ado_repo=ado_repo, ado_access_token=ado_access_token,
+        gitlab_access_token=gitlab_access_token,
+        gitlab_base_url=gitlab_base_url,
+    )
+    return {path: info.added_lines for path, info in infos.items() if info.added_lines}
 
 def first_added_lines(
     provider: str,

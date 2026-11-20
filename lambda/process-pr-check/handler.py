@@ -19,7 +19,7 @@ import logging
 import os
 import sys
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Literal, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Set, Tuple
 from enum import Enum
 
 import boto3
@@ -31,6 +31,9 @@ from pydantic import BaseModel, Field, field_validator
 # terraform source_path (see lambda-pr-analysis.tf).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from shared import dual_write  # noqa: E402
+
+if TYPE_CHECKING:  # pragma: no cover
+    from shared.pr_diff import ChangeBlock, FileDiffInfo  # noqa: F401
 
 # Import check handlers
 from check_handlers import (
@@ -843,7 +846,13 @@ def store_check_result(result: CheckResult) -> None:
         raise
 
 
-def run_check(job: CheckJob, anchors: Optional[Dict[str, List[int]]] = None) -> Dict[str, Any]:
+def run_check(
+    job: CheckJob,
+    anchors: Optional[Dict[str, List[int]]] = None,
+    *,
+    change_blocks: Optional[Dict[str, List["ChangeBlock"]]] = None,
+    new_files: Optional[Set[str]] = None,
+) -> Dict[str, Any]:
     """
     Route to appropriate check handler based on check type.
 
@@ -857,6 +866,11 @@ def run_check(job: CheckJob, anchors: Optional[Dict[str, List[int]]] = None) -> 
 
     Args:
         job: CheckJob with check type and PR metadata
+        anchors: Added lines per file for checks that post inline findings
+        change_blocks: Per-file ``pr_diff.ChangeBlock`` lists for
+            BREAKING_CHANGES; ``None`` means the diff could not be computed
+        new_files: Changed files added in this PR, for README_FRESHNESS;
+            ``None`` means newness is unknown
 
     Returns:
         Check result dict (without PK/SK/timestamp/commentUrl)
@@ -892,6 +906,7 @@ def run_check(job: CheckJob, anchors: Optional[Dict[str, List[int]]] = None) -> 
             repository=job.repository,
             changed_files=job.changed_files,
             github_token_param=github_token_param,
+            new_files=new_files,
             **provider_kwargs,
         )
 
@@ -915,6 +930,7 @@ def run_check(job: CheckJob, anchors: Optional[Dict[str, List[int]]] = None) -> 
             changed_files=job.changed_files,
             query_kb_lambda_name=QUERY_KB_LAMBDA_NAME,
             anchors=anchors,
+            change_blocks=change_blocks,
             **provider_kwargs,
         )
 
@@ -1028,63 +1044,127 @@ def format_check_comment(result: CheckResult, usage: UsageTracker | None = None)
 # =============================================================================
 
 
+def _compute_diff_info(job: CheckJob, files: List[str]) -> Dict[str, "FileDiffInfo"]:
+    """Per-file diff info (added lines, change blocks, newness) for ``files``.
+
+    Provider-aware (github/gitlab/azure_devops): resolves the provider token,
+    fetches the PR base/head SHAs, then calls ``pr_diff.diff_info_by_file``.
+
+    RAISES on any failure. Callers decide the fallback: the anchor path
+    degrades to ``{}``, BREAKING_CHANGES passes ``change_blocks=None`` so the
+    check fails closed (ADR-054), README_FRESHNESS passes ``new_files=None``.
+    """
+    from shared import pr_diff
+    from shared.pr_metadata import fetch_pr_metadata
+
+    if job.provider == "gitlab":
+        from check_handlers.gitlab_context import (
+            get_gitlab_base_url, get_gitlab_token)
+
+        token = get_gitlab_token(job.connection_id)
+        base = get_gitlab_base_url(job.connection_id)
+        meta = fetch_pr_metadata(
+            "gitlab", job.pr_number, gitlab_project_path=job.repository,
+            gitlab_access_token=token, gitlab_base_url=base)
+        return pr_diff.diff_info_by_file(
+            "gitlab", job.repository, meta.base_sha, meta.head_sha,
+            files, gitlab_access_token=token, gitlab_base_url=base)
+    if job.provider == "azure_devops":
+        access_token = _ado_refresh_access_token(
+            connection_id=job.connection_id,
+            tenant_id=AZURE_DEVOPS_TENANT_ID,
+            client_id=AZURE_DEVOPS_CLIENT_ID,
+            client_secret=_get_ado_client_secret(),
+        )
+        meta = fetch_pr_metadata(
+            "azure_devops", job.pr_number, ado_org=job.azure_devops_org,
+            ado_project=job.azure_devops_project, ado_repo=job.azure_devops_repo,
+            ado_access_token=access_token)
+        return pr_diff.diff_info_by_file(
+            "azure_devops", job.repository, meta.base_sha, meta.head_sha,
+            files, ado_org=job.azure_devops_org,
+            ado_project=job.azure_devops_project, ado_repo=job.azure_devops_repo,
+            ado_access_token=access_token)
+    # github
+    token = get_github_token()
+    meta = fetch_pr_metadata(
+        "github", job.pr_number, repository=job.repository, github_token=token)
+    return pr_diff.diff_info_by_file(
+        "github", job.repository, meta.base_sha, meta.head_sha,
+        files, github_token=token)
+
+
+def _anchors_from_info(info: Dict[str, "FileDiffInfo"]) -> Dict[str, List[int]]:
+    """Added-line anchors per file, omitting files with no added lines."""
+    return {p: i.added_lines for p, i in info.items() if i.added_lines}
+
+
 def _compute_anchors(job: CheckJob) -> Dict[str, List[int]]:
     """All added (RIGHT-side) lines per changed file, for file-level checks that
-    anchor inline findings (BREAKING_CHANGES, TEST_COVERAGE).
+    anchor inline findings (TEST_COVERAGE, ARCHITECTURAL_DUPLICATION).
 
     Returns the FULL added-line list per file (not just the first) so a check
     can anchor multiple findings in one file on their own distinct lines. A
     single-anchor consumer takes ``lines[0]``.
 
-    Provider-aware (github/gitlab/azure_devops). Best-effort: returns ``{}`` on
-    any failure so the check still runs and simply posts no inline findings (it
-    keeps its per-check <details> summary either way).
+    Best-effort: returns ``{}`` on any failure so the check still runs and
+    simply posts no inline findings (it keeps its per-check <details> summary
+    either way).
     """
-    from shared import pr_diff
-    from shared.pr_metadata import fetch_pr_metadata
-
     try:
-        if job.provider == "gitlab":
-            from check_handlers.gitlab_context import (
-                get_gitlab_base_url, get_gitlab_token)
-
-            token = get_gitlab_token(job.connection_id)
-            base = get_gitlab_base_url(job.connection_id)
-            meta = fetch_pr_metadata(
-                "gitlab", job.pr_number, gitlab_project_path=job.repository,
-                gitlab_access_token=token, gitlab_base_url=base)
-            return pr_diff.added_lines_by_file(
-                "gitlab", job.repository, meta.base_sha, meta.head_sha,
-                job.changed_files, gitlab_access_token=token,
-                gitlab_base_url=base)
-        if job.provider == "azure_devops":
-            access_token = _ado_refresh_access_token(
-                connection_id=job.connection_id,
-                tenant_id=AZURE_DEVOPS_TENANT_ID,
-                client_id=AZURE_DEVOPS_CLIENT_ID,
-                client_secret=_get_ado_client_secret(),
-            )
-            meta = fetch_pr_metadata(
-                "azure_devops", job.pr_number, ado_org=job.azure_devops_org,
-                ado_project=job.azure_devops_project, ado_repo=job.azure_devops_repo,
-                ado_access_token=access_token)
-            return pr_diff.added_lines_by_file(
-                "azure_devops", job.repository, meta.base_sha, meta.head_sha,
-                job.changed_files, ado_org=job.azure_devops_org,
-                ado_project=job.azure_devops_project, ado_repo=job.azure_devops_repo,
-                ado_access_token=access_token)
-        # github
-        token = get_github_token()
-        meta = fetch_pr_metadata(
-            "github", job.pr_number, repository=job.repository, github_token=token)
-        return pr_diff.added_lines_by_file(
-            "github", job.repository, meta.base_sha, meta.head_sha,
-            job.changed_files, github_token=token)
+        return _anchors_from_info(_compute_diff_info(job, job.changed_files))
     except Exception as e:
         logger.warning(
             "[inline] anchor computation failed for %s (checks fall back to "
             "summary-only): %s", job.check_type.value, e)
         return {}
+
+
+def _compute_breaking_changes_inputs(
+    job: CheckJob,
+) -> Tuple[Dict[str, List[int]], Optional[Dict[str, List["ChangeBlock"]]]]:
+    """``(anchors, change_blocks)`` for BREAKING_CHANGES from ONE diff fetch.
+
+    On failure returns ``({}, None)``: anchors degrade like every other
+    inline check, and ``change_blocks=None`` tells the check it could not
+    determine what changed so it fails closed (ADR-054). ``{}`` is never
+    used to mean "failed".
+    """
+    try:
+        info = _compute_diff_info(job, job.changed_files)
+    except Exception as e:
+        logger.warning(
+            "[inline] diff computation failed for %s (anchors fall back to "
+            "summary-only, change blocks unknown): %s", job.check_type.value, e)
+        return {}, None
+    return _anchors_from_info(info), {p: i.blocks for p, i in info.items()}
+
+
+def _is_readme_handler_file(path: str) -> bool:
+    """Same filter README_FRESHNESS applies: ``lambda/*/handler.py`` outside tests."""
+    return (path.startswith("lambda/") and path.endswith("/handler.py")
+            and "/tests/" not in path)
+
+
+def _compute_new_handler_files(job: CheckJob) -> Optional[Set[str]]:
+    """Changed handler files that are absent at the PR base (added in this PR).
+
+    Fetches diff info for ONLY the files README_FRESHNESS inspects, so other
+    changed files are not fetched. Returns ``set()`` without any fetch when
+    no handler file changed, and ``None`` on failure (newness unknown; the
+    check falls back to its pre-newness behavior).
+    """
+    handler_files = [f for f in job.changed_files if _is_readme_handler_file(f)]
+    if not handler_files:
+        return set()
+    try:
+        info = _compute_diff_info(job, handler_files)
+    except Exception as e:
+        logger.warning(
+            "[inline] new-file detection failed for %s (newness unknown): %s",
+            job.check_type.value, e)
+        return None
+    return {p for p, i in info.items() if i.is_new}
 
 
 def _github_pr_head_sha(repository: str, pr_number: int, token: str) -> str:
@@ -1390,17 +1470,25 @@ def process_check_job(job: CheckJob) -> CheckResult:
     # ADO to a PASS with a "not yet implemented" comment was removed
     # in ; ADO jobs now run the same check pipeline GitHub
     # jobs do.
-    # File-level checks (breaking changes, test coverage) can anchor inline
-    # findings only if given a first-added-line map; compute it provider-aware
-    # for just those checks (other checks don't need it and skip the fetch).
+    # File-level checks can anchor inline findings only if given an
+    # added-line map; compute it provider-aware for just those checks (other
+    # checks don't need it and skip the fetch). BREAKING_CHANGES also needs
+    # the per-file change blocks, derived from the same single diff fetch.
+    # README_FRESHNESS needs to know which handler files are new in the PR.
     anchors: Optional[Dict[str, List[int]]] = None
-    if job.check_type in (
-        CheckType.BREAKING_CHANGES,
+    change_blocks: Optional[Dict[str, List["ChangeBlock"]]] = None
+    new_files: Optional[Set[str]] = None
+    if job.check_type == CheckType.BREAKING_CHANGES:
+        anchors, change_blocks = _compute_breaking_changes_inputs(job)
+    elif job.check_type in (
         CheckType.TEST_COVERAGE,
         CheckType.ARCHITECTURAL_DUPLICATION,
     ):
         anchors = _compute_anchors(job)
-    check_result = run_check(job, anchors)
+    elif job.check_type == CheckType.README_FRESHNESS:
+        new_files = _compute_new_handler_files(job)
+    check_result = run_check(
+        job, anchors, change_blocks=change_blocks, new_files=new_files)
     usage = check_result.get("usage")
 
     # Build full result. PK is self-contained per (provider, repo, PR)

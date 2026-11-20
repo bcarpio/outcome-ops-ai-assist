@@ -335,6 +335,7 @@ def check_readme_freshness(
     ado_org: str | None = None,
     ado_project: str | None = None,
     ado_repo: str | None = None,
+    new_files: Optional[Set[str]] = None,
 ) -> Dict[str, Any]:
     """
     README Freshness check handler.
@@ -343,6 +344,12 @@ def check_readme_freshness(
     - If terraform files changed, README.md should be updated
     - If new handlers added, README.md should document them
     - Uses Claude to analyze if README updates are meaningful
+
+    ``new_files`` is the set of changed files absent at the PR base and
+    present at head. When it is a set, only handlers in it count as new;
+    edits to existing handlers do not require a README update. When it is
+    ``None`` (newness unknown), any changed handler still triggers the
+    check, but the message does not claim the handlers are new.
 
     Provider-aware: dispatches on ``provider`` for the README.md diff
     fetch. Fires ``NotImplementedError`` for unknown providers as a
@@ -378,10 +385,16 @@ def check_readme_freshness(
         f for f in changed_files
         if f.startswith("lambda/") and f.endswith("/handler.py") and "/tests/" not in f
     ]
+    newness_known = new_files is not None
+    if newness_known:
+        # Modified handlers are not a README trigger; only new ones are.
+        relevant_handler_files = [f for f in handler_files if f in new_files]
+    else:
+        relevant_handler_files = handler_files
     readme_updated = "README.md" in changed_files
 
-    # If no terraform or handler changes, pass immediately
-    if not terraform_files and not handler_files:
+    # If no terraform or new handler changes, pass immediately
+    if not terraform_files and not relevant_handler_files:
         return {
             "checkType": check_type,
             "status": "PASS",
@@ -397,9 +410,14 @@ def check_readme_freshness(
             details.append(
                 f"Infrastructure files changed ({len(terraform_files)} file(s)) but README.md was not updated."
             )
-        if handler_files:
+        if relevant_handler_files and newness_known:
             details.append(
-                f"New Lambda handlers added ({len(handler_files)} file(s)) but README.md was not updated."
+                f"New Lambda handlers added ({len(relevant_handler_files)} file(s)) but README.md was not updated."
+            )
+        elif relevant_handler_files:
+            details.append(
+                f"Lambda handler files changed ({len(relevant_handler_files)} file(s)) but README.md "
+                "was not updated; could not determine whether any are new."
             )
         details.append("Consider documenting new resources, handlers, and their purposes.")
 
@@ -440,7 +458,7 @@ def check_readme_freshness(
             }
 
         # Extract names of changed handlers and infrastructure
-        handler_names = extract_handler_names(changed_files)
+        handler_names = extract_handler_names(relevant_handler_files)
         infra_names = extract_infrastructure_names(changed_files)
 
         # Ask Claude to analyze

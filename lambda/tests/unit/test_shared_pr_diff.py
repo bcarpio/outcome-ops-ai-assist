@@ -417,3 +417,205 @@ class TestFirstAddedLines:
                 "ado_org": "org", "ado_project": "proj",
                 "ado_repo": "repo", "ado_access_token": "adotok",
             }
+
+
+class TestChangeBlocks:
+    """``change_blocks`` -- contiguous +/- runs with BASE-side line numbers.
+
+    Diffs are built with ``compute_file_diff`` from real before/after text so
+    the expected line numbers can be read straight off the fixtures.
+    """
+
+    @staticmethod
+    def _blocks(before, after):
+        diff = pr_diff.compute_file_diff(before, after, "f.py")
+        return pr_diff.change_blocks(diff)
+
+    def test_replacement_gives_removed_base_line_and_head_anchor(self):
+        blocks = self._blocks(b"a\nb\nc\n", b"a\nB\nc\n")
+        assert blocks == [pr_diff.ChangeBlock(
+            removed_base_lines=(2,), insert_after_base_line=None, head_anchor=2)]
+
+    def test_pure_insertion_inside_body_anchors_after_previous_base_line(self):
+        before = b"def f():\n    x = 1\n    return x\n"
+        after = b"def f():\n    x = 1\n    y = 2\n    z = 3\n    return x\n"
+        blocks = self._blocks(before, after)
+        assert blocks == [pr_diff.ChangeBlock(
+            removed_base_lines=(), insert_after_base_line=2, head_anchor=3)]
+
+    def test_insertion_at_top_of_file_gives_zero(self):
+        blocks = self._blocks(b"a\nb\n", b"NEW\na\nb\n")
+        assert blocks == [pr_diff.ChangeBlock(
+            removed_base_lines=(), insert_after_base_line=0, head_anchor=1)]
+
+    def test_new_file_is_single_insertion_at_zero(self):
+        blocks = self._blocks(None, b"one\ntwo\n")
+        assert blocks == [pr_diff.ChangeBlock(
+            removed_base_lines=(), insert_after_base_line=0, head_anchor=1)]
+
+    def test_deletion_only_run_has_no_head_anchor(self):
+        blocks = self._blocks(b"a\nb\nc\nd\n", b"a\nd\n")
+        assert blocks == [pr_diff.ChangeBlock(
+            removed_base_lines=(2, 3), insert_after_base_line=None, head_anchor=None)]
+
+    def test_deleted_file_is_one_deletion_block(self):
+        blocks = self._blocks(b"x\ny\n", None)
+        assert blocks == [pr_diff.ChangeBlock(
+            removed_base_lines=(1, 2), insert_after_base_line=None, head_anchor=None)]
+
+    def test_two_runs_separated_by_context_in_one_hunk(self):
+        blocks = self._blocks(b"a\nb\nc\nd\ne\n", b"a\nB\nc\nD\ne\n")
+        assert blocks == [
+            pr_diff.ChangeBlock((2,), None, 2),
+            pr_diff.ChangeBlock((4,), None, 4),
+        ]
+
+    def test_multiple_hunks_keep_counters_right(self):
+        before = "".join(f"line{i}\n" for i in range(1, 31)).encode()
+        after_lines = [f"line{i}\n" for i in range(1, 31)]
+        after_lines.insert(2, "INSERTED\n")          # after base line 2 -> head 3
+        after_lines[25] = "CHANGED25\n"               # base line 25 -> head 26
+        diff = pr_diff.compute_file_diff(before, "".join(after_lines).encode(), "f.py")
+        assert diff.count("\n@@") == 2  # really two hunks
+        assert pr_diff.change_blocks(diff) == [
+            pr_diff.ChangeBlock((), 2, 3),
+            pr_diff.ChangeBlock((25,), None, 26),
+        ]
+
+    def test_head_anchor_is_always_an_added_line(self):
+        diff = pr_diff.compute_file_diff(
+            b"a\nb\nc\nd\n", b"a\nX\nY\nc\nZ\n", "f.py")
+        added = pr_diff.added_line_numbers(diff)
+        anchors = [b.head_anchor for b in pr_diff.change_blocks(diff)
+                   if b.head_anchor is not None]
+        assert anchors and set(anchors) <= set(added)
+
+    def test_no_newline_marker_does_not_split_run(self):
+        diff = "\n".join([
+            "--- a/f",
+            "+++ b/f",
+            "@@ -1,2 +1,2 @@",
+            " a",
+            "-b",
+            "\\ No newline at end of file",
+            "+B",
+            "\\ No newline at end of file",
+        ])
+        assert pr_diff.change_blocks(diff) == [pr_diff.ChangeBlock((2,), None, 2)]
+
+    def test_body_line_starting_with_dashes_is_counted(self):
+        # A removed line whose content is "-- x" renders as "--- x"; hunk
+        # counts keep it inside the body rather than mistaking a file header.
+        diff = "\n".join([
+            "@@ -1,2 +1,2 @@",
+            " ctx",
+            "--- sql comment",
+            "+++ new",
+        ])
+        assert pr_diff.change_blocks(diff) == [pr_diff.ChangeBlock((2,), None, 2)]
+
+    def test_malformed_header_and_garbage_line_no_crash(self):
+        diff = "\n".join([
+            "@@ not a header @@",
+            "+ignored",
+            "@@ -1 +1 @@",
+            "-old",
+            "?garbage",
+            "+new",
+        ])
+        assert pr_diff.change_blocks(diff) == [
+            pr_diff.ChangeBlock((1,), None, None),
+            pr_diff.ChangeBlock((), 1, 1),
+        ]
+
+    def test_empty_and_stub_diffs_have_no_blocks(self):
+        assert pr_diff.change_blocks("") == []
+        assert pr_diff.change_blocks(
+            pr_diff.compute_file_diff(b"\x00bin", b"\x00bin2", "f")) == []
+
+
+class TestDiffInfoByFile:
+    """``diff_info_by_file`` -- {path: FileDiffInfo} for every diffed file."""
+
+    def _patch_fetch(self, side_effect):
+        return patch("shared.source_fetch.fetch_file_at_sha", side_effect=side_effect)
+
+    def test_new_file_is_new(self):
+        from shared.source_fetch import SourceFetchError
+
+        def fake(provider, path, sha, **kwargs):
+            if sha == "base":
+                raise SourceFetchError("absent at base")
+            return b"one\ntwo\n"
+        with self._patch_fetch(fake):
+            out = pr_diff.diff_info_by_file(
+                "github", "owner/repo", "base", "head", ["new.py"], github_token="ghp")
+        info = out["new.py"]
+        assert info.is_new is True
+        assert info.added_lines == [1, 2]
+        assert info.blocks == [pr_diff.ChangeBlock((), 0, 1)]
+
+    def test_modified_file_is_not_new(self):
+        def fake(provider, path, sha, **kwargs):
+            return b"a\nb\n" if sha == "base" else b"a\nB\n"
+        with self._patch_fetch(fake):
+            out = pr_diff.diff_info_by_file(
+                "github", "owner/repo", "base", "head", ["f.py"], github_token="ghp")
+        assert out["f.py"] == pr_diff.FileDiffInfo(
+            added_lines=[2], blocks=[pr_diff.ChangeBlock((2,), None, 2)], is_new=False)
+
+    def test_deletion_only_file_present_with_no_added_lines(self):
+        def fake(provider, path, sha, **kwargs):
+            return b"a\nb\nc\n" if sha == "base" else b"a\nc\n"
+        with self._patch_fetch(fake):
+            out = pr_diff.diff_info_by_file(
+                "github", "owner/repo", "base", "head", ["f.py"], github_token="ghp")
+        assert out["f.py"].added_lines == []
+        assert out["f.py"].blocks == [pr_diff.ChangeBlock((2,), None, None)]
+        assert out["f.py"].is_new is False
+
+    def test_deleted_file_is_not_new(self):
+        from shared.source_fetch import SourceFetchError
+
+        def fake(provider, path, sha, **kwargs):
+            if sha == "head":
+                raise SourceFetchError("deleted")
+            return b"x\n"
+        with self._patch_fetch(fake):
+            out = pr_diff.diff_info_by_file(
+                "github", "owner/repo", "base", "head", ["gone.py"], github_token="ghp")
+        assert out["gone.py"].is_new is False
+        assert out["gone.py"].added_lines == []
+
+    def test_per_file_exception_skips_only_that_file(self):
+        def fake(provider, path, sha, **kwargs):
+            if path == "bad.py":
+                raise ValueError("boom")
+            return b"a\n" if sha == "base" else b"a\nb\n"
+        with self._patch_fetch(fake):
+            out = pr_diff.diff_info_by_file(
+                "github", "owner/repo", "base", "head", ["bad.py", "ok.py"],
+                github_token="ghp")
+        assert set(out) == {"ok.py"}
+        assert out["ok.py"].added_lines == [2]
+
+    def test_unknown_provider_returns_empty(self):
+        with patch("shared.source_fetch.fetch_file_at_sha") as mock_fetch:
+            out = pr_diff.diff_info_by_file(
+                "bitbucket", "owner/repo", "base", "head", ["f.py"])
+        assert out == {}
+        mock_fetch.assert_not_called()
+
+    def test_added_lines_by_file_matches_diff_info(self):
+        def fake(provider, path, sha, **kwargs):
+            if path == "del.py":
+                return b"a\nb\n" if sha == "base" else b"a\n"
+            return b"a\n" if sha == "base" else b"a\nb\nc\n"
+        files = ["add.py", "del.py"]
+        with self._patch_fetch(fake):
+            info = pr_diff.diff_info_by_file(
+                "gitlab", "g/p", "base", "head", files, gitlab_access_token="t")
+            added = pr_diff.added_lines_by_file(
+                "gitlab", "g/p", "base", "head", files, gitlab_access_token="t")
+        assert set(info) == {"add.py", "del.py"}
+        assert added == {"add.py": [2, 3]}
