@@ -54,6 +54,7 @@ module "github_scheduler_lambda_secondary" {
     GITHUB_SYNC_QUEUE = aws_sqs_queue.github_sync_secondary[0].url
     # Secondary mirror: scan fan-out worker pool.
     GITHUB_SCHEDULER_PARALLEL_WORKERS = tostring(var.github_scheduler_parallel_workers)
+    GITHUB_SYNC_HEAL_MAX_PER_RUN      = tostring(var.github_sync_heal_max_per_run)
     },
     local.ha_scheduler_env_secondary,
   )

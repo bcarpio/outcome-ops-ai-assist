@@ -426,6 +426,12 @@ github_usernames_to_tag = "yourusername"
 # but not yet certified against a live GHES.
 # github_base_url = ""
 
+# Scheduled GitHub sync self-heal: attempts per stalled commit before the
+# repo is marked `stalled`, and heal slots per hourly scheduler run. 0
+# disables healing.
+# github_sync_heal_max_attempts = 3
+# github_sync_heal_max_per_run  = 20
+
 # ============================================================================
 # ServiceNow Knowledge Base integration
 # ============================================================================

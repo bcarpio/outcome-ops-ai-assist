@@ -832,6 +832,9 @@ def handle_list_repos(event: Dict) -> Dict:
                 "last_sync_at": r.get("last_sync_at"),
                 "last_sync_status": r.get("last_sync_status", "pending"),
                 "last_sync_error": r.get("last_sync_error"),
+                "last_failure_reason": r.get("last_failure_reason"),
+                "last_commit_sha": r.get("last_commit_sha"),
+                "default_branch": r.get("default_branch"),
                 "added_at": r.get("added_at"),
                 "added_by": r.get("added_by"),
             }

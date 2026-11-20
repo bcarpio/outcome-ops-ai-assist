@@ -141,6 +141,8 @@ module "workspace_management_lambda" {
     # `requests` honors REQUESTS_CA_BUNDLE and stdlib honors SSL_CERT_FILE.
     REQUESTS_CA_BUNDLE = "/opt/ca-bundle.pem"
     SSL_CERT_FILE      = "/opt/ca-bundle.pem"
+    # Workspace notifications (GET /notifications, dismissal).
+    NOTIFICATIONS_TABLE = module.notifications_table[0].dynamodb_table_id
     },
     # HA dual-write: REPLICATION_EVENT_BUS_NAME + THIS_REGION so
     # shared.dual_write emits replication events for the handler's
@@ -264,6 +266,8 @@ module "workspace_management_lambda" {
     # Empty (no-op) in single-region mode.
     local.ha_writer_events_iam,
     local.ha_scheduler_iam,
+    # Notifications list / read / dismiss (iam_notifications.tf).
+    local.workspace_mgmt_notifications_iam,
     # ADR-048 v1.1: read the app-only Graph client secret for the binding
     # picker + >200-group memberOf fallback. Granted only when the fallback is
     # enabled; the effective path defaults to the OIDC login app's own secret

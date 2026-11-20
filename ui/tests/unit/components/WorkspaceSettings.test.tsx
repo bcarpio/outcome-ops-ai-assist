@@ -1311,6 +1311,26 @@ describe('WorkspaceSettings', () => {
   })
 
   it.each([
+    ['heal_budget_exhausted', 'Automatic retries for the latest commit failed. Press Sync now to retry.'],
+    ['baseline_unreachable', 'The last completed commit is no longer reachable (force-push?). Press Sync now to rebuild from the current commit.'],
+    ['units_failed', 'Some files failed to process and were skipped. Press Sync now to retry them.'],
+    [null, 'Syncing the latest commit stalled. Press Sync now to retry.'],
+    ['some_future_reason', 'Syncing the latest commit stalled. Press Sync now to retry.'],
+  ])('renders a stalled repo with reason %s as an amber badge and explanation', async (reason, explanation) => {
+    mockListGitHubInstallations.mockResolvedValue([
+      { installation_id: 'inst-1', workspace_id: 'ws-1', account_login: 'my-org', account_type: 'Organization', permissions: { contents: 'read' }, created_by: 'user@test.com', created_at: '2024-01-01' },
+    ])
+    mockListGitHubRepos.mockResolvedValue([
+      { repo_name: 'my-org/my-repo', workspace_id: 'ws-1', installation_id: 'inst-1', enabled: true, include_code_maps: true, repo_type: 'application', last_sync_at: null, last_sync_status: 'stalled', last_failure_reason: reason, last_sync_error: null, last_commit_sha: null, added_at: '2024-01-01', added_by: 'user@test.com' },
+    ])
+    renderSettings('integrations')
+
+    const badge = await screen.findByText('stalled')
+    expect(badge).toHaveClass('text-amber-600')
+    expect(screen.getByText(explanation)).toBeInTheDocument()
+  })
+
+  it.each([
     ['up_to_date', 'my-org/my-repo is already up to date. Nothing changed since the last sync.'],
     ['success', 'Sync finished for my-org/my-repo'],
     ['already_running', 'A sync of the latest commit is already running for my-org/my-repo. Nothing new was queued.'],

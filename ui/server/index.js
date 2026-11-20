@@ -684,6 +684,16 @@ function handleMockWorkspaceRequest(req, res, method, path) {
     return res.status(201).json({ workspace });
   }
 
+  // GET /notifications - no notifications in local dev
+  if (method === "GET" && pathParts.length === 1 && pathParts[0] === "notifications") {
+    return res.json({ notifications: [] });
+  }
+
+  // DELETE /workspaces/:id/notifications/:nid
+  if (method === "DELETE" && pathParts.length === 4 && pathParts[0] === "workspaces" && pathParts[2] === "notifications") {
+    return res.status(404).json({ error: "Notification not found" });
+  }
+
   // GET /workspaces - List workspaces
   if (method === "GET" && pathParts.length === 1 && pathParts[0] === "workspaces") {
     const workspaces = Array.from(mockWorkspaces.values()).map(ws => ({
@@ -858,6 +868,12 @@ async function proxyWorkspaceRequest(req, res, method, path) {
       return;
     }
 
+    // 204 No Content (e.g. notification dismiss) has no body to parse.
+    if (response.status === 204) {
+      res.status(204).end();
+      return;
+    }
+
     // Parse JSON response safely
     const text = await response.text();
     if (!text) {
@@ -948,6 +964,10 @@ app.get("/api/workspaces/:id/privacy", (req, res) => proxyWorkspaceRequest(req, 
 app.put("/api/workspaces/:id/privacy", (req, res) => proxyWorkspaceRequest(req, res, "PUT", `/workspaces/${req.params.id}/privacy`));
 app.put("/api/workspaces/:id/system-prompt", (req, res) => proxyWorkspaceRequest(req, res, "PUT", `/workspaces/${req.params.id}/system-prompt`));
 app.delete("/api/workspaces/:id/system-prompt", (req, res) => proxyWorkspaceRequest(req, res, "DELETE", `/workspaces/${req.params.id}/system-prompt`));
+
+// Notifications (visible across workspaces; dismiss deletes for everyone)
+app.get("/api/notifications", (req, res) => proxyWorkspaceRequest(req, res, "GET", "/notifications"));
+app.delete("/api/workspaces/:id/notifications/:nid", (req, res) => proxyWorkspaceRequest(req, res, "DELETE", `/workspaces/${req.params.id}/notifications/${encodeURIComponent(req.params.nid)}`));
 
 // Workspace documents
 app.post("/api/workspaces/:id/documents/upload", (req, res) => proxyWorkspaceRequest(req, res, "POST", `/workspaces/${req.params.id}/documents/upload`));

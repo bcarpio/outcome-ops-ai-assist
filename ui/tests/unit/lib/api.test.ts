@@ -97,6 +97,8 @@ import {
   updateGitHubRepo,
   removeGitHubRepo,
   triggerGitHubSync,
+  listNotifications,
+  dismissNotification,
   type StreamEvent,
 } from '../../../src/lib/api'
 
@@ -1195,5 +1197,48 @@ describe('updateJiraProjects', () => {
     mockFetch.mockResolvedValue(createMockFetchResponse({}))
 
     await expect(updateJiraProjects('ws-1', 'jira-1', ['ENG'])).resolves.toBeUndefined()
+  })
+})
+
+// ============================================================================
+// Notifications
+// ============================================================================
+describe('listNotifications', () => {
+  it('returns notifications array', async () => {
+    mockFetch.mockResolvedValue(createMockFetchResponse({
+      notifications: [{ notification_id: 'n-1', workspace_id: 'ws-1', type: 'repo_stalled', severity: 'warning' }],
+    }))
+
+    const result = await listNotifications()
+    expect(mockFetch).toHaveBeenCalledWith('/api/notifications')
+    expect(result).toHaveLength(1)
+    expect(result[0].notification_id).toBe('n-1')
+  })
+
+  it('returns an empty array when the response has no notifications', async () => {
+    mockFetch.mockResolvedValue(createMockFetchResponse({}))
+
+    await expect(listNotifications()).resolves.toEqual([])
+  })
+
+  it('throws on error', async () => {
+    mockFetch.mockResolvedValue(createMockFetchResponse({ error: 'Unauthorized' }, false, 401))
+
+    await expect(listNotifications()).rejects.toThrow('Unauthorized')
+  })
+})
+
+describe('dismissNotification', () => {
+  it('deletes the notification', async () => {
+    mockFetch.mockResolvedValue(createMockFetchResponse(null, true, 204))
+
+    await expect(dismissNotification('ws-1', 'n-1')).resolves.toBeUndefined()
+    expect(mockFetch).toHaveBeenCalledWith('/api/workspaces/ws-1/notifications/n-1', { method: 'DELETE' })
+  })
+
+  it('throws on error', async () => {
+    mockFetch.mockResolvedValue(createMockFetchResponse({ error: 'Forbidden' }, false, 403))
+
+    await expect(dismissNotification('ws-1', 'n-1')).rejects.toThrow('Forbidden')
   })
 })

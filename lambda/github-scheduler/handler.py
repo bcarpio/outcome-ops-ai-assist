@@ -8,14 +8,18 @@ and queue sync jobs for repos that have code-maps enabled.
 
 Flow:
 1. Scan DynamoDB for all GITHUB_REPO# items with include_code_maps=true
-2. Queue a sync job to github-sync SQS for each repo
-3. Return summary of queued repos
+2. Grant at most GITHUB_SYNC_HEAL_MAX_PER_RUN heal slots to repos whose
+   completed pipeline SHAs lag the dispatched SHA (oldest-eligible first)
+3. Queue a sync job to github-sync SQS for each repo, with
+   "heal_allowed": true on the ones granted a slot
+4. Return summary of queued repos
 """
 
 import json
 import logging
 import os
-from typing import Any, Dict, List
+import time
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import boto3
 from boto3.dynamodb.conditions import Attr, Key
@@ -30,6 +34,9 @@ ENV = os.environ.get("ENV", "dev")
 APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 WORKSPACES_TABLE = os.environ.get("WORKSPACES_TABLE")
 GITHUB_SYNC_QUEUE = os.environ.get("GITHUB_SYNC_QUEUE")
+# Max repos per hourly run allowed to heal (redo the gap between a completed
+# SHA and the dispatched SHA). 0 disables healing entirely.
+GITHUB_SYNC_HEAL_MAX_PER_RUN = int(os.environ.get("GITHUB_SYNC_HEAL_MAX_PER_RUN", "20"))
 
 # Cached clients
 _dynamodb = None
@@ -88,6 +95,11 @@ def scan_github_repos_for_sync() -> List[Dict]:
                         "installation_id": item.get("installation_id"),
                         "last_sync_at": item.get("last_sync_at"),
                         "last_sync_status": item.get("last_sync_status"),
+                        "repo_type": item.get("repo_type"),
+                        "last_commit_sha": item.get("last_commit_sha"),
+                        "last_docs_sha": item.get("last_docs_sha"),
+                        "last_code_map_sha": item.get("last_code_map_sha"),
+                        "heal_next_at": item.get("heal_next_at"),
                     })
 
         logger.info(f"Found {len(repos)} repos to sync")
@@ -98,8 +110,89 @@ def scan_github_repos_for_sync() -> List[Dict]:
         return []
 
 
-def queue_sync_job(workspace_id: str, repo_name: str, installation_id: str) -> bool:
-    """Queue a sync job to the github-sync queue."""
+def _is_heal_candidate(repo: Dict, now: float) -> bool:
+    """
+    Decide from the repo row alone whether a scheduled sync may heal it.
+
+    A candidate has a dispatched SHA (last_commit_sha) that a completed
+    pipeline SHA has not reached: docs behind, or (for non-standards repos)
+    code map behind. A completed column that is absent does not count as
+    behind, so legacy rows never trigger a first sync from here. Stalled
+    repos and repos still in heal backoff (heal_next_at in the future) are
+    excluded.
+    """
+    last_commit_sha = repo.get("last_commit_sha")
+    if not last_commit_sha:
+        return False
+    if repo.get("last_sync_status") == "stalled":
+        return False
+
+    heal_next_at = repo.get("heal_next_at")
+    if heal_next_at is not None and float(heal_next_at) > now:
+        return False
+
+    docs_sha = repo.get("last_docs_sha")
+    docs_behind = bool(docs_sha) and docs_sha != last_commit_sha
+
+    code_map_sha = repo.get("last_code_map_sha")
+    code_map_behind = (
+        repo.get("repo_type") != "standards"
+        and bool(code_map_sha)
+        and code_map_sha != last_commit_sha
+    )
+    return docs_behind or code_map_behind
+
+
+def _heal_candidates(repos: Iterable[Dict], now: float) -> List[Dict]:
+    """Return heal candidates ordered oldest-eligible first.
+
+    Order: heal_next_at ascending with absent first, then repo_name.
+    """
+    candidates = [r for r in repos if _is_heal_candidate(r, now)]
+
+    def _sort_key(r: Dict) -> Tuple[int, float, str]:
+        nxt: Optional[Any] = r.get("heal_next_at")
+        if nxt is None:
+            return (0, 0.0, r.get("repo_name") or "")
+        return (1, float(nxt), r.get("repo_name") or "")
+
+    candidates.sort(key=_sort_key)
+    return candidates
+
+
+def select_heal_slots(
+    repos: Iterable[Dict], now: float, max_slots: int,
+) -> Set[Tuple[str, str]]:
+    """
+    Pick which repos may heal this run.
+
+    Args:
+        repos: Repo dicts as returned by scan_github_repos_for_sync.
+        now: Current time, epoch seconds (compared against heal_next_at).
+        max_slots: Maximum slots to grant; 0 or less grants none.
+
+    Returns:
+        Set of (workspace_id, repo_name) granted a heal slot.
+    """
+    if max_slots <= 0:
+        return set()
+    return {
+        (r["workspace_id"], r["repo_name"])
+        for r in _heal_candidates(repos, now)[:max_slots]
+    }
+
+
+def queue_sync_job(
+    workspace_id: str,
+    repo_name: str,
+    installation_id: str,
+    heal_allowed: bool = False,
+) -> bool:
+    """Queue a sync job to the github-sync queue.
+
+    "heal_allowed": true is added to the message only when this repo was
+    granted a heal slot; absent means false to github-sync.
+    """
     if not GITHUB_SYNC_QUEUE:
         logger.warning("GITHUB_SYNC_QUEUE not configured")
         return False
@@ -114,6 +207,8 @@ def queue_sync_job(workspace_id: str, repo_name: str, installation_id: str) -> b
             "installation_id": installation_id,
             "trigger": "scheduled",
         }
+        if heal_allowed:
+            message["heal_allowed"] = True
 
         sqs.send_message(
             QueueUrl=GITHUB_SYNC_QUEUE,
@@ -162,6 +257,26 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             }),
         }
 
+    # Grant bounded heal slots, oldest-eligible first. Every repo is still
+    # queued; only the granted ones may heal a lagging completed SHA.
+    candidates = (
+        _heal_candidates(repos, time.time())
+        if GITHUB_SYNC_HEAL_MAX_PER_RUN > 0
+        else []
+    )
+    heal_slots: Set[Tuple[str, str]] = {
+        (r["workspace_id"], r["repo_name"])
+        for r in candidates[:GITHUB_SYNC_HEAL_MAX_PER_RUN]
+    }
+
+    def _queue(r: Dict) -> bool:
+        return queue_sync_job(
+            r["workspace_id"],
+            r["repo_name"],
+            r["installation_id"],
+            heal_allowed=(r["workspace_id"], r["repo_name"]) in heal_slots,
+        )
+
     # Queue sync jobs.
     #
     # parallel fan-out via ThreadPoolExecutor. The
@@ -177,29 +292,24 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     if workers == 1:
         # Backward-compat serial path (rollback via env).
         for repo in repos:
-            if queue_sync_job(
-                repo["workspace_id"],
-                repo["repo_name"],
-                repo["installation_id"],
-            ):
+            if _queue(repo):
                 queued += 1
             else:
                 failed += 1
     else:
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            results = executor.map(
-                lambda r: queue_sync_job(
-                    r["workspace_id"], r["repo_name"], r["installation_id"],
-                ),
-                repos,
-            )
+            results = executor.map(_queue, repos)
             for ok in results:
                 if ok:
                     queued += 1
                 else:
                     failed += 1
 
+    logger.info(
+        f"[github-scheduler] queued {queued} repos, {len(heal_slots)} heal slots "
+        f"granted ({len(candidates)} candidates)"
+    )
     logger.info(
         f"Scheduler complete: {queued} queued, {failed} failed "
         f"(workers={workers}, repos={len(repos)})"

@@ -53,18 +53,20 @@ module "github_sync_lambda_secondary" {
 
   environment_variables = merge(
     {
-      ENV                  = var.environment
-      APP_NAME             = var.app_name
-      GITHUB_BASE_URL      = var.github_base_url
-      WORKSPACES_TABLE     = module.workspaces_table_secondary[0].dynamodb_table_id
-      FILE_INGESTION_QUEUE = aws_sqs_queue.file_ingestion_secondary[0].url
-      REPO_SUMMARIES_QUEUE = module.repo_summaries_queue_secondary.queue_url
-      DELETE_QUEUE         = aws_sqs_queue.delete_queue_secondary[0].url
-      KB_BUCKET            = module.knowledge_base_bucket_secondary.s3_bucket_id
-      AUDIT_TABLE          = module.audit_logs_table_secondary[0].dynamodb_table_id
-      AUDIT_RETENTION_DAYS = tostring(var.audit_retention_days)
-      PENDING_WORK_TABLE   = module.code_map_pending_work_table_secondary[0].dynamodb_table_id
-      FAILED_FILES_TABLE   = module.code_map_failed_files_table_secondary[0].dynamodb_table_id
+      ENV                           = var.environment
+      APP_NAME                      = var.app_name
+      GITHUB_BASE_URL               = var.github_base_url
+      WORKSPACES_TABLE              = module.workspaces_table_secondary[0].dynamodb_table_id
+      FILE_INGESTION_QUEUE          = aws_sqs_queue.file_ingestion_secondary[0].url
+      REPO_SUMMARIES_QUEUE          = module.repo_summaries_queue_secondary.queue_url
+      DELETE_QUEUE                  = aws_sqs_queue.delete_queue_secondary[0].url
+      KB_BUCKET                     = module.knowledge_base_bucket_secondary.s3_bucket_id
+      AUDIT_TABLE                   = module.audit_logs_table_secondary[0].dynamodb_table_id
+      AUDIT_RETENTION_DAYS          = tostring(var.audit_retention_days)
+      PENDING_WORK_TABLE            = module.code_map_pending_work_table_secondary[0].dynamodb_table_id
+      FAILED_FILES_TABLE            = module.code_map_failed_files_table_secondary[0].dynamodb_table_id
+      NOTIFICATIONS_TABLE           = module.notifications_table_secondary[0].dynamodb_table_id
+      GITHUB_SYNC_HEAL_MAX_ATTEMPTS = tostring(var.github_sync_heal_max_attempts)
     },
     local.ha_writer_env_secondary,
   )
@@ -130,6 +132,7 @@ module "github_sync_lambda_secondary" {
       }
     },
     local.ha_writer_events_iam_secondary,
+    local.github_sync_notifications_iam_secondary,
   )
 
   tags = { Purpose = "github-sync" }

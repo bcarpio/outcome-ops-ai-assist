@@ -12,6 +12,8 @@ vi.mock('../../../src/lib/api', () => ({
   createWorkspace: vi.fn(),
   listOrgMembers: vi.fn(),
   getCurrentUser: vi.fn(),
+  listNotifications: vi.fn().mockResolvedValue([]),
+  dismissNotification: vi.fn(),
 }))
 
 import {

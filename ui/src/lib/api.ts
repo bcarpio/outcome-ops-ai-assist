@@ -2441,8 +2441,12 @@ export interface GitHubRepo {
   last_sync_at: string | null
   // up_to_date: a manual sync found nothing changed since the last completed build
   // already_running: a manual sync found an earlier sync of the same commit still running
-  last_sync_status: 'needs_configuration' | 'queued' | 'in_progress' | 'success' | 'up_to_date' | 'already_running' | 'failed' | null
+  // stalled: scheduled self-heal gave up on the latest commit; last_failure_reason says why
+  last_sync_status: 'needs_configuration' | 'queued' | 'in_progress' | 'success' | 'up_to_date' | 'already_running' | 'failed' | 'stalled' | null
   last_sync_error: string | null
+  // Set when last_sync_status is 'stalled': 'heal_budget_exhausted',
+  // 'baseline_unreachable' or 'units_failed'.
+  last_failure_reason?: string | null
   last_commit_sha: string | null
   added_at: string
   added_by: string
@@ -3901,4 +3905,52 @@ export async function getAuditEvent(
     throw new Error((data?.error as string) || `Failed to get audit event: ${response.status}`)
   }
   return (await response.json()) as { event: AuditEvent }
+}
+
+// ============================================================================
+// Notifications
+// ============================================================================
+
+export interface Notification {
+  notification_id: string
+  workspace_id: string
+  type: string
+  severity: 'warning' | 'error'
+  title: string
+  message: string
+  repo_name: string
+  added_by: string | null
+  reason: string
+  target_sha: string
+  failed_files: string[]
+  failed_files_total: number
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * List notifications visible to the caller across all workspaces, newest first
+ */
+export async function listNotifications(): Promise<Notification[]> {
+  const response = await fetch(`${API_BASE}/notifications`)
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to list notifications: ${response.status}`)
+  }
+  const data = await safeJson(response)
+  return (data?.notifications as Notification[]) || []
+}
+
+/**
+ * Dismiss (delete) a notification in a workspace
+ */
+export async function dismissNotification(workspaceId: string, notificationId: string): Promise<void> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/notifications/${encodeURIComponent(notificationId)}`,
+    { method: 'DELETE' },
+  )
+  if (!response.ok) {
+    const data = await safeJson(response)
+    throw new Error((data?.error as string) || `Failed to dismiss notification: ${response.status}`)
+  }
 }

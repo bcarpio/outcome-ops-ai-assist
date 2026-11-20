@@ -17,6 +17,8 @@ vi.mock('../../../src/lib/api', () => ({
   getChatAvailablePrompts: vi.fn(),
   shareConversation: vi.fn(),
   listSharedConversations: vi.fn(),
+  listNotifications: vi.fn().mockResolvedValue([]),
+  dismissNotification: vi.fn(),
 }))
 
 vi.mock('../../../src/components/AllChatsModal', () => ({

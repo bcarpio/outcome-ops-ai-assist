@@ -362,6 +362,7 @@ module "workspace_management_lambda_secondary" {
       AZURE_AD_GROUP_GRAPH_FALLBACK_ENABLED = tostring(var.azure_ad_group_graph_fallback_enabled)
       AZURE_AD_GRAPH_CLIENT_ID              = local.azure_ad_graph_client_id
       AZURE_AD_GRAPH_SECRET_SSM_PATH        = local.azure_ad_graph_secret_ssm_path
+      NOTIFICATIONS_TABLE                   = module.notifications_table_secondary[0].dynamodb_table_id
     },
     local.ha_writer_env_secondary,
     local.ha_scheduler_env_secondary,
@@ -427,6 +428,7 @@ module "workspace_management_lambda_secondary" {
     },
     local.ha_writer_events_iam_secondary,
     local.ha_scheduler_iam_secondary,
+    local.workspace_mgmt_notifications_iam_secondary,
     # ADR-048 v1.1 (parity): read the Graph client secret when the fallback is
     # enabled. Effective path defaults to the OIDC login app's secret.
     (var.azure_ad_group_graph_fallback_enabled && local.azure_ad_graph_secret_ssm_path != "") ? {

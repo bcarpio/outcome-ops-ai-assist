@@ -169,6 +169,14 @@ webhook entry), `*-scheduler` (EventBridge cron driver), `*-sync`
   (Enterprise Server) base URL configurable via `github_base_url`
   (API `{base}/api/v3`, raw via contents API; App registered on the
   instance) — not yet certified against a live GHES.
+- **GitHub sync self-heal** - repo rows track completed SHAs
+  (`last_docs_sha` / `last_code_map_sha` / `last_gkg_sha`) separately from
+  the dispatched SHA; both manual and hourly syncs diff from the completed
+  ones. The hourly run re-dispatches a commit whose run died (max
+  `github_sync_heal_max_attempts` per commit, 1h/2h/4h backoff,
+  `github_sync_heal_max_per_run` heals per hour), never auto-rebuilds,
+  advances past permanently failing files, and marks the repo `stalled`
+  with a workspace-admin notification. ADR-061.
 - **Confluence** — ingests pages from configured spaces. Atlassian
   OAuth. On-demand + cron.
 - **Jira** — ingests issues; also drives the code-gen trigger via

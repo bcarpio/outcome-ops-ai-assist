@@ -18,6 +18,7 @@ import {
 } from '../lib/api'
 import AdminNav from '../components/AdminNav'
 import MutationButton from '../components/MutationButton'
+import NotificationBell from '../components/NotificationBell'
 
 export default function Workspaces() {
   const navigate = useNavigate()
@@ -115,6 +116,7 @@ export default function Workspaces() {
             <h1 className="text-xl font-semibold">Workspaces</h1>
           </div>
           <div className="flex items-center gap-3">
+            <NotificationBell />
             {isOrgAdmin && (
               <MutationButton
                 onClick={() => setShowCreateModal(true)}
