@@ -743,12 +743,12 @@ class TestLogAuditEntry:
             output_text="hello",
             user_email="brian@example.com",
             workspace_id="ws_1",
-            source_ip="24.253.92.153",
+            source_ip="203.0.113.10",
             user_agent="Mozilla/5.0 (Macintosh)",
         )
 
         item = mock_table.put_item.call_args[1]["Item"]
-        assert item["source_ip"] == "24.253.92.153"
+        assert item["source_ip"] == "203.0.113.10"
         assert item["user_agent"] == "Mozilla/5.0 (Macintosh)"
 
     def test_log_audit_entry_source_ip_defaults_to_empty(self, mock_table):

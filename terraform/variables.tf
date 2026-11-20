@@ -932,6 +932,18 @@ variable "github_scheduler_timeout_seconds" {
   default     = 300
 }
 
+variable "codegen_git_author_name" {
+  description = "Git author name on commits the platform makes in customer repos (code generation, test fixes)."
+  type        = string
+  default     = "OutcomeOps Bot"
+}
+
+variable "codegen_git_author_email" {
+  description = "Git author email on commits the platform makes in customer repos. Set to an address in a domain you control (for example a noreply address) so commit attribution does not point at the vendor's domain."
+  type        = string
+  default     = "bot@outcomeops.ai"
+}
+
 variable "github_scheduler_parallel_workers" {
   description = "ThreadPoolExecutor worker count for github-scheduler's SQS enqueue fan-out (was serial). 32 workers × ~10ms per SQS send handles ~3000 repos inside the 300s timeout with plenty of margin."
   type        = number

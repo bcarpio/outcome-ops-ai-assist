@@ -57,6 +57,8 @@ module "generate_code_lambda" {
     {
       ENV                                = var.environment
       APP_NAME                           = var.app_name
+      CODEGEN_GIT_AUTHOR_NAME            = var.codegen_git_author_name
+      CODEGEN_GIT_AUTHOR_EMAIL           = var.codegen_git_author_email
       GITHUB_BASE_URL                    = var.github_base_url
       EVENT_BUS_NAME                     = aws_cloudwatch_event_bus.automation.name
       ENABLE_BEDROCK_COOLDOWN            = tostring(var.enable_bedrock_cooldown)
@@ -545,6 +547,8 @@ module "run_tests_lambda" {
     {
       ENV                                = var.environment
       APP_NAME                           = var.app_name
+      CODEGEN_GIT_AUTHOR_NAME            = var.codegen_git_author_name
+      CODEGEN_GIT_AUTHOR_EMAIL           = var.codegen_git_author_email
       GITHUB_BASE_URL                    = var.github_base_url
       TEST_RESULTS_BUCKET                = module.knowledge_base_bucket.s3_bucket_id
       TEST_RESULTS_PREFIX                = "test-results"

@@ -72,11 +72,14 @@ DEFAULT_DAYS = 30
 TARGET_BEDROCK_QUERIES = 4000
 TARGET_REFUSALS = 15
 
-DOMAIN = "outcomeops.onmicrosoft.com"
+# Email domain for every synthetic user. Override with --domain to match
+# the tenant the demo audience expects to see.
+DOMAIN = "example.onmicrosoft.com"
 
-# Operator's real account - keep as the heaviest user so the dashboard
-# story still centers on them.
-PRIMARY_USER = ("bcarpio", "Brian Carpio", "24.253.92.153")
+# The heaviest synthetic user, so the dashboard story centers on one
+# person. Override the handle with --primary-user. The IP is from the
+# RFC 5737 documentation range, never a real address.
+PRIMARY_USER = ("demo.admin", "Demo Admin", "203.0.113.10")
 
 # Fake user pool. Names span India / South America / Africa / SE Asia /
 # East Asia so the "by user" view doesn't look like one country picnic.
@@ -293,14 +296,14 @@ ADMIN_PLAN = [
 ]
 
 # Admin actor distribution. Demo narrative: a mature multi-admin org where
-# the platform owner (ppatel) does most config, with bcarpio (the
-# operator) and a few others contributing. Tuned so bcarpio is visible
-# but not dominant - if every admin row shows bcarpio the InfoSec story
-# loses the "Top Actors across many users" punch line.
+# the platform owner (ppatel) does most config, with the primary demo
+# user and a few others contributing. Tuned so the primary user is
+# visible but not dominant - if every admin row shows one person the
+# InfoSec story loses the "Top Actors across many users" punch line.
 ADMIN_ACTOR_WEIGHTS = [
     ("ppatel",     0.30),  # platform / workspace owner
     ("rsilva",     0.22),
-    ("bcarpio",    0.18),  # the operator
+    (PRIMARY_USER[0], 0.18),  # the primary demo user
     ("akumar",     0.12),
     ("mferreira",  0.10),
     ("snguyen",    0.08),
@@ -878,11 +881,16 @@ def _clear_analytics_rollups(
 
 
 def main() -> int:
+    global DOMAIN, PRIMARY_USER, ADMIN_ACTOR_WEIGHTS
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--env", default="dev")
+    parser.add_argument("--domain", default=DOMAIN,
+                        help="email domain for synthetic users")
+    parser.add_argument("--primary-user", default=PRIMARY_USER[0],
+                        help="handle of the heaviest synthetic user")
     parser.add_argument("--app-name", default="outcome-ops-ai-assist")
     parser.add_argument("--days", type=int, default=DEFAULT_DAYS)
     parser.add_argument("--queries", type=int, default=TARGET_BEDROCK_QUERIES)
@@ -902,6 +910,14 @@ def main() -> int:
                              "the seed window. Implied by --apply; useful "
                              "on its own only for teardown without re-seed.")
     args = parser.parse_args()
+    DOMAIN = args.domain
+    if args.primary_user != PRIMARY_USER[0]:
+        default_handle = PRIMARY_USER[0]
+        PRIMARY_USER = (args.primary_user, args.primary_user, PRIMARY_USER[2])
+        ADMIN_ACTOR_WEIGHTS = [
+            (args.primary_user if h == default_handle else h, w)
+            for h, w in ADMIN_ACTOR_WEIGHTS
+        ]
 
     session = boto3.session.Session()
     ssm = session.client("ssm")

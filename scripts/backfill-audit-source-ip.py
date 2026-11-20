@@ -10,8 +10,8 @@ calls and shouldn't acquire a fake browser IP.
 
 Usage:
     source venv/bin/activate
-    python scripts/backfill-audit-source-ip.py --env prd --ip 24.253.92.153 --dry-run
-    python scripts/backfill-audit-source-ip.py --env prd --ip 24.253.92.153 --apply
+    python scripts/backfill-audit-source-ip.py --env prd --ip 203.0.113.10 --dry-run
+    python scripts/backfill-audit-source-ip.py --env prd --ip 203.0.113.10 --apply
 
 Options:
     --ip                Source IP to write (required).

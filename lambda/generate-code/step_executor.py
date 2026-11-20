@@ -56,6 +56,9 @@ EVENT_BUS_NAME = os.environ.get("EVENT_BUS_NAME", "default")
 ENV = os.environ.get("ENV", "dev")
 APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 ENABLE_BEDROCK_COOLDOWN = os.environ.get("ENABLE_BEDROCK_COOLDOWN", "true").lower() == "true"
+# Author identity for commits the platform makes in customer repos.
+GIT_AUTHOR_NAME = os.environ.get("CODEGEN_GIT_AUTHOR_NAME", "OutcomeOps Bot")
+GIT_AUTHOR_EMAIL = os.environ.get("CODEGEN_GIT_AUTHOR_EMAIL", "bot@outcomeops.ai")
 
 # Regex pattern for GitHub tokens (PAT and fine-grained tokens)
 TOKEN_PATTERN = re.compile(r'(github_pat_[A-Za-z0-9_]{22,}|ghp_[A-Za-z0-9]{36,}|x-access-token:[^@\s]+)')
@@ -299,12 +302,12 @@ def format_terraform_files(
             # If files were formatted, commit and push
             if formatted_files:
                 subprocess.run(
-                    ["git", "config", "user.name", "OutcomeOps Bot"],
+                    ["git", "config", "user.name", GIT_AUTHOR_NAME],
                     cwd=repo_dir,
                     check=True
                 )
                 subprocess.run(
-                    ["git", "config", "user.email", "bot@outcomeops.ai"],
+                    ["git", "config", "user.email", GIT_AUTHOR_EMAIL],
                     cwd=repo_dir,
                     check=True
                 )

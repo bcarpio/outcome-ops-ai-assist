@@ -23,7 +23,7 @@ function buildEvent(overrides: Partial<AuditEvent> = {}): AuditEvent {
     action: '',
     user_email: 'brian@example.com',
     workspace_id: 'ws-1',
-    source_ip: '24.253.92.153',
+    source_ip: '203.0.113.10',
     user_agent: 'Mozilla/5.0',
     details: {},
     status: 'success',

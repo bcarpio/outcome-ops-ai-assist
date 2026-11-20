@@ -92,6 +92,9 @@ ENV = os.environ.get("ENV", "dev")
 APP_NAME = os.environ.get("APP_NAME", "outcome-ops-ai-assist")
 TEST_RESULTS_BUCKET = os.environ.get("TEST_RESULTS_BUCKET")
 TEST_RESULTS_PREFIX = os.environ.get("TEST_RESULTS_PREFIX", "test-results")
+# Author identity for commits the platform makes in customer repos.
+GIT_AUTHOR_NAME = os.environ.get("CODEGEN_GIT_AUTHOR_NAME", "OutcomeOps Bot")
+GIT_AUTHOR_EMAIL = os.environ.get("CODEGEN_GIT_AUTHOR_EMAIL", "bot@outcomeops.ai")
 GITHUB_TOKEN_PARAM = os.environ.get(
     "GITHUB_TOKEN_PARAM", f"/{ENV}/{APP_NAME}/github/token"
 )
@@ -800,8 +803,8 @@ def update_plan_with_autofix_cost(
         env["GIT_EXEC_PATH"] = "/opt/git/libexec/git-core"
 
         # Configure git user
-        run_command(["git", "config", "user.name", "OutcomeOps Bot"], cwd=repo_dir, env=env)
-        run_command(["git", "config", "user.email", "bot@outcomeops.ai"], cwd=repo_dir, env=env)
+        run_command(["git", "config", "user.name", GIT_AUTHOR_NAME], cwd=repo_dir, env=env)
+        run_command(["git", "config", "user.email", GIT_AUTHOR_EMAIL], cwd=repo_dir, env=env)
 
         # Stage and commit
         run_command(["git", "add", plan_file], cwd=repo_dir, env=env)
@@ -913,12 +916,12 @@ def attempt_import_fix(error_output: str, repo_dir: str, github_token: str, deta
 
         # Configure git user identity for commits
         run_command(
-            ["git", "config", "user.name", "OutcomeOps Bot"],
+            ["git", "config", "user.name", GIT_AUTHOR_NAME],
             cwd=repo_dir,
             env=env
         )
         run_command(
-            ["git", "config", "user.email", "bot@outcomeops.ai"],
+            ["git", "config", "user.email", GIT_AUTHOR_EMAIL],
             cwd=repo_dir,
             env=env
         )
@@ -1015,12 +1018,12 @@ def attempt_syntax_fix(error_output: str, repo_dir: str, github_token: str, deta
 
         # Configure git user identity for commits
         run_command(
-            ["git", "config", "user.name", "OutcomeOps Bot"],
+            ["git", "config", "user.name", GIT_AUTHOR_NAME],
             cwd=repo_dir,
             env=env
         )
         run_command(
-            ["git", "config", "user.email", "bot@outcomeops.ai"],
+            ["git", "config", "user.email", GIT_AUTHOR_EMAIL],
             cwd=repo_dir,
             env=env
         )

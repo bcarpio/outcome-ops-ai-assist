@@ -5291,7 +5291,7 @@ class TestAuditEvents:
             "category": "bedrock",
             "user_email": "brian@example.com",
             "workspace_id": "",
-            "source_ip": "24.253.92.153",
+            "source_ip": "203.0.113.10",
             "user_agent": "Mozilla/5.0",
             "status": "refusal",
             "flagged_reason": "test_refusal_trigger",
@@ -5336,7 +5336,7 @@ class TestAuditEvents:
             "action": "WORKSPACE_CREATED",
             "user_email": "brian@example.com",
             "workspace_id": "ws-1",
-            "source_ip": "24.253.92.153",
+            "source_ip": "203.0.113.10",
             "user_agent": "Mozilla/5.0",
             "details": {"workspace_name": "X"},
         }]}

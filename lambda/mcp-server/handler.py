@@ -650,7 +650,7 @@ MCP_TOOLS = [
                         "Repository slug. For GitHub: 'owner/name' "
                         "(e.g. 'bcarpio/eShop'). For Azure DevOps: "
                         "'org/project/repo' "
-                        "(e.g. 'bcarpio/OutcomeOps/ooai-license-server'). "
+                        "(e.g. 'contoso/Platform/payments-api'). "
                         "For GitLab: the full project path "
                         "'group/{...subgroups}/project' "
                         "(e.g. 'acme/platform/backend/api') -- nested "

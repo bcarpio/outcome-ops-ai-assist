@@ -485,3 +485,8 @@ github_usernames_to_tag = "yourusername"
 # this stack only adds it to the functions' resource policies. Empty = no CI
 # trigger.
 # ci_invoker_role_arns = ["arn:aws:iam::<ACCOUNT_ID>:role/github-actions-role"]
+
+# Git author on commits the platform makes in your repos (code generation,
+# test fixes). Defaults to "OutcomeOps Bot" <bot@outcomeops.ai>.
+# codegen_git_author_name  = "OutcomeOps Bot"
+# codegen_git_author_email = "outcomeops-bot@noreply.example.com"
