@@ -296,39 +296,72 @@ def _plane1_file_scope(changed_files: List[str]) -> List[str]:
     ]
 
 
+def _block_base_lines(block: Any) -> List[int]:
+    """BASE-side lines whose enclosing symbol a change block touches.
+
+    A block with removed BASE lines changes the symbol(s) enclosing those
+    lines. A pure insertion carries no removed line, only the BASE line just
+    before it (``insert_after_base_line``); it is handled by the caller,
+    because it needs both neighbouring lines to agree.
+    """
+    return sorted({int(x) for x in (getattr(block, "removed_base_lines", None) or ())})
+
+
 def symbol_graph_consumers(
     workspace_ids: List[str],
     repo: str,
-    changed_lines_by_file: Dict[str, List[int]],
+    changed_blocks_by_file: Dict[str, List[Any]],
     *,
+    first_added_by_file: Optional[Dict[str, int]] = None,
     reader: Any = None,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """Plane 1 (ADR-054): real code-symbol consumers of the changed symbols.
 
-    Resolves the symbols whose body the PR changed (``symbol_at_line`` on each
-    changed RIGHT-side line) and returns their callers + importers from the
-    symbol graph -- precise, and cross-repo because the graph spans ingested
-    repos. This replaces the retired prose-similarity heuristic for the
-    code-symbol plane.
+    Resolves the symbols the PR actually changed and returns their callers +
+    importers from the symbol graph -- precise, and cross-repo because the
+    graph spans ingested repos. This replaces the retired prose-similarity
+    heuristic for the code-symbol plane.
+
+    The symbol graph reflects the BASE (default) branch, so symbols are
+    resolved on BASE-side line numbers, never on HEAD added-line numbers
+    (a HEAD line below any insertion points at an unrelated BASE symbol).
+    Per change block (duck-typed ``shared.pr_diff.ChangeBlock``):
+
+    - ``removed_base_lines`` non-empty: each removed BASE line is resolved;
+      every symbol found is changed.
+    - pure insertion (``insert_after_base_line`` = L >= 1): ``symbol_at_line``
+      is start-line only and returns the PREVIOUS function for a line between
+      two functions, so the block changes a symbol only when BOTH L and L + 1
+      resolve to the SAME symbol (insertion inside its body). L == 0 (top of
+      file) or a side that does not resolve means no symbol is changed.
 
     Args:
         workspace_ids: candidate scope (the repo's workspace + is_global ones);
             a changed symbol resolves in exactly one, we take the first hit.
         repo: bare repo name of the changed files (symbol-graph key --
             see reference_app_vs_repo_naming: BARE repo, not the full slug).
-        changed_lines_by_file: {repo_relative_path: [changed RIGHT-side lines]}.
+        changed_blocks_by_file: {repo_relative_path: [ChangeBlock, ...]}.
+        first_added_by_file: {repo_relative_path: first added HEAD line};
+            the anchor fallback for a block without its own ``head_anchor``
+            (e.g. a deletion-only block).
 
     Returns:
         ``(consumers, undetermined_files)``.
         ``consumers`` -- one dict per distinct external caller/importer:
         ``{changed_file, changed_line, changed_symbol_id, relation,
         consumer_repo, consumer_file, consumer_line, truncated}``.
-        ``changed_line`` is the first changed RIGHT-side line that resolved the
-        symbol, so each finding anchors to the symbol it concerns (not the
-        file's first added line).
+        ``changed_line`` is the HEAD anchor of the first block that resolved
+        the symbol (``block.head_anchor``, else the file's first added line),
+        or None when the file has no added line to anchor on. Callers MUST
+        NOT emit a line-anchored finding for None (ADR-031: never guess).
         ``undetermined_files`` -- files whose consumers could NOT be determined
         because the graph was unavailable or errored. Per ADR-054 the caller
         MUST fail closed on these (manual-review WARN), never report "safe".
+
+    Consumers in ANOTHER repo that itself defines the changed symbol id are
+    dropped: symbol ids are not repo-qualified, so a repo carrying its own
+    copy at the same path has caller edges to "the same" id while calling
+    only its own copy. Same-repo callers in other files are still reported.
 
     ``reader`` is injectable for tests; in production it defaults to the shared
     ``symbol_graph_reader`` module.
@@ -336,28 +369,86 @@ def symbol_graph_consumers(
     if reader is None:
         from shared import symbol_graph_reader as reader
 
+    first_added_by_file = first_added_by_file or {}
     consumers: List[Dict[str, Any]] = []
     undetermined: List[str] = []
     seen = set()
+    # sid -> repos that define it, across every scope workspace. Cached for the
+    # run: the same shared symbol is often changed from several files.
+    defining_repos: Dict[str, Set[str]] = {}
 
-    for file_path, lines in changed_lines_by_file.items():
+    def _defining_repos(sid: str) -> Set[str]:
+        if sid not in defining_repos:
+            repos: Set[str] = set()
+            for ws in workspace_ids:
+                for site in reader.definitions(ws, sid).sites:
+                    repos.add(site.repo)
+            defining_repos[sid] = repos
+        return defining_repos[sid]
+
+    for file_path, blocks in changed_blocks_by_file.items():
         try:
-            # 1. Resolve the enclosing symbols the PR actually changed. A symbol
-            #    lives in one workspace; take the first scope that resolves it.
-            resolved: Dict[str, str] = {}  # target_symbol_id -> workspace_id
-            resolved_line: Dict[str, int] = {}  # target_symbol_id -> first line
-            for line in sorted(set(lines)):
-                for ws in workspace_ids:
-                    enc = reader.symbol_at_line(ws, repo, file_path, line)
-                    if enc and enc.target_symbol_id:
-                        if enc.target_symbol_id not in resolved:
-                            resolved[enc.target_symbol_id] = ws
-                            resolved_line[enc.target_symbol_id] = line
-                        break
+            line_cache: Dict[int, Optional[Tuple[str, str]]] = {}
+            # One defines read per (workspace, file), loaded on first use:
+            # symbol_at_line re-reads the repo's whole defines partition per
+            # line, which made a large PR take minutes.
+            file_indexes: Dict[str, Any] = {}
 
-            # No resolvable symbol (comment/whitespace change, or a graph gap
-            # such as a decorated fn) is NOT "undetermined" -- the graph was
-            # reachable, there is simply no code-symbol signal for this file.
+            def _index(ws: str) -> Any:
+                if ws not in file_indexes:
+                    file_indexes[ws] = reader.file_symbol_index(ws, repo, file_path)
+                return file_indexes[ws]
+
+            def _resolve(line: int) -> Optional[Tuple[str, str]]:
+                # A symbol lives in one workspace; take the first scope that
+                # resolves it.
+                if line not in line_cache:
+                    hit = None
+                    for ws in workspace_ids:
+                        enc = _index(ws).at(line)
+                        if enc and enc.target_symbol_id:
+                            hit = (enc.target_symbol_id, ws)
+                            break
+                    line_cache[line] = hit
+                return line_cache[line]
+
+            # 1. Resolve the enclosing symbols the PR actually changed, on
+            #    BASE-side lines.
+            resolved: Dict[str, str] = {}  # target_symbol_id -> workspace_id
+            resolved_line: Dict[str, Optional[int]] = {}  # sid -> HEAD anchor
+            for block in blocks or ():
+                head_anchor = getattr(block, "head_anchor", None)
+                anchor = (
+                    head_anchor if head_anchor is not None
+                    else first_added_by_file.get(file_path)
+                )
+
+                hits: List[Tuple[str, str]] = []
+                removed = _block_base_lines(block)
+                if removed:
+                    for line in removed:
+                        hit = _resolve(line)
+                        if hit:
+                            hits.append(hit)
+                else:
+                    after = getattr(block, "insert_after_base_line", None)
+                    if isinstance(after, int) and not isinstance(after, bool) and after >= 1:
+                        before_hit = _resolve(after)
+                        after_hit = _resolve(after + 1)
+                        if before_hit and after_hit and before_hit[0] == after_hit[0]:
+                            hits.append(before_hit)
+
+                for sid, ws in hits:
+                    if sid not in resolved:
+                        resolved[sid] = ws
+                    # Keep the first non-None anchor seen for this symbol.
+                    if resolved_line.get(sid) is None:
+                        resolved_line[sid] = anchor
+
+            # No resolvable symbol (comment/whitespace change, an insertion
+            # between functions, or a graph gap such as a decorated fn) is NOT
+            # "undetermined" -- the graph was reachable, there is simply no
+            # code-symbol signal for this file.
             if not resolved:
                 continue
 
@@ -383,6 +474,11 @@ def symbol_graph_consumers(
                             # is expected-to-break, not a production-impact signal.
                             if _is_plane1_test_file(site.file_path):
                                 continue
+                            # Exclude another repo that defines its own copy of
+                            # this (non repo-qualified) symbol id: it calls its
+                            # own definition, not the one this PR changed.
+                            if site.repo != repo and site.repo in _defining_repos(sid):
+                                continue
                             key = (
                                 relation, site.repo, site.file_path,
                                 site.line, sid,
@@ -392,7 +488,7 @@ def symbol_graph_consumers(
                             seen.add(key)
                             consumers.append({
                                 "changed_file": file_path,
-                                "changed_line": resolved_line[sid],
+                                "changed_line": resolved_line.get(sid),
                                 "changed_symbol_id": sid,
                                 "relation": relation,
                                 "consumer_repo": site.repo,
@@ -418,6 +514,15 @@ def symbol_graph_consumers(
     return consumers, undetermined
 
 
+# Plane-2 PASS wording removed from ``details`` when plane 1 upgrades the
+# verdict to WARN, so a WARN never carries "safe to merge" text.
+_PLANE2_PASS_LINES = frozenset({
+    "No direct consumers detected in knowledge base.",
+    "These may be new handlers, internal-only, or not yet documented.",
+    "Changes appear safe to merge.",
+})
+
+
 def check_breaking_changes(
     check_type: str,
     pr_number: int,
@@ -426,6 +531,7 @@ def check_breaking_changes(
     query_kb_lambda_name: str,
     *,
     anchors: Optional[Dict[str, List[int]]] = None,
+    change_blocks: Optional[Dict[str, List[Any]]] = None,
     provider: str = "github",
     connection_id: str | None = None,
     ado_org: str | None = None,
@@ -454,12 +560,20 @@ def check_breaking_changes(
     high-confidence breaking change on a changed file whose path is in
     ``anchors`` is emitted as a line-anchored inline Finding
     (shared.pr_findings). The plane-1 symbol path anchors each finding on
-    the specific changed line that resolved the symbol; the heuristic path
+    the HEAD anchor of the change block that resolved the symbol; the heuristic path
     (no per-symbol line) anchors on the file's first added line and emits
     at most one finding per (file, handler) so co-located findings are not
     fanned out. Files absent from ``anchors`` (pure deletions, or when
     anchor computation failed and ``anchors`` is {}/None) are not anchored
     and stay in the ``details`` summary only.
+
+    ``change_blocks`` maps repo-relative file path -> the list of
+    ``shared.pr_diff.ChangeBlock`` runs for that file (BASE-side removed
+    lines, pure-insertion position, HEAD anchor). Plane 1 resolves changed
+    symbols on BASE lines from these blocks because the symbol graph reflects
+    the base branch. ``None`` means the diff could not be parsed: every
+    plane-1 file is then reported as undetermined (manual review), never
+    silently skipped (ADR-054 fail closed).
 
     Scope is split by plane (ADR-054/ADR-055). The heuristic path keeps the
     handler.py + terraform ``relevant_files`` set (handler-named by
@@ -674,7 +788,7 @@ def check_breaking_changes(
             consumer_names = sorted({dep.source for dep in deps})
             consumers_phrase = ", ".join(f"'{c}'" for c in consumer_names)
             for path in anchorable_files:
-                message = (
+                finding_message = (
                     f"Potential breaking change in '{handler_name}': direct "
                     f"consumer(s) {consumers_phrase} depend on this and may be "
                     f"affected."
@@ -685,7 +799,7 @@ def check_breaking_changes(
                         line=anchors[path][0],
                         side="RIGHT",
                         severity="warning",
-                        message=message,
+                        message=finding_message,
                         enclosing_symbol=None,
                     ).model_dump()
                 )
@@ -693,27 +807,52 @@ def check_breaking_changes(
     # Plane 1 (ADR-054): precise code-symbol consumers via the symbol graph.
     # Additive to the summary heuristic above (that heuristic is retired in a
     # later chunk): plane 1 can upgrade PASS -> WARN but never the reverse.
-    # `anchors` gives us the changed lines to resolve the enclosing symbols;
-    # with no anchors we cannot anchor a Finding (ADR-031), so plane 1 is
-    # skipped. Fail CLOSED: a file whose consumers cannot be determined becomes
-    # a manual-review WARN, never a silent "safe".
-    #
-    # We thread the FULL changed-line set per file (anchors is now the complete
-    # added-line list), so multiple changed symbols in one file are each
-    # resolved and each finding anchors to its own symbol's line.
-    if anchors and scope_workspace_ids:
+    # Changed symbols are resolved on BASE-side lines from `change_blocks`
+    # (the graph reflects the base branch); each finding anchors on a HEAD
+    # line from the block or the file's first added line, and a consumer with
+    # no anchor stays in the details only (ADR-031: never guess a line). Fail
+    # CLOSED: a file whose consumers cannot be determined (graph error, or no
+    # parsed diff blocks at all) becomes a manual-review WARN, never a silent
+    # "safe".
+    if scope_workspace_ids and plane1_files:
         # Symbol graph keys on the BARE repo name (reference_app_vs_repo_naming),
         # not the owner/repo (or org/project/repo) slug.
         bare_repo = repository.split("/")[-1]
-        # Plane-1 scans its OWN widened file set (shared/*.py + non-handler
-        # modules), not the handler-scoped `relevant_files`. `anchors` already
-        # carries added lines for every changed file, so the lines are present.
-        changed_lines_by_file = {
-            f: anchors[f] for f in plane1_files if f in anchors
-        }
-        plane1_consumers, plane1_undetermined = symbol_graph_consumers(
-            scope_workspace_ids, bare_repo, changed_lines_by_file, reader=reader
-        )
+        if change_blocks is None:
+            logger.warning(
+                f"[breaking_changes] no parsed diff blocks for PR #{pr_number}; "
+                f"failing closed (manual review) for {len(plane1_files)} file(s)."
+            )
+            plane1_consumers: List[Dict[str, Any]] = []
+            plane1_undetermined: List[str] = list(plane1_files)
+        else:
+            # Plane-1 scans its OWN widened file set (shared/*.py + non-handler
+            # modules), not the handler-scoped `relevant_files`.
+            changed_blocks_by_file = {
+                f: change_blocks[f] for f in plane1_files if f in change_blocks
+            }
+            first_added_by_file = {
+                f: anchors[f][0] for f in plane1_files if anchors and anchors.get(f)
+            }
+            plane1_consumers, plane1_undetermined = symbol_graph_consumers(
+                scope_workspace_ids, bare_repo, changed_blocks_by_file,
+                first_added_by_file=first_added_by_file, reader=reader,
+            )
+            # The worker's diff includes every file it could fetch and diff,
+            # even one with no changes, so a plane-1 file missing from it
+            # failed to diff: fail closed rather than treat it as unchanged.
+            undiffed = [f for f in plane1_files if f not in change_blocks]
+            if undiffed:
+                logger.warning(
+                    f"[breaking_changes] no diff for {len(undiffed)} file(s) "
+                    f"on PR #{pr_number}; failing closed (manual review)."
+                )
+                plane1_undetermined = list(plane1_undetermined) + undiffed
+
+        if plane1_consumers or plane1_undetermined:
+            # One verdict: plane 1 is about to WARN, so drop the plane-2 PASS
+            # wording that would otherwise sit next to it.
+            details[:] = [d for d in details if d not in _PLANE2_PASS_LINES]
 
         if plane1_consumers:
             status = "WARN"
@@ -727,6 +866,9 @@ def check_breaking_changes(
                     f"{c['consumer_file']}:{c['consumer_line']} uses "
                     f"`{c['changed_symbol_id']}`"
                 )
+                if c["changed_line"] is None:
+                    # No HEAD line to anchor on (deletion-only file): details only.
+                    continue
                 findings.append(
                     Finding(
                         path=c["changed_file"],
@@ -751,7 +893,7 @@ def check_breaking_changes(
             details.append(
                 "**Could not determine code-symbol consumers for "
                 f"{', '.join(sorted(set(plane1_undetermined)))}** "
-                "(symbol graph unavailable) - manual review required."
+                "(symbol graph or diff unavailable) - manual review required."
             )
 
     # BREAKING_CHANGES doesn't use Claude, return empty usage tracker

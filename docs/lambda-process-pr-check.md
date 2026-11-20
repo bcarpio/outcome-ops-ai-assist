@@ -87,16 +87,30 @@ The Lambda routes to six specialized check handlers:
 
 ### 4. README Freshness (`readme_freshness.py`)
 
-**Purpose:** Ensure README documents new handlers and infrastructure
+**Purpose:** Ensure the documentation covers new handlers and infrastructure changes
 
 **Analysis Method:**
-- Detects new Lambda handlers and infrastructure files
-- Fetches README.md diff from GitHub
-- Uses Claude to verify README adequately documents changes
-- Returns WARN if README not updated or inadequate
+- Detects new Lambda handlers (files absent at the PR base) and changed infrastructure files
+- Treats any README file plus the repo's declared doc locations as documentation
+- Uses Claude to judge whether the changed documentation covers the changes
+- Returns WARN if no documentation changed, or the change looks inadequate
+
+**Where it looks:** read from `.outcomeops.yaml` at the PR head, so a repo can
+point the check at its own layout:
+
+```yaml
+ingestion:
+  docs_paths: ["documents"]          # documentation (default: ["docs"])
+  standards_paths: ["documents/adr"] # ADRs, also documentation (default: ["docs/adr"])
+infrastructure:
+  tool: "terraform"                  # for terraform only *.tf files count
+  directory: "infra"                 # default: "terraform"
+```
+
+README files count anywhere in the repo. Without the file, the defaults apply.
 
 **Dependencies:**
-- GitHub API (for README diff)
+- Provider API (GitHub, GitLab, Azure DevOps) for the config file and doc diffs
 - Bedrock Claude (for adequacy analysis)
 
 ### 5. Test Coverage (`test_coverage.py`)
@@ -225,10 +239,10 @@ _Check completed at 2025-01-15T10:00:00Z_
 
 **WARN:**
 ```markdown
-:warning: **README FRESHNESS**: README.md not updated
+:warning: **README FRESHNESS**: Documentation not updated
 
 **Details:**
-Infrastructure files changed but README not updated
+Infrastructure files changed (1 file(s)) but no documentation was updated (looked in README files or docs/, docs/adr/).
 
 _Check completed at 2025-01-15T10:00:00Z_
 ```

@@ -639,3 +639,94 @@ class TestCheckArchitecturalDuplication:
         assert result["status"] == "WARN"
         assert "check failed" in result["message"]
         assert any("Error:" in detail for detail in result["details"])
+
+
+class TestSelfReferenceFilter:
+    """A PR's own changed file is not a duplicate of itself."""
+
+    @pytest.mark.parametrize("ref,expected", [
+        ("bcarpio/outcome-ops-ai-assist/lambda/process-pr-check/handler.py", True),
+        ("outcome-ops-ai-assist/lambda/process-pr-check/handler.py", True),
+        ("other-owner/outcome-ops-ai-assist/lambda/process-pr-check/handler.py", True),
+        ("lambda/process-pr-check/handler.py", True),
+        ("`bcarpio/outcome-ops-ai-assist/lambda/process-pr-check/handler.py`", True),
+        # A differently named repo (even a renamed copy) is a real match.
+        ("bcarpio/outcome-ops-ai-assist-private/lambda/process-pr-check/handler.py", False),
+        # Same repo, a file this PR does not change: a real in-repo duplicate.
+        ("bcarpio/outcome-ops-ai-assist/lambda/analyze-pr/handler.py", False),
+        ("", False),
+    ])
+    def test_is_self_reference(self, ref, expected):
+        assert handler_module._is_self_reference(
+            ref, "bcarpio/outcome-ops-ai-assist",
+            ["lambda/process-pr-check/handler.py"],
+        ) is expected
+
+    def test_deep_slug_repository(self):
+        assert handler_module._is_self_reference(
+            "org/project/repo/src/app.py", "org/project/repo", ["src/app.py"])
+
+    @patch('architectural_duplication_handler.get_github_token')
+    @patch('architectural_duplication_handler.fetch_pr_file_diff')
+    @patch('architectural_duplication_handler.summarize_pr_with_claude')
+    @patch('architectural_duplication_handler.query_knowledge_base')
+    @patch('architectural_duplication_handler.analyze_similarity_with_claude')
+    def test_self_matches_dropped_others_kept(
+        self, mock_analyze, mock_query_kb, mock_summarize, mock_fetch, mock_token
+    ):
+        mock_token.return_value = "token"
+        mock_fetch.return_value = "+new code"
+        mock_summarize.return_value = "PR-check worker"
+        mock_query_kb.return_value = {"answer": "ctx", "sources": ["x"]}
+        mock_analyze.return_value = {
+            "hasSimilar": True,
+            "findings": [
+                {"changed_file": "lambda/process-pr-check/handler.py",
+                 "existing_ref": "bcarpio/outcome-ops-ai-assist/lambda/process-pr-check/handler.py",
+                 "message": "itself"},
+                {"changed_file": "lambda/process-pr-check/handler.py",
+                 "existing_ref": "bcarpio/other-repo/worker.py",
+                 "message": "real duplicate"},
+            ],
+            "parse_failed": False,
+        }
+
+        result = check_architectural_duplication(
+            "ARCHITECTURAL_DUPLICATION", 1, "bcarpio/outcome-ops-ai-assist",
+            ["lambda/process-pr-check/handler.py"], "qkb", "/dev/github/token",
+            anchors={"lambda/process-pr-check/handler.py": [3]},
+        )
+
+        assert result["status"] == "WARN"
+        text = "\n".join(result["details"])
+        assert "other-repo" in text and "itself" not in text
+        assert len(result["findings"]) == 1
+
+    @patch('architectural_duplication_handler.get_github_token')
+    @patch('architectural_duplication_handler.fetch_pr_file_diff')
+    @patch('architectural_duplication_handler.summarize_pr_with_claude')
+    @patch('architectural_duplication_handler.query_knowledge_base')
+    @patch('architectural_duplication_handler.analyze_similarity_with_claude')
+    def test_only_self_matches_passes(
+        self, mock_analyze, mock_query_kb, mock_summarize, mock_fetch, mock_token
+    ):
+        mock_token.return_value = "token"
+        mock_fetch.return_value = "+new code"
+        mock_summarize.return_value = "PR-check worker"
+        mock_query_kb.return_value = {"answer": "ctx", "sources": ["x"]}
+        mock_analyze.return_value = {
+            "hasSimilar": True,
+            "findings": [
+                {"changed_file": "lambda/process-pr-check/handler.py",
+                 "existing_ref": "bcarpio/outcome-ops-ai-assist/lambda/process-pr-check/handler.py",
+                 "message": "itself"},
+            ],
+            "parse_failed": False,
+        }
+
+        result = check_architectural_duplication(
+            "ARCHITECTURAL_DUPLICATION", 1, "bcarpio/outcome-ops-ai-assist",
+            ["lambda/process-pr-check/handler.py"], "qkb", "/dev/github/token",
+        )
+
+        assert result["status"] == "PASS"

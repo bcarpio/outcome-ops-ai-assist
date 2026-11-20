@@ -94,6 +94,41 @@ dependencies are both in scope — the planes are the same either way.
   Azure DevOps in the same change, per the existing inline-comment contract
   (ADR-031).
 
+### Plane 1: which symbols changed and who consumes them
+
+Plane 1 has two questions to answer before it can name a consumer: which symbols
+did the PR actually change, and which callers are really calling *this* symbol.
+Both have rules.
+
+- **Changed symbols are resolved on the base side of the diff.** The symbol graph
+  reflects the base (default) branch, so a PR head line number cannot be looked up
+  in it: every inserted line shifts the lines below it, and a head line number
+  lands on whatever symbol happened to sit there on the base branch. The check
+  instead derives contiguous change blocks from the base/head diff and resolves
+  them in base coordinates:
+  - Removed or replaced lines resolve on their own base line numbers.
+  - A pure insertion (new lines with nothing removed) counts only when the base
+    lines immediately before and after the insertion point resolve to the same
+    symbol, meaning the new lines landed inside that symbol's body. The graph
+    stores only a symbol's start line, so looking at one side alone would blame
+    the preceding function for lines added between two functions.
+  - Findings still anchor on a real added head line, per ADR-031. A deletion-only
+    change with no added line in the file is listed in the check summary without
+    an inline finding, because there is no head line to anchor on.
+- **A repo that defines its own copy of a symbol is not its consumer.** Symbol ids
+  are path-based and not repo-qualified, so two repos that contain the same file
+  path share symbol ids. For example, another repo with its own
+  `lambda/github-integration/handler.py` produces callers of
+  `python:lambda.github-integration.handler::lambda_handler` that have nothing
+  to do with the PR's repo. A caller in another repo counts as a consumer only if that
+  repo does not itself define the symbol; if it does, it is calling its own copy.
+- **Fail closed, unchanged.** If the diff blocks for a file or the definitions
+  lookup are unavailable, the file is reported as "could not determine consumers,
+  manual review" rather than as safe.
+- **One verdict.** When plane 1 reports for a PR, the knowledge-base pass's "safe
+  to merge" text is not shown. A reviewer sees the plane-1 result, not two
+  verdicts that can contradict each other.
+
 ## Consequences
 
 - **Precision up, noise down.** Plane 1 becomes deterministic (graph edges, not
@@ -111,6 +146,12 @@ dependencies are both in scope — the planes are the same either way.
   multi-repo; plane 2 is cross-repo wherever both sides' Terraform is ingested.
 - **The API plane remains a gap** until a route/contract registry exists; that is
   stated honestly to buyers rather than approximated.
+- **Known limits of base-side resolution.** Lines inserted at the very end of a
+  file have no base line after them, so they are not attributed to the preceding
+  symbol and do not produce a plane-1 finding. The graph may also lag the PR base:
+  it is built from the last ingested default-branch commit, so a symbol added or
+  moved on the default branch since that ingest may resolve to a stale location
+  or not at all.
 
 ## Alternatives Considered
 
@@ -124,3 +165,9 @@ dependencies are both in scope — the planes are the same either way.
   dependencies).** Deferred: it is the eventual home for planes 2 and 3, but it is
   a larger program; deriving plane-2 topology from existing Terraform delivers most
   of the value now without a new authoring burden on customers.
+
+## Version History
+
+- v1.0: initial decision
+- v1.1 (2026-11-20): base-side changed-symbol resolution, own-definition
+  consumer filter, single verdict

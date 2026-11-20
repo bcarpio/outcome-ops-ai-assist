@@ -545,25 +545,60 @@ class TestCheckBreakingChanges:
         # Should still return PASS since no high confidence dependencies were found
 
 
+def _blk(removed=(), after=None, head=None):
+    """Duck-typed shared.pr_diff.ChangeBlock test fixture."""
+    return SimpleNamespace(
+        removed_base_lines=tuple(removed),
+        insert_after_base_line=after,
+        head_anchor=head,
+    )
+
+
 class TestSymbolGraphConsumers:
     """Plane 1 (ADR-054): code-symbol consumer detection via the symbol graph."""
 
     class _FakeSGR:
-        """Minimal stand-in for shared.symbol_graph_reader (injected via reader=)."""
+        """Minimal stand-in for shared.symbol_graph_reader (injected via reader=).
+
+        ``at_line`` is returned for every line; ``by_line`` (line -> sid or
+        None) overrides it with per-line resolution. ``definitions_result``
+        lists the sites that define a symbol; ``definitions_exc`` makes
+        ``definitions`` raise.
+        """
 
         class SymbolGraphUnavailable(Exception):
             pass
 
         def __init__(self, at_line=None, callers_result=None,
-                     importers_result=None, raise_exc=None):
+                     importers_result=None, raise_exc=None, by_line=None,
+                     definitions_result=None, definitions_exc=None):
             self._at_line = at_line
+            self._by_line = by_line
             self._callers = callers_result or SimpleNamespace(sites=[], complete=True)
             self._importers = importers_result or SimpleNamespace(sites=[], complete=True)
+            self._definitions = definitions_result or SimpleNamespace(sites=[], complete=True)
+            self._definitions_exc = definitions_exc
             self._raise = raise_exc
+            self.lines_queried = []
+            self.index_loads = []
+
+        def file_symbol_index(self, ws, repo, file_path):
+            """One index per (ws, file); .at() delegates to symbol_at_line's
+            fake rules so line expectations stay in one place."""
+            if self._raise:
+                raise self._raise
+            self.index_loads.append((ws, file_path))
+            fake = self
+            return SimpleNamespace(
+                at=lambda line: fake.symbol_at_line(ws, repo, file_path, line))
 
         def symbol_at_line(self, ws, repo, file_path, line):
             if self._raise:
                 raise self._raise
+            self.lines_queried.append(line)
+            if self._by_line is not None:
+                sid = self._by_line.get(line)
+                return SimpleNamespace(target_symbol_id=sid) if sid else None
             return self._at_line
 
         def callers(self, ws, sid):
@@ -571,6 +606,22 @@ class TestSymbolGraphConsumers:
 
         def importers(self, ws, sid):
             return self._importers
+
+        def definitions(self, ws, sid):
+            if self._definitions_exc:
+                raise self._definitions_exc
+            return self._definitions
+
+    def test_file_index_loaded_once_per_workspace_and_file(self):
+        """Many changed lines in one file cost one defines read per
+        workspace, not one per line."""
+        reader = self._FakeSGR(by_line={})
+        blocks = {"lambda/shared/x.py": [
+            _blk(removed=(3, 4, 5)), _blk(removed=(20,)), _blk(after=30)]}
+        symbol_graph_consumers(["ws-a", "ws-b"], "repo", blocks, reader=reader)
+        assert sorted(reader.index_loads) == [
+            ("ws-a", "lambda/shared/x.py"), ("ws-b", "lambda/shared/x.py")]
+        assert len(reader.lines_queried) > 2
 
     def test_callers_and_importers_become_consumers(self):
         """A changed symbol's external callers + importers are reported."""
@@ -588,7 +639,7 @@ class TestSymbolGraphConsumers:
                 complete=True),
         )
         consumers, undetermined = symbol_graph_consumers(
-            ["ws1"], "myrepo", {"lambda/myrepo/handler.py": [10, 11]}, reader=fake)
+            ["ws1"], "myrepo", {"lambda/myrepo/handler.py": [_blk(removed=(10, 11), head=10)]}, reader=fake)
 
         assert undetermined == []
         assert sorted(c["relation"] for c in consumers) == ["caller", "importer"]
@@ -615,7 +666,8 @@ class TestSymbolGraphConsumers:
                 return SimpleNamespace(sites=[], complete=True)
 
         consumers, undetermined = symbol_graph_consumers(
-            ["ws1"], "myrepo", {"f.py": [10, 20]}, reader=_MultiSymSGR())
+            ["ws1"], "myrepo", {"f.py": [_blk(removed=(10,), head=10),
+                                     _blk(removed=(20,), head=20)]}, reader=_MultiSymSGR())
         assert undetermined == []
         by_line = {c["changed_line"]: c["changed_symbol_id"] for c in consumers}
         assert by_line == {10: "pkg::sym10", 20: "pkg::sym20"}
@@ -649,7 +701,7 @@ class TestSymbolGraphConsumers:
 
         consumers, undetermined = symbol_graph_consumers(
             ["ws-prod", "ws-consumer"], "shared-lib",
-            {"shared_lib/math.py": [4]}, reader=_XwsSGR())
+            {"shared_lib/math.py": [_blk(removed=(4,), head=4)]}, reader=_XwsSGR())
         assert undetermined == []
         assert len(consumers) == 1
         assert consumers[0]["consumer_repo"] == "eng-consumer"
@@ -671,7 +723,7 @@ class TestSymbolGraphConsumers:
                 ], complete=True),
         )
         consumers, undetermined = symbol_graph_consumers(
-            ["ws1"], "myrepo", {"lambda/myrepo/handler.py": [10]}, reader=fake)
+            ["ws1"], "myrepo", {"lambda/myrepo/handler.py": [_blk(removed=(10,), head=10)]}, reader=fake)
         assert undetermined == []
         assert len(consumers) == 1
         assert consumers[0]["consumer_repo"] == "other-repo"
@@ -692,7 +744,7 @@ class TestSymbolGraphConsumers:
                 ], complete=True),
         )
         consumers, undetermined = symbol_graph_consumers(
-            ["ws1"], "gin", {"binding/binding.go": [95]}, reader=fake)
+            ["ws1"], "gin", {"binding/binding.go": [_blk(removed=(95,), head=95)]}, reader=fake)
         assert undetermined == []
         assert len(consumers) == 1
         assert consumers[0]["consumer_file"] == "context.go"
@@ -701,7 +753,7 @@ class TestSymbolGraphConsumers:
         """No enclosing symbol (comment/whitespace) -> no consumers, NOT fail-closed."""
         fake = self._FakeSGR(at_line=None)
         consumers, undetermined = symbol_graph_consumers(
-            ["ws1"], "myrepo", {"lambda/myrepo/handler.py": [3]}, reader=fake)
+            ["ws1"], "myrepo", {"lambda/myrepo/handler.py": [_blk(removed=(3,), head=3)]}, reader=fake)
         assert consumers == []
         assert undetermined == []
 
@@ -709,7 +761,7 @@ class TestSymbolGraphConsumers:
         """Graph unavailable -> file undetermined (manual review), never silent safe."""
         fake = self._FakeSGR(raise_exc=self._FakeSGR.SymbolGraphUnavailable("down"))
         consumers, undetermined = symbol_graph_consumers(
-            ["ws1"], "myrepo", {"lambda/myrepo/handler.py": [10]}, reader=fake)
+            ["ws1"], "myrepo", {"lambda/myrepo/handler.py": [_blk(removed=(10,), head=10)]}, reader=fake)
         assert consumers == []
         assert undetermined == ["lambda/myrepo/handler.py"]
 
@@ -717,9 +769,160 @@ class TestSymbolGraphConsumers:
         """Any reader error -> fail closed to undetermined."""
         fake = self._FakeSGR(raise_exc=RuntimeError("boom"))
         consumers, undetermined = symbol_graph_consumers(
-            ["ws1"], "myrepo", {"lambda/myrepo/handler.py": [10]}, reader=fake)
+            ["ws1"], "myrepo", {"lambda/myrepo/handler.py": [_blk(removed=(10,), head=10)]}, reader=fake)
         assert consumers == []
         assert undetermined == ["lambda/myrepo/handler.py"]
+
+
+    @staticmethod
+    def _caller_site(repo, file_path, line=1):
+        return SimpleNamespace(repo=repo, file_path=file_path, line=line,
+                               source_symbol_id="x::caller")
+
+    def _one_caller_reader(self, by_line, caller_repo="other-repo"):
+        return self._FakeSGR(
+            by_line=by_line,
+            callers_result=SimpleNamespace(
+                sites=[self._caller_site(caller_repo, "app/use.py", 9)],
+                complete=True),
+        )
+
+    def test_replacement_block_resolves_base_line_not_head_line(self):
+        """The graph reflects the base branch: a replacement block resolves its
+        REMOVED BASE line, and the HEAD line number is only the anchor."""
+        fake = self._one_caller_reader({40: "pkg::changed", 55: "pkg::unrelated"})
+        consumers, undetermined = symbol_graph_consumers(
+            ["ws1"], "myrepo",
+            {"mod.py": [_blk(removed=(40,), head=55)]}, reader=fake)
+        assert undetermined == []
+        assert fake.lines_queried == [40]
+        assert {c["changed_symbol_id"] for c in consumers} == {"pkg::changed"}
+        assert consumers[0]["changed_line"] == 55
+
+    def test_pure_insertion_inside_function_flags_it(self):
+        """Insertion after BASE line L where L and L + 1 resolve to the SAME
+        symbol is inside that symbol's body -> the symbol is changed."""
+        fake = self._one_caller_reader({12: "pkg::f", 13: "pkg::f"})
+        consumers, undetermined = symbol_graph_consumers(
+            ["ws1"], "myrepo",
+            {"mod.py": [_blk(after=12, head=14)]}, reader=fake)
+        assert undetermined == []
+        assert [c["changed_symbol_id"] for c in consumers] == ["pkg::f"]
+        assert consumers[0]["changed_line"] == 14
+
+    def test_pure_insertion_between_functions_flags_nothing(self):
+        """L and L + 1 resolve to different symbols (insertion between two
+        functions) -> no changed symbol, not undetermined."""
+        fake = self._one_caller_reader({12: "pkg::f", 13: "pkg::g"})
+        consumers, undetermined = symbol_graph_consumers(
+            ["ws1"], "myrepo",
+            {"mod.py": [_blk(after=12, head=14)]}, reader=fake)
+        assert consumers == []
+        assert undetermined == []
+
+    def test_pure_insertion_missing_side_flags_nothing(self):
+        """One side unresolved (e.g. end of file) -> skip the block."""
+        fake = self._one_caller_reader({12: "pkg::f"})
+        consumers, undetermined = symbol_graph_consumers(
+            ["ws1"], "myrepo",
+            {"mod.py": [_blk(after=12, head=14)]}, reader=fake)
+        assert consumers == []
+        assert undetermined == []
+
+    def test_insertion_at_top_of_file_flags_nothing(self):
+        """insert_after_base_line=0 (top of file) never resolves a symbol."""
+        fake = self._one_caller_reader({0: "pkg::f", 1: "pkg::f"})
+        consumers, undetermined = symbol_graph_consumers(
+            ["ws1"], "myrepo",
+            {"mod.py": [_blk(after=0, head=1)]}, reader=fake)
+        assert consumers == []
+        assert undetermined == []
+        assert fake.lines_queried == []
+
+    def test_other_repo_defining_own_copy_is_dropped(self):
+        """A caller in another repo that also DEFINES the sid calls its own
+        copy (ids are not repo-qualified) -> dropped. A caller in a repo that
+        does not define it, and a same-repo caller in another file, are kept."""
+        fake = self._FakeSGR(
+            at_line=SimpleNamespace(target_symbol_id="pkg.mod::func"),
+            callers_result=SimpleNamespace(sites=[
+                self._caller_site("fork-repo", "pkg/user.py", 3),
+                self._caller_site("consumer-repo", "app/use.py", 4),
+                self._caller_site("myrepo", "pkg/other.py", 5),
+            ], complete=True),
+            definitions_result=SimpleNamespace(sites=[
+                self._caller_site("myrepo", "pkg/mod.py", 1),
+                self._caller_site("fork-repo", "pkg/mod.py", 1),
+            ], complete=True),
+        )
+        consumers, undetermined = symbol_graph_consumers(
+            ["ws1"], "myrepo", {"pkg/mod.py": [_blk(removed=(1,), head=1)]},
+            reader=fake)
+        assert undetermined == []
+        assert {c["consumer_repo"] for c in consumers} == {"consumer-repo", "myrepo"}
+
+    def test_defining_repos_cached_per_symbol(self):
+        """definitions() is queried once per (sid, ws) for the whole run."""
+        calls = []
+        fake = self._FakeSGR(
+            at_line=SimpleNamespace(target_symbol_id="pkg::f"),
+            callers_result=SimpleNamespace(sites=[
+                self._caller_site("a", "x.py"), self._caller_site("b", "y.py"),
+            ], complete=True),
+        )
+        orig = fake.definitions
+
+        def _counting(ws, sid):
+            calls.append((ws, sid))
+            return orig(ws, sid)
+
+        fake.definitions = _counting
+        consumers, _ = symbol_graph_consumers(
+            ["ws1", "ws2"], "myrepo",
+            {"m1.py": [_blk(removed=(1,), head=1)],
+             "m2.py": [_blk(removed=(1,), head=1)]}, reader=fake)
+        assert sorted(calls) == [("ws1", "pkg::f"), ("ws2", "pkg::f")]
+        assert {c["consumer_repo"] for c in consumers} == {"a", "b"}
+
+    def test_definitions_error_fails_closed(self):
+        """definitions() raising -> the file is undetermined (manual review)."""
+        fake = self._FakeSGR(
+            at_line=SimpleNamespace(target_symbol_id="pkg::f"),
+            callers_result=SimpleNamespace(
+                sites=[self._caller_site("other-repo", "app/use.py")],
+                complete=True),
+            definitions_exc=self._FakeSGR.SymbolGraphUnavailable("down"),
+        )
+        consumers, undetermined = symbol_graph_consumers(
+            ["ws1"], "myrepo", {"mod.py": [_blk(removed=(1,), head=1)]},
+            reader=fake)
+        assert consumers == []
+        assert undetermined == ["mod.py"]
+
+    def test_deletion_only_block_falls_back_to_first_added_line(self):
+        """A block with no HEAD anchor uses the file's first added line."""
+        fake = self._one_caller_reader({7: "pkg::f"})
+        consumers, _ = symbol_graph_consumers(
+            ["ws1"], "myrepo", {"mod.py": [_blk(removed=(7,))]},
+            first_added_by_file={"mod.py": 30}, reader=fake)
+        assert consumers[0]["changed_line"] == 30
+
+    def test_deletion_only_file_has_no_anchor(self):
+        """No HEAD anchor and no added line in the file -> changed_line None."""
+        fake = self._one_caller_reader({7: "pkg::f"})
+        consumers, _ = symbol_graph_consumers(
+            ["ws1"], "myrepo", {"mod.py": [_blk(removed=(7,))]}, reader=fake)
+        assert len(consumers) == 1
+        assert consumers[0]["changed_line"] is None
+
+    def test_first_non_none_anchor_kept_per_symbol(self):
+        """Two blocks in the same symbol: the first anchor seen is kept."""
+        fake = self._one_caller_reader({7: "pkg::f", 9: "pkg::f"})
+        consumers, _ = symbol_graph_consumers(
+            ["ws1"], "myrepo",
+            {"mod.py": [_blk(removed=(7,)), _blk(removed=(9,), head=11),
+                        _blk(removed=(9,), head=20)]}, reader=fake)
+        assert consumers[0]["changed_line"] == 11
 
 
 class TestPlane1FileScope:
@@ -810,6 +1013,8 @@ class TestPlane1ScopeWidening:
             "BREAKING_CHANGES", 123, "bcarpio/outcome-ops-ai-assist",
             ["lambda/shared/pr_metadata.py"], "query-kb-lambda",
             anchors={"lambda/shared/pr_metadata.py": [10, 25]},
+            change_blocks={"lambda/shared/pr_metadata.py": [
+                _blk(removed=(10,), head=10), _blk(removed=(25,), head=25)]},
             reader=reader,
         )
         assert result["status"] == "WARN"
@@ -833,6 +1038,7 @@ class TestPlane1ScopeWidening:
             "BREAKING_CHANGES", 123, "bcarpio/outcome-ops-ai-assist",
             ["lambda/shared/x.py"], "query-kb-lambda",
             anchors={"lambda/shared/x.py": [5]},
+            change_blocks={"lambda/shared/x.py": [_blk(removed=(5,), head=5)]},
             reader=reader,
         )
         assert result["status"] == "PASS"
@@ -850,14 +1056,15 @@ class TestPlane1ScopeWidening:
             "BREAKING_CHANGES", 123, "bcarpio/outcome-ops-ai-assist",
             ["lambda/shared/x.py"], "query-kb-lambda",
             anchors={"lambda/shared/x.py": [5]},
+            change_blocks={"lambda/shared/x.py": [_blk(removed=(5,), head=5)]},
             reader=reader,
         )
         assert result["status"] == "WARN"
         assert any("manual review" in d.lower() for d in result["details"])
 
     def test_handler_only_pr_without_anchors_unchanged(self):
-        """Regression: a handler.py-only PR with no anchors keeps the heuristic
-        path and does not invoke plane 1 (no anchors -> no symbol resolution)."""
+        """Regression: a handler.py-only PR with no anchors and no resolved
+        workspace scope keeps the heuristic path and does not invoke plane 1."""
         with patch('breaking_changes_handler.query_vector_search', return_value=[]):
             result = check_breaking_changes(
                 "BREAKING_CHANGES", 123, "owner/repo",
@@ -865,3 +1072,108 @@ class TestPlane1ScopeWidening:
             )
         assert result["status"] == "PASS"
         assert result["findings"] == []
+
+    @patch('shared.pr_check_scope.resolve_pr_check_workspace_scope',
+           return_value=["ws-eng"])
+    def test_no_change_blocks_fails_closed(self, _mock_scope):
+        """change_blocks=None with plane-1 files -> every plane-1 file is a
+        manual-review WARN, never silently skipped."""
+        reader = TestSymbolGraphConsumers._FakeSGR(
+            at_line=SimpleNamespace(target_symbol_id="pkg::f"))
+        result = check_breaking_changes(
+            "BREAKING_CHANGES", 123, "bcarpio/outcome-ops-ai-assist",
+            ["lambda/shared/x.py", "lambda/shared/y.py"], "query-kb-lambda",
+            anchors={"lambda/shared/x.py": [5]},
+            change_blocks=None, reader=reader,
+        )
+        assert result["status"] == "WARN"
+        assert result["findings"] == []
+        assert reader.lines_queried == []
+        text = "\n".join(result["details"])
+        assert "lambda/shared/x.py" in text and "lambda/shared/y.py" in text
+        assert "manual review" in text.lower()
+
+    @patch('shared.pr_check_scope.resolve_pr_check_workspace_scope',
+           return_value=["ws-eng"])
+    def test_file_missing_from_change_blocks_fails_closed(self, _mock_scope):
+        """A plane-1 file the worker could not diff (absent from
+        change_blocks) is a manual-review WARN, never treated as unchanged."""
+        reader = TestSymbolGraphConsumers._FakeSGR(
+            at_line=SimpleNamespace(target_symbol_id="pkg::f"))
+        result = check_breaking_changes(
+            "BREAKING_CHANGES", 123, "bcarpio/outcome-ops-ai-assist",
+            ["lambda/shared/x.py", "lambda/shared/y.py"], "query-kb-lambda",
+            anchors={},
+            change_blocks={"lambda/shared/x.py": []},
+            reader=reader,
+        )
+        assert result["status"] == "WARN"
+        text = "\n".join(result["details"])
+        assert "lambda/shared/y.py" in text
+        assert "lambda/shared/x.py" not in text.split("Could not determine")[-1]
+        assert "manual review" in text.lower()
+
+    @patch('shared.pr_check_scope.resolve_pr_check_workspace_scope',
+           return_value=["ws-eng"])
+    def test_deletion_only_consumer_in_details_without_finding(self, _mock_scope):
+        """Deletion-only block in a file with no added lines: the consumer is
+        listed in details, but no Finding is emitted (ADR-031)."""
+        reader = TestSymbolGraphConsumers._FakeSGR(
+            at_line=SimpleNamespace(target_symbol_id="pkg::gone"),
+            callers_result=SimpleNamespace(sites=[SimpleNamespace(
+                repo="consumer", file_path="app/use.py", line=3,
+                source_symbol_id="x")], complete=True),
+        )
+        result = check_breaking_changes(
+            "BREAKING_CHANGES", 123, "bcarpio/outcome-ops-ai-assist",
+            ["lambda/shared/x.py"], "query-kb-lambda",
+            anchors={},
+            change_blocks={"lambda/shared/x.py": [_blk(removed=(8, 9))]},
+            reader=reader,
+        )
+        assert result["status"] == "WARN"
+        assert result["findings"] == []
+        assert any("consumer/app/use.py:3" in d for d in result["details"])
+
+    @patch('shared.pr_check_scope.resolve_pr_check_workspace_scope',
+           return_value=["ws-eng"])
+    def test_plane1_warn_drops_plane2_pass_text(self, _mock_scope):
+        """With plane-1 consumers on a handler PR whose plane 2 found nothing,
+        the plane-2 'safe' lines are removed; the Modified line stays."""
+        reader = TestSymbolGraphConsumers._FakeSGR(
+            at_line=SimpleNamespace(target_symbol_id="pkg::handler"),
+            callers_result=SimpleNamespace(sites=[SimpleNamespace(
+                repo="consumer", file_path="app/use.py", line=3,
+                source_symbol_id="x")], complete=True),
+        )
+        with patch('breaking_changes_handler.query_vector_search', return_value=[]):
+            result = check_breaking_changes(
+                "BREAKING_CHANGES", 123, "bcarpio/outcome-ops-ai-assist",
+                ["lambda/hello/handler.py"], "query-kb-lambda",
+                anchors={"lambda/hello/handler.py": [4]},
+                change_blocks={"lambda/hello/handler.py": [_blk(removed=(4,), head=4)]},
+                reader=reader,
+            )
+        assert result["status"] == "WARN"
+        details = result["details"]
+        assert "Changes appear safe to merge." not in details
+        assert "No direct consumers detected in knowledge base." not in details
+        assert "These may be new handlers, internal-only, or not yet documented." not in details
+        assert any(d.startswith("Modified 1 file(s)") for d in details)
+        assert len(result["findings"]) == 1
+
+    @patch('shared.pr_check_scope.resolve_pr_check_workspace_scope',
+           return_value=["ws-eng"])
+    def test_plane1_no_consumers_keeps_plane2_pass_text(self, _mock_scope):
+        """No plane-1 signal -> the plane-2 PASS wording is untouched."""
+        reader = TestSymbolGraphConsumers._FakeSGR(at_line=None)
+        with patch('breaking_changes_handler.query_vector_search', return_value=[]):
+            result = check_breaking_changes(
+                "BREAKING_CHANGES", 123, "bcarpio/outcome-ops-ai-assist",
+                ["lambda/hello/handler.py"], "query-kb-lambda",
+                anchors={"lambda/hello/handler.py": [4]},
+                change_blocks={"lambda/hello/handler.py": [_blk(removed=(4,), head=4)]},
+                reader=reader,
+            )
+        assert result["status"] == "PASS"
+        assert "Changes appear safe to merge." in result["details"]

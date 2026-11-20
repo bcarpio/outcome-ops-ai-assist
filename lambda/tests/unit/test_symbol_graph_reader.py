@@ -1562,6 +1562,53 @@ class TestSymbolAtLine:
 # ===========================================================================
 
 
+class TestFileSymbolIndex:
+    """One defines read per file; .at(line) matches symbol_at_line."""
+
+    BARE = "auth-service"
+    FILE = "lambda/auth/handler.py"
+
+    def test_index_resolves_many_lines_like_symbol_at_line(self, tables):
+        from shared.symbol_graph_reader import (  # type: ignore
+            file_symbol_index, symbol_at_line)
+
+        TestSymbolAtLine()._seed_typical_file(tables.Table(SYMBOL_GRAPH_TABLE))
+        index = file_symbol_index(
+            WORKSPACE_ID, self.BARE, self.FILE,
+            symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+        )
+        assert len(index) == 3
+        for line in (1, 487, 500, 531, 544, 1214, 1215, 5000):
+            direct = symbol_at_line(
+                WORKSPACE_ID, self.BARE, self.FILE, line,
+                symbol_graph_table_name=SYMBOL_GRAPH_TABLE,
+            )
+            assert index.at(line) == direct
+        assert index.at(1) is None
+        assert index.at(544).target_symbol_id.endswith("::verify_magic_token")
+
+    def test_shared_start_line_prefers_longer_id(self):
+        from shared.symbol_graph_reader import FileSymbolIndex  # type: ignore
+
+        index = FileSymbolIndex([
+            {"target_symbol_id": "cs:Ns::Rec", "line": 10, "file_path": "f"},
+            {"target_symbol_id": "cs:Ns::Rec.Member", "line": 10, "file_path": "f"},
+        ])
+        assert index.at(10).target_symbol_id == "cs:Ns::Rec.Member"
+
+    def test_missing_arguments_raise(self):
+        from shared.symbol_graph_reader import file_symbol_index  # type: ignore
+
+        with pytest.raises(ValueError):
+            file_symbol_index("", "repo", "f.py")
+
+    def test_symbol_at_line_requires_line(self):
+        from shared.symbol_graph_reader import symbol_at_line  # type: ignore
+
+        with pytest.raises(ValueError):
+            symbol_at_line("ws", "repo", "f.py", None)
+
+
 class TestListCompletenessContract:
     """Each list-returning reader populates the truncation fields the
     chat synthesis prompt rule binds against."""

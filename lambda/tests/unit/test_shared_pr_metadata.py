@@ -134,7 +134,8 @@ class TestFetchPRMetadataGitHub:
         )
         assert result.changed_files == ["a", "b"]
         # Third call was the paginated next URL.
-        assert mock_urlopen.call_count == 3
+        # pr + 2 file pages + merge-base compare (falls back when exhausted)
+        assert mock_urlopen.call_count == 4
         page_2_req = mock_urlopen.call_args_list[2].args[0]
         assert "page=2" in page_2_req.full_url
 
@@ -566,3 +567,96 @@ class TestGitlabDiffToGithubStatus:
 
     def test_plain_edit_is_modified(self):
         assert pr_metadata._gitlab_diff_to_github_status({}) == "modified"
+
+
+# ---------------------------------------------------------------------------
+# Merge base: diff from where the PR branched, not the target branch tip.
+# ---------------------------------------------------------------------------
+
+
+class TestMergeBase:
+
+    def _github_pr(self):
+        return _mock_response({
+            "head": {"sha": "h" * 40},
+            "base": {"sha": "t" * 40, "ref": "main"},
+            "user": {"login": "octocat"},
+            "title": "x",
+        })
+
+    @patch.object(pr_metadata, "urlopen")
+    def test_github_uses_compare_merge_base(self, mock_urlopen):
+        mock_urlopen.side_effect = [
+            self._github_pr(),
+            _mock_response([{"filename": "a.py"}]),
+            _mock_response({"merge_base_commit": {"sha": "m" * 40}}),
+        ]
+        meta = pr_metadata.fetch_pr_metadata(
+            "github", 7, repository="o/r", github_token="tok")
+        assert meta.base_sha == "m" * 40
+        compare_req = mock_urlopen.call_args_list[2].args[0]
+        assert f"/compare/{'t' * 40}...{'h' * 40}" in compare_req.full_url
+
+    @patch.object(pr_metadata, "urlopen")
+    def test_github_compare_failure_keeps_base_sha(self, mock_urlopen):
+        mock_urlopen.side_effect = [
+            self._github_pr(),
+            _mock_response([{"filename": "a.py"}]),
+            RuntimeError("compare down"),
+        ]
+        meta = pr_metadata.fetch_pr_metadata(
+            "github", 7, repository="o/r", github_token="tok")
+        assert meta.base_sha == "t" * 40
+
+    @patch.object(pr_metadata, "urlopen")
+    def test_github_compare_without_merge_base_keeps_base_sha(self, mock_urlopen):
+        mock_urlopen.side_effect = [
+            self._github_pr(),
+            _mock_response([{"filename": "a.py"}]),
+            _mock_response({}),
+        ]
+        meta = pr_metadata.fetch_pr_metadata(
+            "github", 7, repository="o/r", github_token="tok")
+        assert meta.base_sha == "t" * 40
+
+    def _ado_responses(self, merge_bases):
+        return [
+            _mock_response({
+                "lastMergeSourceCommit": {"commitId": "src"},
+                "lastMergeTargetCommit": {"commitId": "tgt"},
+                "targetRefName": "refs/heads/main",
+                "createdBy": {"uniqueName": "u"},
+                "title": "x",
+            }),
+            _mock_response({"value": [{"id": 1}]}),
+            _mock_response({"changeEntries": [{"item": {"path": "/a.py"}}]}),
+            merge_bases,
+        ]
+
+    @patch.object(pr_metadata, "urlopen")
+    def test_ado_uses_merge_bases_api(self, mock_urlopen):
+        mock_urlopen.side_effect = self._ado_responses(
+            _mock_response({"value": [{"commitId": "mb"}], "count": 1}))
+        meta = pr_metadata.fetch_pr_metadata(
+            "azure_devops", 3, ado_org="org", ado_project="proj",
+            ado_repo="repo", ado_access_token="tok")
+        assert meta.base_sha == "mb"
+        url = mock_urlopen.call_args_list[3].args[0].full_url
+        assert "/commits/src/mergebases" in url and "otherCommitId=tgt" in url
+
+    @patch.object(pr_metadata, "urlopen")
+    def test_ado_merge_base_failure_keeps_target(self, mock_urlopen):
+        mock_urlopen.side_effect = self._ado_responses(RuntimeError("404"))
+        meta = pr_metadata.fetch_pr_metadata(
+            "azure_devops", 3, ado_org="org", ado_project="proj",
+            ado_repo="repo", ado_access_token="tok")
+        assert meta.base_sha == "tgt"
+
+    @patch.object(pr_metadata, "urlopen")
+    def test_ado_empty_merge_bases_keeps_target(self, mock_urlopen):
+        mock_urlopen.side_effect = self._ado_responses(
+            _mock_response({"value": [], "count": 0}))
+        meta = pr_metadata.fetch_pr_metadata(
+            "azure_devops", 3, ado_org="org", ado_project="proj",
+            ado_repo="repo", ado_access_token="tok")
+        assert meta.base_sha == "tgt"

@@ -414,167 +414,377 @@ class TestAnalyzeReadmeWithClaude:
             analyze_readme_with_claude("+changes", ["hello"], [], usage_tracker)
 
 
+class _FakeSource:
+    """Stands in for _PRSource: files at base/head and per-file diffs."""
+
+    def __init__(self, files_at_head=None, diffs=None, diff_error=None):
+        self.head_sha = "head"
+        self.base_sha = "base"
+        self._files = files_at_head or {}
+        self._diffs = diffs or {}
+        self._diff_error = diff_error
+        self.diff_requests = []
+
+    def file_at(self, path, sha):
+        return self._files.get(path) if sha == self.head_sha else None
+
+    def file_diffs(self, paths):
+        self.diff_requests.append(list(paths))
+        if self._diff_error:
+            raise self._diff_error
+        return {p: self._diffs[p] for p in paths if p in self._diffs}
+
+
+@pytest.fixture
+def source(monkeypatch):
+    """Default: no .outcomeops.yaml, no diffs. Tests replace attributes."""
+    fake = _FakeSource()
+    monkeypatch.setattr(handler_module, "_PRSource", lambda **kw: fake)
+    return fake
+
+
+def _run(changed_files, **kwargs):
+    return check_readme_freshness(
+        "README_FRESHNESS", 123, "owner/repo", changed_files,
+        "/dev/github/token", **kwargs,
+    )
+
+
+class TestDocumentationLocations:
+    """Documentation / infrastructure path classification."""
+
+    @pytest.mark.parametrize("path", [
+        "README.md", "lambda/foo/README.md", "README", "docs/README.rst",
+    ])
+    def test_readme_anywhere_is_documentation(self, path):
+        assert handler_module.is_documentation_file(path, []) is True
+
+    @pytest.mark.parametrize("path,dirs,expected", [
+        ("docs/lambda-foo.md", ["docs"], True),
+        ("docs/adr/ADR-001.md", ["docs/adr"], True),
+        ("documents/guide.adoc", ["documents/"], True),
+        ("./documents/x.md", ["./documents"], False),
+        ("docs/diagram.png", ["docs"], False),
+        ("docsite/page.md", ["docs"], False),
+        ("lambda/foo/notes.md", ["docs"], False),
+        ("anything.md", ["."], True),
+    ])
+    def test_declared_doc_dirs(self, path, dirs, expected):
+        assert handler_module.is_documentation_file(path, dirs) is expected
+
+    @pytest.mark.parametrize("path,infra_dir,tool,expected", [
+        ("terraform/main.tf", "terraform", "terraform", True),
+        ("terraform/prd.tfvars.example", "terraform", "terraform", False),
+        ("terraform/README.md", "terraform", "terraform", False),
+        ("infra/stack.yaml", "infra", "cloudformation", True),
+        ("infra/notes.md", "infra", "cloudformation", False),
+        ("main.tf", "", "terraform", False),
+        ("lambda/x/handler.py", "terraform", "terraform", False),
+    ])
+    def test_infrastructure_files(self, path, infra_dir, tool, expected):
+        assert handler_module.is_infrastructure_file(path, infra_dir, tool) is expected
+
+    def test_extract_infrastructure_names_custom_dir(self):
+        names = extract_infrastructure_names(
+            ["infra/net/vpc.yaml", "docs/x.md"], "infra", "cloudformation")
+        assert names == ["net/vpc"]
+
+    def test_describe_locations_root(self):
+        settings = handler_module._DocSettings(["."], "terraform", "terraform")
+        assert settings.describe_locations() == "README files or (repo root)/"
+
+    def test_describe_locations_none(self):
+        settings = handler_module._DocSettings([], "terraform", "terraform")
+        assert settings.describe_locations() == "README files"
+
+
+class TestLoadDocSettings:
+    """.outcomeops.yaml drives the doc and infra locations."""
+
+    def test_defaults_without_source(self):
+        settings = handler_module._load_doc_settings(None)
+        assert settings.doc_dirs == ["docs", "docs/adr"]
+        assert settings.infra_dir == "terraform"
+
+    def test_defaults_without_config_file(self):
+        settings = handler_module._load_doc_settings(_FakeSource())
+        assert settings.doc_dirs == ["docs", "docs/adr"]
+
+    def test_reads_config_at_head(self):
+        yaml_text = (
+            b"ingestion:\n  docs_paths: [documents]\n  standards_paths: [documents/adr]\n"
+            b"infrastructure:\n  tool: cloudformation\n  directory: infra\n"
+        )
+        settings = handler_module._load_doc_settings(
+            _FakeSource(files_at_head={".outcomeops.yaml": yaml_text}))
+        assert settings.doc_dirs == ["documents", "documents/adr"]
+        assert settings.infra_dir == "infra"
+        assert settings.infra_tool == "cloudformation"
+
+    def test_invalid_config_falls_back(self):
+        settings = handler_module._load_doc_settings(
+            _FakeSource(files_at_head={".outcomeops.yaml": b"ingestion: [unclosed"}))
+        assert settings.doc_dirs == ["docs", "docs/adr"]
+
+
+class TestCombineDocDiffs:
+    def test_sorted_and_joined(self):
+        out = handler_module._combine_doc_diffs({"b.md": "B", "a.md": "A"})
+        assert out == "A\nB"
+
+    def test_per_file_truncation(self, monkeypatch):
+        monkeypatch.setattr(handler_module, "_MAX_DOC_DIFF_CHARS_PER_FILE", 5)
+        out = handler_module._combine_doc_diffs({"a.md": "0123456789"})
+        assert out.startswith("01234") and "diff truncated" in out
+
+    def test_total_cap_notes_omitted_files(self, monkeypatch):
+        monkeypatch.setattr(handler_module, "_MAX_DOC_DIFF_CHARS_TOTAL", 15)
+        out = handler_module._combine_doc_diffs(
+            {"a.md": "x" * 10, "b.md": "y" * 10, "c.md": "z" * 10})
+        assert "x" * 10 in out and "y" not in out
+        assert "2 more documentation file(s) not shown" in out
+
+
 class TestCheckReadmeFreshness:
-    """Test main check_readme_freshness handler"""
+    """Main check_readme_freshness handler"""
 
-    def test_check_readme_freshness_no_changes(self):
-        """Test: No infrastructure or handler changes"""
-        # Arrange
-        changed_files = ["docs/guide.md", "lambda/tests/unit/test_something.py"]
-
-        # Act
-        result = check_readme_freshness(
-            "README_FRESHNESS",
-            123,
-            "owner/repo",
-            changed_files,
-            "/dev/github/token"
-        )
-
-        # Assert
+    def test_no_changes(self, source):
+        result = _run(["docs/guide.md", "lambda/tests/unit/test_something.py"])
         assert result["checkType"] == "README_FRESHNESS"
         assert result["status"] == "PASS"
-        assert "No infrastructure or handler changes" in result["message"]
+        assert result["message"] == "No new handlers or infrastructure changes detected"
 
-    def test_check_readme_freshness_terraform_without_readme(self):
-        """Test: Terraform changed but README not updated"""
-        # Arrange
-        changed_files = ["terraform/main.tf"]
-
-        # Act
-        result = check_readme_freshness(
-            "README_FRESHNESS",
-            123,
-            "owner/repo",
-            changed_files,
-            "/dev/github/token"
+    def test_terraform_without_docs(self, source):
+        result = _run(["terraform/main.tf"])
+        assert result["status"] == "WARN"
+        assert result["message"] == "Documentation not updated"
+        assert any(
+            "Infrastructure files changed (1 file(s)) but no documentation was updated "
+            "(looked in README files or docs/, docs/adr/)." in d
+            for d in result["details"]
         )
 
-        # Assert
-        assert result["checkType"] == "README_FRESHNESS"
+    def test_handler_without_docs_newness_unknown(self, source):
+        result = _run(["lambda/hello/handler.py"])
         assert result["status"] == "WARN"
-        assert "README.md not updated" in result["message"]
-        assert any("Infrastructure files changed" in detail for detail in result["details"])
-
-    def test_check_readme_freshness_handler_without_readme(self):
-        """Test: Handler changed but README not updated"""
-        # Arrange
-        changed_files = ["lambda/hello/handler.py"]
-
-        # Act
-        result = check_readme_freshness(
-            "README_FRESHNESS",
-            123,
-            "owner/repo",
-            changed_files,
-            "/dev/github/token"
+        assert any(
+            "Lambda handler files changed (1 file(s))" in d
+            and "could not determine whether any are new" in d
+            for d in result["details"]
         )
+        assert not any("New Lambda handlers" in d for d in result["details"])
 
-        # Assert
-        assert result["checkType"] == "README_FRESHNESS"
+    def test_modified_handlers_only_pass(self, source):
+        result = _run(
+            ["lambda/hello/handler.py", "lambda/world/handler.py"], new_files=set())
+        assert result["status"] == "PASS"
+
+    def test_one_new_one_modified_handler(self, source):
+        result = _run(
+            ["lambda/hello/handler.py", "lambda/brand-new/handler.py"],
+            new_files={"lambda/brand-new/handler.py"},
+        )
         assert result["status"] == "WARN"
-        assert "README.md not updated" in result["message"]
-        assert any("Lambda handlers added" in detail for detail in result["details"])
+        assert any("New Lambda handlers added (1 file(s))" in d for d in result["details"])
+        assert not any("could not determine" in d for d in result["details"])
 
-    @patch('readme_freshness_handler.get_github_token')
-    @patch('readme_freshness_handler.fetch_pr_file_diff')
+    def test_terraform_with_modified_handlers_only(self, source):
+        result = _run(["terraform/main.tf", "lambda/hello/handler.py"], new_files=set())
+        assert result["status"] == "WARN"
+        assert any("Infrastructure files changed (1 file(s))" in d for d in result["details"])
+        assert not any("Lambda handler" in d for d in result["details"])
+
+    def test_new_file_that_is_not_a_handler_ignored(self, source):
+        result = _run(
+            ["lambda/hello/handler.py", "lambda/hello/util.py"],
+            new_files={"lambda/hello/util.py"},
+        )
+        assert result["status"] == "PASS"
+
+    def test_terraform_readme_does_not_count_as_infrastructure(self, source):
+        result = _run(["terraform/README.md"])
+        assert result["status"] == "PASS"
+
     @patch('readme_freshness_handler.analyze_readme_with_claude')
-    def test_check_readme_freshness_adequate_update(
-        self, mock_analyze, mock_fetch, mock_token
-    ):
-        """Test: README adequately documents changes"""
-        # Arrange
-        mock_token.return_value = "token"
-        mock_fetch.return_value = "+## New Lambda\n+- hello: Greeting handler"
-        mock_analyze.return_value = {
-            "adequate": True,
-            "explanation": "README documents the new hello Lambda handler"
-        }
+    def test_docs_dir_update_satisfies_check(self, mock_analyze, source):
+        """A docs/ page (not README.md) counts as the documentation update."""
+        source._diffs = {"docs/lambda-brand-new.md": "+# brand-new\n+does things"}
+        mock_analyze.return_value = {"adequate": True, "explanation": "documented"}
 
-        # Act
-        result = check_readme_freshness(
-            "README_FRESHNESS",
-            123,
-            "owner/repo",
-            ["lambda/hello/handler.py", "README.md"],
-            "/dev/github/token"
+        result = _run(
+            ["lambda/brand-new/handler.py", "docs/lambda-brand-new.md"],
+            new_files={"lambda/brand-new/handler.py"},
         )
 
-        # Assert
-        assert result["checkType"] == "README_FRESHNESS"
         assert result["status"] == "PASS"
-        assert "adequately documents" in result["message"]
+        assert result["message"] == "Documentation adequately covers changes"
+        assert source.diff_requests == [["docs/lambda-brand-new.md"]]
+        assert "does things" in mock_analyze.call_args.args[0]
+        assert mock_analyze.call_args.args[1] == ["brand-new"]
 
-    @patch('readme_freshness_handler.get_github_token')
-    @patch('readme_freshness_handler.fetch_pr_file_diff')
     @patch('readme_freshness_handler.analyze_readme_with_claude')
-    def test_check_readme_freshness_inadequate_update(
-        self, mock_analyze, mock_fetch, mock_token
-    ):
-        """Test: README update inadequate"""
-        # Arrange
-        mock_token.return_value = "token"
-        mock_fetch.return_value = "+Minor typo fix"
-        mock_analyze.return_value = {
-            "adequate": False,
-            "explanation": "README does not mention the new handler"
-        }
+    def test_configured_docs_location_from_outcomeops_yaml(self, mock_analyze, source):
+        """A repo that keeps docs in documents/ declares it and is honoured."""
+        source._files = {".outcomeops.yaml": b"ingestion:\n  docs_paths: [documents]\n"}
+        source._diffs = {"documents/handlers.md": "+brand-new handler"}
+        mock_analyze.return_value = {"adequate": True, "explanation": "documented"}
 
-        # Act
-        result = check_readme_freshness(
-            "README_FRESHNESS",
-            123,
-            "owner/repo",
-            ["lambda/hello/handler.py", "README.md"],
-            "/dev/github/token"
+        result = _run(
+            ["lambda/brand-new/handler.py", "documents/handlers.md"],
+            new_files={"lambda/brand-new/handler.py"},
         )
 
-        # Assert
-        assert result["checkType"] == "README_FRESHNESS"
-        assert result["status"] == "WARN"
-        assert "may not adequately document" in result["message"]
-
-    @patch('readme_freshness_handler.get_github_token')
-    @patch('readme_freshness_handler.fetch_pr_file_diff')
-    def test_check_readme_freshness_no_diff_available(
-        self, mock_fetch, mock_token
-    ):
-        """Test: README in changed files but no diff available"""
-        # Arrange
-        mock_token.return_value = "token"
-        mock_fetch.return_value = "diff --git a/README.md b/README.md\n(No diff available)"
-
-        # Act
-        result = check_readme_freshness(
-            "README_FRESHNESS",
-            123,
-            "owner/repo",
-            ["lambda/hello/handler.py", "README.md"],
-            "/dev/github/token"
-        )
-
-        # Assert
-        assert result["checkType"] == "README_FRESHNESS"
         assert result["status"] == "PASS"
-        assert "README.md updated" in result["message"]
+        assert source.diff_requests == [["documents/handlers.md"]]
 
-    @patch('readme_freshness_handler.get_github_token')
-    def test_check_readme_freshness_analysis_error(self, mock_token):
-        """Test: Error during Claude analysis (fallback to WARN)"""
-        # Arrange
-        mock_token.side_effect = Exception("API error")
+    def test_undeclared_docs_location_still_warns(self, source):
+        """Without the config, documents/ is not a doc location."""
+        result = _run(
+            ["lambda/brand-new/handler.py", "documents/handlers.md"],
+            new_files={"lambda/brand-new/handler.py"},
+        )
+        assert result["status"] == "WARN"
+        assert result["message"] == "Documentation not updated"
 
-        # Act
-        result = check_readme_freshness(
-            "README_FRESHNESS",
-            123,
-            "owner/repo",
-            ["lambda/hello/handler.py", "README.md"],
-            "/dev/github/token"
+    def test_configured_infra_dir(self, source):
+        source._files = {
+            ".outcomeops.yaml": b"infrastructure:\n  tool: cdk\n  directory: infra\n"}
+        result = _run(["infra/app.ts", "terraform/legacy.tf"])
+        assert result["status"] == "WARN"
+        assert any("Infrastructure files changed (1 file(s))" in d for d in result["details"])
+
+    @patch('readme_freshness_handler.analyze_readme_with_claude')
+    def test_claude_path_gets_only_new_handlers(self, mock_analyze, source):
+        source._diffs = {"README.md": "+## brand-new"}
+        mock_analyze.return_value = {"adequate": True, "explanation": "documented"}
+
+        result = _run(
+            ["lambda/hello/handler.py", "lambda/brand-new/handler.py", "README.md"],
+            new_files={"lambda/brand-new/handler.py"},
         )
 
-        # Assert
-        assert result["checkType"] == "README_FRESHNESS"
+        assert result["status"] == "PASS"
+        assert mock_analyze.call_args.args[1] == ["brand-new"]
+
+    @patch('readme_freshness_handler.analyze_readme_with_claude')
+    def test_docs_updated_modified_only_skips_claude(self, mock_analyze, source):
+        result = _run(["lambda/hello/handler.py", "README.md"], new_files=set())
+        assert result["status"] == "PASS"
+        mock_analyze.assert_not_called()
+        assert source.diff_requests == []
+
+    @patch('readme_freshness_handler.analyze_readme_with_claude')
+    def test_inadequate_update(self, mock_analyze, source):
+        source._diffs = {"README.md": "+Minor typo fix"}
+        mock_analyze.return_value = {
+            "adequate": False, "explanation": "does not mention the new handler"}
+
+        result = _run(["lambda/hello/handler.py", "README.md"])
+
+        assert result["status"] == "WARN"
+        assert result["message"] == "Documentation may not adequately cover changes"
+        assert result["details"][0] == "does not mention the new handler"
+
+    def test_no_diff_available(self, source):
+        result = _run(["lambda/hello/handler.py", "README.md"])
+        assert result["status"] == "PASS"
+        assert result["message"] == "Documentation updated"
+        assert "README.md" in result["details"][0]
+
+    def test_diff_error_falls_back_to_warn(self, source):
+        source._diff_error = RuntimeError("API error")
+        result = _run(["lambda/hello/handler.py", "README.md"])
         assert result["status"] == "WARN"
         assert "could not verify adequacy" in result["message"]
-        assert any("Error:" in detail for detail in result["details"])
+        assert any("Error: API error" in d for d in result["details"])
+
+    def test_source_unavailable_uses_defaults_and_warns(self, monkeypatch):
+        """Token/metadata failure: default locations, and the adequacy step
+        reports it could not verify instead of passing."""
+        def boom(**kwargs):
+            raise RuntimeError("no token")
+        monkeypatch.setattr(handler_module, "_PRSource", boom)
+
+        missing = _run(["terraform/main.tf"])
+        assert missing["message"] == "Documentation not updated"
+
+        updated = _run(["terraform/main.tf", "docs/HA.md"])
+        assert updated["status"] == "WARN"
+        assert "could not verify adequacy" in updated["message"]
+
+    def test_unknown_provider_raises(self, source):
+        with pytest.raises(NotImplementedError):
+            _run(["README.md"], provider="bitbucket")
+
+
+class TestPRSource:
+    """Provider dispatch for the PR source."""
+
+    def _meta(self):
+        return SimpleNamespace(base_sha="b", head_sha="h")
+
+    @patch('shared.pr_metadata.fetch_pr_metadata')
+    @patch('readme_freshness_handler.get_github_token', return_value="tok")
+    def test_github_diffs_from_one_pr_diff_request(self, _tok, mock_meta):
+        mock_meta.return_value = self._meta()
+        src = handler_module._PRSource(
+            provider="github", repository="o/r", pr_number=1,
+            github_token_param="/p", connection_id=None,
+            ado_org=None, ado_project=None, ado_repo=None,
+        )
+        full = (
+            "diff --git a/README.md b/README.md\n+top\n"
+            "diff --git a/docs/README.md b/docs/README.md\n+nested\n"
+        )
+        with patch('readme_freshness_handler.fetch_pr_diff', return_value=full) as f:
+            diffs = src.file_diffs(["README.md", "docs/README.md", "docs/gone.md"])
+        f.assert_called_once()
+        assert "+top" in diffs["README.md"] and "+nested" not in diffs["README.md"]
+        assert "+nested" in diffs["docs/README.md"]
+        assert "docs/gone.md" not in diffs
+        assert src.head_sha == "h"
+
+    @patch('shared.pr_metadata.fetch_pr_metadata')
+    @patch('readme_freshness_handler.refresh_ado_token', return_value="ado")
+    def test_ado_diffs_computed_locally(self, _tok, mock_meta):
+        from shared.source_fetch import SourceFetchError
+        mock_meta.return_value = self._meta()
+        src = handler_module._PRSource(
+            provider="azure_devops", repository="r", pr_number=1,
+            github_token_param="/p", connection_id="c",
+            ado_org="o", ado_project="p", ado_repo="r",
+        )
+
+        def fetch(provider, path, sha, **kw):
+            if path == "docs/new.md" and sha == "b":
+                raise SourceFetchError("absent")
+            if path == "docs/same.md":
+                return b"same\n"
+            return b"v-" + sha.encode() + b"\n"
+
+        with patch('shared.source_fetch.fetch_file_at_sha', side_effect=fetch):
+            diffs = src.file_diffs(["docs/new.md", "docs/same.md"])
+            assert src.file_at("docs/new.md", "b") is None
+        assert "+v-h" in diffs["docs/new.md"]
+        assert "docs/same.md" not in diffs
+
+    @patch('shared.pr_metadata.fetch_pr_metadata')
+    def test_gitlab_context(self, mock_meta):
+        mock_meta.return_value = self._meta()
+        with patch('check_handlers.gitlab_context.get_gitlab_token', return_value="gl"), \
+             patch('check_handlers.gitlab_context.get_gitlab_base_url', return_value="https://gl"):
+            src = handler_module._PRSource(
+                provider="gitlab", repository="g/p/r", pr_number=1,
+                github_token_param="/p", connection_id="c",
+                ado_org=None, ado_project=None, ado_repo=None,
+            )
+        assert src.fetch_kwargs["gitlab_project_path"] == "g/p/r"
+        assert src.fetch_kwargs["gitlab_access_token"] == "gl"
+
+    def test_unknown_provider(self):
+        with pytest.raises(ValueError):
+            handler_module._PRSource(
+                provider="bitbucket", repository="r", pr_number=1,
+                github_token_param="/p", connection_id=None,
+                ado_org=None, ado_project=None, ado_repo=None,
+            )
