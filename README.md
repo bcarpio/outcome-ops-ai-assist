@@ -126,6 +126,26 @@ A real review, quoted verbatim: the license check reads the repo's ADR-008 and d
 
 ---
 
+## Beyond Vector Search
+
+Vector search is good at "how do we usually do this?" It cannot reliably answer "what breaks if I change this function?", and on its own it does nothing to keep personal data out of the model's context. OutcomeOps adds two layers for that.
+
+**A symbol graph for exact answers.** While generating code-maps, OutcomeOps extracts every definition, call, import, and interface implementation into a symbol graph stored in DynamoDB. Structural questions are answered from the graph, not from text similarity:
+- `callers`, `importers`, `implementers`, and `definitions` of a symbol, each with file path and line
+- References resolve across repositories, so a consumer in another repo, or in a workspace that was granted access, is found too ([ADR-055](docs/adr/ADR-055-symbol-graph-cross-module-resolution.md), [ADR-056](docs/adr/ADR-056-cross-repo-symbol-resolution.md))
+- The pull-request breaking-changes check uses it to list every consumer of a changed symbol
+- Chat, code generation, and PR review query the graph alongside vector search, and the same lookups are available as MCP tools (`find_callers`, `find_importers`, `find_implementers`, `find_definitions`)
+- When there are no callers, the answer is an empty list, not a guess
+
+**PII redaction at ingest.** Before a document is embedded, Amazon Comprehend `DetectPiiEntities` runs inside your AWS account and replaces names, Social Security numbers, phone numbers, account numbers, and other personal identifiers with `[REDACTED:TYPE]` placeholders. The vector store, and every chunk retrieved into a prompt, holds only the redacted text ([ADR-051](docs/adr/ADR-051-pii-redaction-at-ingest.md)).
+- Technical identifiers developers need (URLs, IP addresses, MAC addresses, timestamps) are kept by default; the skip list is the `pii_redaction_skip_types` tfvar
+- Every workspace is `STRICT` by default. An admin can set one to `NONE` (for example HR or support content where redaction defeats the purpose), and that change is written to the audit log with the old and new mode
+- `pii_redaction_enabled` is the org-wide kill switch
+- With `audit_stream_export_enabled`, the audit log streams through Kinesis as OCSF v1.3.0 events to your SIEM
+- The raw source copy in your S3 bucket is deliberately left unredacted, so `read_source` and code generation work from the real code
+
+---
+
 ## Get Started
 
 **Prerequisites:**
