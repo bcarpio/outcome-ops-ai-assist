@@ -40,8 +40,8 @@ jobs:
       - name: Install Talisman (pinned, checksum verified)
         run: |
           base="https://github.com/thoughtworks/talisman/releases/download/${TALISMAN_VERSION}"
-          curl -fsSLO "${base}/talisman_linux_amd64"
-          curl -fsSLO "${base}/checksums"
+          curl --proto '=https' --tlsv1.2 -fsSLO "${base}/talisman_linux_amd64"
+          curl --proto '=https' --tlsv1.2 -fsSLO "${base}/checksums"
           grep ' talisman_linux_amd64$' checksums | sha256sum -c -
           sudo install -m 0755 talisman_linux_amd64 /usr/local/bin/talisman
           rm talisman_linux_amd64 checksums
