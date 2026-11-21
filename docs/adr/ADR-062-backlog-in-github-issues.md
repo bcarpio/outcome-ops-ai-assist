@@ -49,6 +49,20 @@ is an issue. Nothing backlog-shaped is kept under `docs/`.
 
   An issue gets one type, one priority and at least one area. New areas are
   added when a part of the system has enough issues to need its own filter.
+- **Titles name the component, then the change:** `<component>: <what
+  should change>`.
+  - The component is the part of the system a reader would search for: a
+    check (`BREAKING_CHANGES`), a Lambda (`salesforce-integration`), a module
+    (`pr_check_scope`), or a tool (`make audit-py`).
+  - The change is imperative and in sentence case, with no trailing period,
+    and the whole title is under about 72 characters.
+  - No type prefix like `[Bug]` or `feat:`, because the labels carry the type.
+  - Examples: `BREAKING_CHANGES: compare signatures for Go functions`,
+    `salesforce-integration: replace pypdf2 (PYSEC-2026-1835)`.
+- **Branches and pull requests follow Conventional Commits.** The branch is
+  `<type>/<short-slug>` (`feat/`, `fix/`, `docs/`, `chore/`, `refactor/`).
+  The PR title is a Conventional Commit subject, and the PR body says
+  `Closes #N` for each issue it finishes.
 - **`approved-for-generation` is never applied to a backlog issue.** That
   label hands the issue to the code-generation pipeline.
 - **Plans stay local and point at an issue.** When someone picks an issue up,

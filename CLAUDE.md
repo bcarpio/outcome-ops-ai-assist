@@ -149,7 +149,8 @@ shows more — do NOT hand over a `-target` command to make it "quick."
 ### The Backlog Lives in GitHub Issues (ADR-062)
 
 - Planned work, bugs, follow-ups and tech debt are **GitHub Issues** (Backlog item
-  template; one type, one priority, at least one area label). Never create backlog or
+  template; one type, one priority, at least one area label; title
+  `<component>: <what should change>`). Never create backlog or
   tech-debt files under `docs/`.
 - Never put `approved-for-generation` on a backlog issue: it triggers the
   code-generation pipeline.

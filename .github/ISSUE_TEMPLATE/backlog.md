@@ -1,14 +1,15 @@
 ---
 name: Backlog item
 about: Work we noticed and intend to do (feature, bug, follow-up, tech debt)
-title: ""
+title: "<component>: <what should change>"
 labels: []
 assignees: ''
 ---
 
 <!--
 Add one type label (bug / enhancement / tech-debt / documentation), one
-priority label and at least one area label. See ADR-062.
+priority label and at least one area label. Title: "<component>: <what
+should change>", imperative, no type prefix. See ADR-062.
 
 Do NOT add the approved-for-generation label: it hands the issue to the
 code-generation pipeline.
