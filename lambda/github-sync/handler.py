@@ -605,6 +605,14 @@ def _repo_still_connected(
 
 
 def _repo_removed_result(repo_name: str, checkpoint: str) -> Dict:
+    """Result for a sync dropped because its repo was disconnected.
+
+    ``status`` is ``repo_removed``, which is in ``_NON_RETRY_STATUSES``: the
+    message is acknowledged, since retrying cannot bring the repo back.
+    ``checkpoint`` names where the removal was seen (``start``,
+    ``before_upload`` or ``before_dispatch``) so the log and audit row show
+    how far the sync got before it stopped.
+    """
     return {
         "status": "repo_removed",
         "repo_name": repo_name,

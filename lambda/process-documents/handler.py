@@ -1098,7 +1098,12 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     """
     S3-triggered handler for document processing.
 
-    Triggered by ObjectCreated events on the knowledge base bucket.
+    Triggered by ObjectCreated events on the knowledge base bucket via an S3
+    bucket notification (asynchronous invoke). There is NO SQS event source
+    mapping, so there is no batch to report partial failures for: a failed
+    record is retried by raising, which re-runs the async invocation (vector
+    keys are deterministic, so re-processing the records that succeeded is
+    safe).
     """
     logger.info(f"Process documents handler invoked")
 
@@ -1132,7 +1137,9 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 
             _process(bucket, key)
 
-        # Handle SQS event (for reprocessing)
+        # Manual reprocessing: an operator invokes the function directly
+        # with {"Records": [{"body": "{\"bucket\": ..., \"key\": ...}"}]}.
+        # Not an SQS consumer (no event source mapping exists).
         elif "body" in record:
             try:
                 body = json.loads(record["body"])
