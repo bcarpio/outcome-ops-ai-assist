@@ -240,6 +240,7 @@ OutcomeOps applies the same playbook to AI-assisted development:
 
 **Lambda Documentation**
 - [Lambda: Query KB](docs/lambda-query-kb.md) - RAG orchestrator (vector search + reranking + answer generation)
+- [Lambda: List Recent Docs](docs/lambda-list-recent-docs.md) - KB ingestion check (newest ingested documents from S3 Vectors metadata)
 - [Lambda: Ask Claude](docs/lambda-ask-claude.md) - RAG answer generation
 - [Lambda: Generate Code](docs/lambda-generate-code.md) - AI-powered code generation from issues
 - [Lambda: Analyze PR](docs/lambda-analyze-pr.md) - PR analysis orchestration

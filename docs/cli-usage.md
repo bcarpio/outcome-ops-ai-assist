@@ -118,12 +118,37 @@ Results will be posted as comments on the PR when complete
 View PR: https://github.com/owner/repo/pull/123
 ```
 
+### KB Ingestion Check
+
+```bash
+# Ten most recently ingested documents across all workspaces
+outcome-ops-assist list-recent-docs
+
+# Up to 100, scoped to one workspace
+outcome-ops-assist list-recent-docs --limit 25 --workspace-id <workspace-id>
+```
+
+**Output** (tab-separated: ingested_at, doc_type, repo, file_path):
+```
+2026-11-18T13:19:41+00:00	adr	bcarpio/outcome-ops-ai-assist	workspaces/.../docs/adr/ADR-004.md
+...
+
+10 document(s), 48211 vectors scanned
+```
+
+The Lambda walks the whole vector index (S3 Vectors has no server-side
+ordering), so latency grows with index size. If the index is larger than
+the scan cap, the summary line says `TRUNCATED`. See
+[lambda-list-recent-docs.md](lambda-list-recent-docs.md).
+
 ## Command-Line Options
 
 | Option | Description | Default | Example |
 |--------|-------------|---------|---------|
 | `--env` | Environment (dev, prd) | `dev` (from `$ENVIRONMENT`) | `--env prd` |
 | `--topK` | Number of top results to retrieve | `5` | `--topK 10` |
+| `--limit` | Documents to list (`list-recent-docs`, 1-100) | `10` | `--limit 25` |
+| `--workspace-id` | Scope `list-recent-docs` to one workspace | (all) | `--workspace-id ws-123` |
 | `--help`, `-h` | Show help message | - | `--help` |
 
 ## Environment Variables

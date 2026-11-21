@@ -560,3 +560,136 @@ def test_rerank_bare_model_id_still_wraps_foundation_model_arn():
     ]["modelConfiguration"]["modelArn"]
     assert model_arn.endswith("::foundation-model/cohere.rerank-v3-5:0")
     assert model_arn.startswith("arn:aws:bedrock:")
+
+
+# ---------------------------------------------------------------------------
+# list_recent_documents
+# ---------------------------------------------------------------------------
+
+
+def _vec(key, ts, *, chunk="0", ws="ws-1", repo="org/app", doc_type="adr"):
+    return {
+        "key": key,
+        "metadata": {
+            "workspace_id": ws,
+            "source": "github",
+            "repo": repo,
+            "type": doc_type,
+            "file_path": f"workspaces/{ws}/github/{key}.md",
+            "chunk_index": chunk,
+            "timestamp": ts,
+        },
+    }
+
+
+def _pages(*pages):
+    """Mock s3vectors client returning the given pages in order."""
+    client = MagicMock()
+    responses = []
+    for i, vectors in enumerate(pages):
+        resp = {"vectors": vectors}
+        if i < len(pages) - 1:
+            resp["nextToken"] = f"tok-{i + 1}"
+        responses.append(resp)
+    client.list_vectors.side_effect = responses
+    return client
+
+
+def _list(client, **kw):
+    params = dict(s3vectors_client=client, vector_bucket="b", vector_index="i", limit=10)
+    params.update(kw)
+    return retrieval.list_recent_documents(**params)
+
+
+def test_list_recent_documents_newest_first_across_pages():
+    client = _pages(
+        [_vec("a", "2026-11-01T00:00:00+00:00"), _vec("b", "2026-11-03T00:00:00+00:00")],
+        [_vec("c", "2026-11-02T00:00:00+00:00")],
+    )
+
+    result = _list(client)
+
+    assert [d["key"] for d in result["documents"]] == ["b", "c", "a"]
+    assert result["scanned"] == 3
+    assert result["truncated"] is False
+    second_call = client.list_vectors.call_args_list[1].kwargs
+    assert second_call["nextToken"] == "tok-1"
+    assert second_call["returnMetadata"] is True
+
+
+def test_list_recent_documents_dedupes_chunks_to_one_per_document():
+    client = _pages([
+        _vec("doc_chunk_0", "2026-11-01T00:00:00+00:00", chunk="0"),
+        _vec("doc_chunk_1", "2026-11-01T00:00:00+00:00", chunk="1"),
+        _vec("doc_chunk_2", "2026-11-01T00:00:00+00:00", chunk="2"),
+    ])
+
+    result = _list(client)
+
+    assert [d["key"] for d in result["documents"]] == ["doc_chunk_0"]
+
+
+def test_list_recent_documents_respects_limit():
+    client = _pages([_vec(f"k{i}", f"2026-11-{i + 10:02d}T00:00:00+00:00") for i in range(5)])
+
+    result = _list(client, limit=2)
+
+    assert [d["key"] for d in result["documents"]] == ["k4", "k3"]
+
+
+def test_list_recent_documents_filters_workspace():
+    client = _pages([
+        _vec("mine", "2026-11-01T00:00:00+00:00", ws="ws-1"),
+        _vec("other", "2026-11-05T00:00:00+00:00", ws="ws-2"),
+    ])
+
+    result = _list(client, workspace_id="ws-1")
+
+    assert [d["key"] for d in result["documents"]] == ["mine"]
+
+
+def test_list_recent_documents_maps_fields():
+    client = _pages([_vec("a", "2026-11-01T00:00:00+00:00", doc_type="markdown")])
+
+    doc = _list(client)["documents"][0]
+
+    assert doc == {
+        "key": "a",
+        "workspace_id": "ws-1",
+        "repo": "org/app",
+        "doc_type": "markdown",
+        "file_path": "workspaces/ws-1/github/a.md",
+        "ingested_at": "2026-11-01T00:00:00+00:00",
+    }
+
+
+def test_list_recent_documents_flags_truncation_at_max_scan():
+    client = _pages(
+        [_vec("a", "2026-11-01T00:00:00+00:00")],
+        [_vec("b", "2026-11-02T00:00:00+00:00")],
+    )
+
+    result = _list(client, max_scan=1)
+
+    assert result["truncated"] is True
+    assert result["scanned"] == 1
+    assert client.list_vectors.call_count == 1
+
+
+def test_list_recent_documents_zero_limit_skips_aws():
+    client = MagicMock()
+
+    result = _list(client, limit=0)
+
+    assert result == {"documents": [], "scanned": 0, "truncated": False}
+    client.list_vectors.assert_not_called()
+
+
+def test_list_recent_documents_propagates_client_error():
+    client = MagicMock()
+    client.list_vectors.side_effect = ClientError(
+        {"Error": {"Code": "AccessDeniedException", "Message": "no"}}, "ListVectors"
+    )
+
+    with pytest.raises(ClientError):
+        _list(client)
