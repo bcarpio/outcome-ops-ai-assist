@@ -596,6 +596,7 @@ def check_test_coverage(
         from shared.pr_check_scope import resolve_pr_check_workspace_scope
         scope_workspace_ids = resolve_pr_check_workspace_scope(
             check_type=check_type, repo_name=repository,
+            provider=provider,
         )
     except Exception as scope_exc:
         logger.warning(

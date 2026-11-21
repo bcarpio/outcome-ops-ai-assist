@@ -53,6 +53,7 @@ from extractor import (  # type: ignore  # noqa: E402
     Fact,
     SymbolGraphFilter,
     extract_facts_from_bytes,
+    language_for_path,
     resolve_repo_facts,
 )
 
@@ -996,7 +997,7 @@ def generate_batch_summary(
             # results. Best-effort, per-file try/except: an extractor
             # crash never blocks the summary.
             if fact_sink is not None:
-                language = _language_for_path(file_path)
+                language = language_for_path(file_path)
                 if language is not None:
                     file_facts = list(
                         _iter_batch_facts(
@@ -1322,28 +1323,6 @@ def _emit_ingest_audit(
             char_count=redaction.char_count,
             workspace_id=workspace_id,
         )
-
-
-# Map a repo-relative file path to the symbol-graph extractor language.
-# Returns ``None`` when the extension is unknown — the extractor pass
-# is best-effort and any unrecognized file is silently skipped.
-_LANGUAGE_BY_EXT = {
-    ".py": "python",
-    ".ts": "typescript",
-    ".tsx": "typescript",
-    ".java": "java",
-    ".cs": "csharp",
-    ".go": "go",
-    ".abap": "abap",
-}
-
-
-def _language_for_path(file_path: str) -> str | None:
-    lower = file_path.lower()
-    for suffix, language in _LANGUAGE_BY_EXT.items():
-        if lower.endswith(suffix):
-            return language
-    return None
 
 
 def _emit_facts(

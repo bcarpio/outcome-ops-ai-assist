@@ -247,12 +247,36 @@ module "process_pr_check_lambda" {
   cloudwatch_logs_retention_in_days = 7
   cloudwatch_logs_kms_key_id        = aws_kms_key.cloudwatch_logs.arn
 
-  # Source code from local directory (includes shared module)
+  # Source code from local directory (includes shared module).
+  # The symbol-graph extractor is bundled from process-batch-summary:
+  # BREAKING_CHANGES runs the extractor on the PR head to compare
+  # signatures (ADR-054). Its tree-sitter grammars come from this
+  # Lambda's requirements.txt. Bytecode is excluded from every entry so
+  # local test runs do not change the package hash or ship stale .pyc.
   source_path = [
-    "${path.module}/../lambda/process-pr-check",
+    {
+      path             = "${path.module}/../lambda/process-pr-check"
+      pip_requirements = true
+      patterns = [
+        "!__pycache__/.*",
+        "!.*\\.pyc",
+      ]
+    },
     {
       path          = "${path.module}/../lambda/shared"
       prefix_in_zip = "shared"
+      patterns = [
+        "!__pycache__/.*",
+        "!.*\\.pyc",
+      ]
+    },
+    {
+      path          = "${path.module}/../lambda/process-batch-summary/extractor"
+      prefix_in_zip = "extractor"
+      patterns = [
+        "!__pycache__/.*",
+        "!.*\\.pyc",
+      ]
     }
   ]
 

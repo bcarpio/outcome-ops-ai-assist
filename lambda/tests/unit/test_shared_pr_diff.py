@@ -562,7 +562,8 @@ class TestDiffInfoByFile:
             out = pr_diff.diff_info_by_file(
                 "github", "owner/repo", "base", "head", ["f.py"], github_token="ghp")
         assert out["f.py"] == pr_diff.FileDiffInfo(
-            added_lines=[2], blocks=[pr_diff.ChangeBlock((2,), None, 2)], is_new=False)
+            added_lines=[2], blocks=[pr_diff.ChangeBlock((2,), None, 2)], is_new=False,
+            head_text="a\nB\n")
 
     def test_deletion_only_file_present_with_no_added_lines(self):
         def fake(provider, path, sha, **kwargs):
@@ -586,6 +587,27 @@ class TestDiffInfoByFile:
                 "github", "owner/repo", "base", "head", ["gone.py"], github_token="ghp")
         assert out["gone.py"].is_new is False
         assert out["gone.py"].added_lines == []
+        assert out["gone.py"].head_text is None
+
+    def test_binary_head_has_no_head_text(self):
+        def fake(provider, path, sha, **kwargs):
+            return b"a\n" if sha == "base" else b"\x00\x01bin"
+        with self._patch_fetch(fake):
+            out = pr_diff.diff_info_by_file(
+                "github", "owner/repo", "base", "head", ["f.bin"], github_token="ghp")
+        assert out["f.bin"].head_text is None
+
+    def test_head_text_decodes_invalid_utf8_with_replacement(self):
+        def fake(provider, path, sha, **kwargs):
+            return b"a\n" if sha == "base" else b"a\n\xff\n"
+        with self._patch_fetch(fake):
+            out = pr_diff.diff_info_by_file(
+                "github", "owner/repo", "base", "head", ["f.py"], github_token="ghp")
+        assert out["f.py"].head_text == "a\n\ufffd\n"
+
+    def test_head_text_defaults_to_none(self):
+        info = pr_diff.FileDiffInfo(added_lines=[], blocks=[], is_new=False)
+        assert info.head_text is None
 
     def test_per_file_exception_skips_only_that_file(self):
         def fake(provider, path, sha, **kwargs):

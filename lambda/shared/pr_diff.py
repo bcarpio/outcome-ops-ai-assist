@@ -207,11 +207,23 @@ class FileDiffInfo:
         added_lines: Same list :func:`added_line_numbers` returns.
         blocks: Change blocks in file order.
         is_new: True when the file was absent at base and present at head.
+        head_text: Decoded head content, or ``None`` when the file is absent
+            at head (deleted) or binary. Lets a check re-parse the head
+            version (e.g. BREAKING_CHANGES' signature compare) without a
+            second fetch.
     """
 
     added_lines: List[int]
     blocks: List[ChangeBlock]
     is_new: bool
+    head_text: Optional[str] = None
+
+
+def _head_text(head_content: Optional[bytes]) -> Optional[str]:
+    """Decoded head text, or ``None`` for an absent or binary file."""
+    if head_content is None or _looks_binary(head_content):
+        return None
+    return _decode(head_content)
 
 
 def _parse_hunk_header(raw: str) -> Optional[Tuple[int, int, int, int]]:
@@ -398,6 +410,7 @@ def diff_info_by_file(
                 added_lines=added_line_numbers(file_diff),
                 blocks=change_blocks(file_diff),
                 is_new=base_bytes is None and head_bytes is not None,
+                head_text=_head_text(head_bytes),
             )
         except Exception as e:  # provider/network/parse -- skip this file
             logger.warning(

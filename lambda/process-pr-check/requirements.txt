@@ -4,6 +4,19 @@ requests>=2.31.0
 urllib3>=2.6.3
 pydantic>=2.0.0
 
+# Symbol-graph extractor (bundled from process-batch-summary/extractor).
+# Tree-sitter core + per-language grammars for Python / TypeScript /
+# Java / Go. C# stays regex-only per ADR-017. ABAP uses the
+# FrankRogalski fork (procedural ABAP errors on the upstream grammar;
+# see ADR-020). The ABAP grammar is git-sourced because it is not on
+# PyPI; the SHA pin (``7dcb098``) is the spike-validated commit.
+tree-sitter>=0.23.0
+tree-sitter-python>=0.23.0
+tree-sitter-typescript>=0.23.0
+tree-sitter-java>=0.23.0
+tree-sitter-go>=0.23.0
+tree-sitter-abap @ git+https://github.com/FrankRogalski/tree-sitter-abap.git@7dcb098
+
 # Test dependencies
 pytest>=7.0.0
 pytest-cov>=4.0.0

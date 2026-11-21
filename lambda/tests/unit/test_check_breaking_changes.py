@@ -56,6 +56,15 @@ sys.modules['check_handlers.breaking_changes'] = handler_module
 sys.modules['breaking_changes_handler'] = handler_module
 spec.loader.exec_module(handler_module)
 
+# The symbol-graph extractor ships inside process-pr-check at the zip root as
+# package ``extractor``; its source lives under process-batch-summary.
+# APPENDED (not inserted first) so process-batch-summary/handler.py never
+# shadows another Lambda's ``handler`` module.
+_EXTRACTOR_PARENT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "process-batch-summary"))
+if _EXTRACTOR_PARENT not in sys.path:
+    sys.path.append(_EXTRACTOR_PARENT)
+
 # Import classes and functions from loaded module
 KbVectorResult = handler_module.KbVectorResult
 Dependency = handler_module.Dependency
@@ -68,6 +77,8 @@ create_tailored_query = handler_module.create_tailored_query
 check_breaking_changes = handler_module.check_breaking_changes
 symbol_graph_consumers = handler_module.symbol_graph_consumers
 _plane1_file_scope = handler_module._plane1_file_scope
+_classify_contract_change = handler_module._classify_contract_change
+_head_signatures = handler_module._head_signatures
 
 
 class TestKbVectorResult:
@@ -653,15 +664,15 @@ class TestSymbolGraphConsumers:
         fake = self._FakeSGR(
             at_line=SimpleNamespace(target_symbol_id="pkg.mod::func"),
             callers_result=SimpleNamespace(
-                sites=[SimpleNamespace(repo="myrepo",
+                sites=[SimpleNamespace(repo="other-repo",
                                        file_path="lambda/x/handler.py",
                                        line=42, source_symbol_id="x::f")],
                 complete=True),
             importers_result=SimpleNamespace(
-                sites=[SimpleNamespace(repo="myrepo",
+                sites=[SimpleNamespace(repo="other-repo",
                                        file_path="lambda/x/handler.py",
                                        line=3, source_symbol_id="x"),
-                       SimpleNamespace(repo="myrepo",
+                       SimpleNamespace(repo="other-repo",
                                        file_path="lambda/y/reexport.py",
                                        line=5, source_symbol_id="y")],
                 complete=True),
@@ -764,10 +775,10 @@ class TestSymbolGraphConsumers:
             at_line=SimpleNamespace(target_symbol_id="go:binding::Default"),
             callers_result=SimpleNamespace(
                 sites=[
-                    SimpleNamespace(repo="gin",
+                    SimpleNamespace(repo="gin-app",
                                     file_path="binding/binding_test.go",
                                     line=158, source_symbol_id="t::TestBindingDefault"),
-                    SimpleNamespace(repo="gin",
+                    SimpleNamespace(repo="gin-app",
                                     file_path="context.go",
                                     line=780, source_symbol_id="go:context.go::Context::Bind"),
                 ], complete=True),
@@ -871,7 +882,8 @@ class TestSymbolGraphConsumers:
     def test_other_repo_defining_own_copy_is_dropped(self):
         """A caller in another repo that also DEFINES the sid calls its own
         copy (ids are not repo-qualified) -> dropped. A caller in a repo that
-        does not define it, and a same-repo caller in another file, are kept."""
+        does not define it is kept; a same-repo caller in another file is
+        dropped (same deploy)."""
         fake = self._FakeSGR(
             at_line=SimpleNamespace(target_symbol_id="pkg.mod::func"),
             callers_result=SimpleNamespace(sites=[
@@ -888,7 +900,7 @@ class TestSymbolGraphConsumers:
             ["ws1"], "myrepo", {"pkg/mod.py": [_blk(removed=(1,), head=1)]},
             reader=fake)
         assert undetermined == []
-        assert {c["consumer_repo"] for c in consumers} == {"consumer-repo", "myrepo"}
+        assert {c["consumer_repo"] for c in consumers} == {"consumer-repo"}
 
     def test_defining_repos_cached_per_symbol(self):
         """definitions() is queried once per (sid, ws) for the whole run."""
@@ -1033,10 +1045,10 @@ class TestPlane1ScopeWidening:
 
     @patch('shared.pr_check_scope.resolve_pr_check_workspace_scope',
            return_value=["ws-eng"])
-    def test_shared_only_pr_runs_plane1_and_flags_consumer(self, _mock_scope):
-        """shared/*.py change with a graph consumer -> WARN, finding anchored on
-        the changed def line, naming the consuming file. Baseline behavior would
-        have early-returned PASS (no handler.py / .tf in the diff)."""
+    def test_shared_only_pr_same_repo_consumer_is_pass(self, _mock_scope):
+        """shared/*.py change whose only graph consumer is in the SAME repo ->
+        PASS: same-repo code deploys together, so no contract can break.
+        Plane 1 still ran (the early-exit PASS would not say 'Scanned')."""
         reader = self._reader_with_caller("lambda/process-pr-check/handler.py")
         result = check_breaking_changes(
             "BREAKING_CHANGES", 123, "bcarpio/outcome-ops-ai-assist",
@@ -1046,14 +1058,10 @@ class TestPlane1ScopeWidening:
                 _blk(removed=(10,), head=10), _blk(removed=(25,), head=25)]},
             reader=reader,
         )
-        assert result["status"] == "WARN"
-        findings = result["findings"]
-        assert len(findings) == 1
-        f = findings[0]
-        assert f["path"] == "lambda/shared/pr_metadata.py"
-        assert f["line"] == 10          # the changed line that resolved the symbol
-        assert "process-pr-check/handler.py" in f["message"]
-        assert "fetch_pr_metadata" in f["message"]
+        assert result["status"] == "PASS"
+        assert result["findings"] == []
+        assert any("Scanned 1 code module" in d for d in result["details"])
+        assert not any("process-pr-check/handler.py" in d for d in result["details"])
 
     @patch('shared.pr_check_scope.resolve_pr_check_workspace_scope',
            return_value=["ws-eng"])
@@ -1167,13 +1175,19 @@ class TestPlane1ScopeWidening:
     @patch('shared.pr_check_scope.resolve_pr_check_workspace_scope',
            return_value=["ws-eng"])
     def test_plane1_warn_drops_plane2_pass_text(self, _mock_scope):
-        """With plane-1 consumers on a handler PR whose plane 2 found nothing,
-        the plane-2 'safe' lines are removed; the Modified line stays."""
+        """With a plane-1 contract change on a handler PR whose plane 2 found
+        nothing, the plane-2 'safe' lines are removed; the Modified line stays."""
         reader = TestSymbolGraphConsumers._FakeSGR(
-            at_line=SimpleNamespace(target_symbol_id="pkg::handler"),
+            at_line=SimpleNamespace(
+                target_symbol_id="python:lambda.hello.handler::handler"),
             callers_result=SimpleNamespace(sites=[SimpleNamespace(
                 repo="consumer", file_path="app/use.py", line=3,
                 source_symbol_id="x")], complete=True),
+            definitions_result=SimpleNamespace(sites=[SimpleNamespace(
+                repo="outcome-ops-ai-assist", file_path="lambda/hello/handler.py",
+                line=1, source_symbol_id="m",
+                signature={"params": [{"name": "event"}, {"name": "context"}]})],
+                complete=True),
         )
         with patch('breaking_changes_handler.query_vector_search', return_value=[]):
             result = check_breaking_changes(
@@ -1181,6 +1195,8 @@ class TestPlane1ScopeWidening:
                 ["lambda/hello/handler.py"], "query-kb-lambda",
                 anchors={"lambda/hello/handler.py": [4]},
                 change_blocks={"lambda/hello/handler.py": [_blk(removed=(4,), head=4)]},
+                head_texts={"lambda/hello/handler.py":
+                            "def handler(event):\n    return 1\n"},
                 reader=reader,
             )
         assert result["status"] == "WARN"
@@ -1206,3 +1222,340 @@ class TestPlane1ScopeWidening:
             )
         assert result["status"] == "PASS"
         assert "Changes appear safe to merge." in result["details"]
+
+
+class TestSymbolGraphConsumersCrossRepo:
+    """Same-repo consumers are dropped; each cross-repo consumer carries the
+    changed file's base signature from the graph's defines row."""
+
+    def _reader(self, callers, importers=(), definitions=()):
+        return TestSymbolGraphConsumers._FakeSGR(
+            at_line=SimpleNamespace(target_symbol_id="pkg.mod::func"),
+            callers_result=SimpleNamespace(sites=list(callers), complete=True),
+            importers_result=SimpleNamespace(sites=list(importers), complete=True),
+            definitions_result=SimpleNamespace(sites=list(definitions), complete=True),
+        )
+
+    @staticmethod
+    def _site(repo, file_path, line=1, signature=None):
+        return SimpleNamespace(repo=repo, file_path=file_path, line=line,
+                               source_symbol_id="s", signature=signature)
+
+    def test_same_repo_caller_and_importer_not_reported(self):
+        reader = self._reader(
+            callers=[self._site("myrepo", "pkg/other.py", 5)],
+            importers=[self._site("myrepo", "pkg/third.py", 2)],
+        )
+        consumers, undetermined = symbol_graph_consumers(
+            ["ws1"], "myrepo", {"pkg/mod.py": [_blk(removed=(1,), head=1)]},
+            reader=reader)
+        assert consumers == []
+        assert undetermined == []
+
+    def test_base_signature_taken_from_changed_file_defines_row(self):
+        sig = {"params": [{"name": "a", "type": "int"}], "returns": "str"}
+        reader = self._reader(
+            callers=[self._site("other", "app/use.py", 4)],
+            definitions=[
+                self._site("myrepo", "pkg/mod.py", 1, signature=sig),
+                self._site("myrepo", "pkg/elsewhere.py", 1,
+                           signature={"params": []}),
+            ],
+        )
+        consumers, _ = symbol_graph_consumers(
+            ["ws1"], "myrepo", {"pkg/mod.py": [_blk(removed=(1,), head=1)]},
+            reader=reader)
+        assert len(consumers) == 1
+        assert consumers[0]["base_signature"] == sig
+
+    def test_base_signature_none_when_ambiguous_or_missing(self):
+        reader = self._reader(
+            callers=[self._site("other", "app/use.py", 4)],
+            definitions=[
+                self._site("myrepo", "pkg/mod.py", 1, signature={"params": []}),
+                self._site("myrepo", "pkg/mod.py", 9,
+                           signature={"params": [{"name": "x"}]}),
+            ],
+        )
+        consumers, _ = symbol_graph_consumers(
+            ["ws1"], "myrepo", {"pkg/mod.py": [_blk(removed=(1,), head=1)]},
+            reader=reader)
+        assert consumers[0]["base_signature"] is None
+
+        reader = self._reader(callers=[self._site("other", "app/use.py", 4)])
+        consumers, _ = symbol_graph_consumers(
+            ["ws1"], "myrepo", {"pkg/mod.py": [_blk(removed=(1,), head=1)]},
+            reader=reader)
+        assert consumers[0]["base_signature"] is None
+
+
+class TestClassifyContractChange:
+    """Pure classification of a changed symbol's contract move."""
+
+    SID = "python:pkg.mod::func"
+    BASE = {"params": [{"name": "a", "type": "int"}, {"name": "b"}],
+            "returns": "str"}
+
+    @staticmethod
+    def _sig(params, returns=None):
+        return SimpleNamespace(
+            params=tuple(SimpleNamespace(name=n, type=t) for n, t in params),
+            returns=returns)
+
+    def test_head_unparsed_is_unknown(self):
+        assert _classify_contract_change(self.SID, self.BASE, None) == "unknown"
+
+    def test_symbol_absent_at_head_is_removed(self):
+        assert _classify_contract_change(
+            self.SID, self.BASE, {"python:pkg.mod::other": None}) == "removed"
+
+    def test_removed_even_without_base_signature(self):
+        assert _classify_contract_change(self.SID, None, {}) == "removed"
+
+    def test_equal_signatures_is_body(self):
+        head = {self.SID: self._sig([("a", "int"), ("b", None)], "str")}
+        assert _classify_contract_change(self.SID, self.BASE, head) == "body"
+
+    def test_param_added_is_signature(self):
+        head = {self.SID: self._sig([("a", "int"), ("b", None), ("c", None)], "str")}
+        assert _classify_contract_change(self.SID, self.BASE, head) == "signature"
+
+    def test_param_renamed_is_signature(self):
+        head = {self.SID: self._sig([("a", "int"), ("bb", None)], "str")}
+        assert _classify_contract_change(self.SID, self.BASE, head) == "signature"
+
+    def test_param_type_change_is_signature(self):
+        head = {self.SID: self._sig([("a", "float"), ("b", None)], "str")}
+        assert _classify_contract_change(self.SID, self.BASE, head) == "signature"
+
+    def test_param_reorder_is_signature(self):
+        head = {self.SID: self._sig([("b", None), ("a", "int")], "str")}
+        assert _classify_contract_change(self.SID, self.BASE, head) == "signature"
+
+    def test_return_type_only_change_is_signature(self):
+        head = {self.SID: self._sig([("a", "int"), ("b", None)], "bytes")}
+        assert _classify_contract_change(self.SID, self.BASE, head) == "signature"
+
+    def test_return_type_dropped_is_signature(self):
+        head = {self.SID: self._sig([("a", "int"), ("b", None)])}
+        assert _classify_contract_change(self.SID, self.BASE, head) == "signature"
+
+    def test_base_signature_none_is_unknown(self):
+        head = {self.SID: self._sig([("a", None)])}
+        assert _classify_contract_change(self.SID, None, head) == "unknown"
+
+    def test_head_signature_none_is_unknown(self):
+        assert _classify_contract_change(
+            self.SID, self.BASE, {self.SID: None}) == "unknown"
+
+    def test_malformed_base_is_unknown(self):
+        head = {self.SID: self._sig([("a", None)])}
+        assert _classify_contract_change(
+            self.SID, {"params": "nope"}, head) == "unknown"
+        assert _classify_contract_change(
+            self.SID, {"params": [{"type": "int"}]}, head) == "unknown"
+
+    def test_head_in_graph_dict_shape_compares(self):
+        head = {self.SID: {"params": [{"name": "a", "type": "int"},
+                                      {"name": "b"}], "returns": "str"}}
+        assert _classify_contract_change(self.SID, self.BASE, head) == "body"
+
+    def test_head_object_without_params_is_unknown(self):
+        head = {self.SID: SimpleNamespace(returns="str")}
+        assert _classify_contract_change(self.SID, self.BASE, head) == "unknown"
+
+
+class TestHeadSignatures:
+    """Head-side parse through the bundled symbol-graph extractor."""
+
+    def test_python_head_signatures(self):
+        out = _head_signatures(
+            "lambda/shared/m.py",
+            "def f(a: int, b) -> str:\n    return 1\n\nclass C:\n    pass\n")
+        assert set(out) == {"python:lambda.shared.m::f", "python:lambda.shared.m::C"}
+        sig = out["python:lambda.shared.m::f"]
+        assert [(p.name, p.type) for p in sig.params] == [("a", "int"), ("b", None)]
+        assert sig.returns == "str"
+        assert out["python:lambda.shared.m::C"] is None
+
+    def test_no_head_text_is_none(self):
+        assert _head_signatures("lambda/shared/m.py", None) is None
+
+    def test_unknown_language_is_none(self):
+        assert _head_signatures("lambda/shared/m.rb", "def f; end") is None
+
+    def test_excluded_path_is_none(self):
+        assert _head_signatures("node_modules/x/m.py", "def f():\n    pass\n") is None
+
+    def test_extractor_raising_is_none(self):
+        import extractor
+        with patch.object(extractor, "extract_facts_from_bytes",
+                          side_effect=RuntimeError("parse boom")):
+            assert _head_signatures("lambda/shared/m.py", "def f(): pass\n") is None
+
+    def test_missing_extractor_package_is_none(self):
+        with patch.dict(sys.modules, {"extractor": None}):
+            assert _head_signatures("lambda/shared/m.py", "def f(): pass\n") is None
+
+    def test_conflicting_duplicate_definitions_map_to_none(self):
+        import extractor
+        sid = "python:lambda.shared.m::f"
+        facts = [
+            SimpleNamespace(kind="defines", target_symbol_id=sid,
+                            signature=SimpleNamespace(params=(), returns=None)),
+            SimpleNamespace(kind="calls", target_symbol_id="x", signature=None),
+            SimpleNamespace(kind="defines", target_symbol_id=sid,
+                            signature=SimpleNamespace(
+                                params=(SimpleNamespace(name="a", type=None),),
+                                returns=None)),
+        ]
+        with patch.object(extractor, "extract_facts_from_bytes",
+                          return_value=iter(facts)):
+            out = _head_signatures("lambda/shared/m.py", "irrelevant")
+        assert out == {sid: None}
+
+
+class TestPlane1ContractVerdict:
+    """check_breaking_changes plane-1 verdict: cross-repo consumers WARN only
+    on a removed symbol or a changed signature; body-only is listed; anything
+    that cannot be compared fails closed to manual review."""
+
+    PATH = "lambda/shared/pr_metadata.py"
+    SID = "python:lambda.shared.pr_metadata::fetch_pr_metadata"
+    BASE_SIG = {"params": [{"name": "provider"}, {"name": "pr_number"}]}
+
+    def _reader(self, base_signature=BASE_SIG, consumer_repo="eng-consumer"):
+        return TestSymbolGraphConsumers._FakeSGR(
+            at_line=SimpleNamespace(target_symbol_id=self.SID),
+            callers_result=SimpleNamespace(sites=[SimpleNamespace(
+                repo=consumer_repo, file_path="app/service.py", line=17,
+                source_symbol_id="app.service::process")], complete=True),
+            definitions_result=SimpleNamespace(sites=[SimpleNamespace(
+                repo="outcome-ops-ai-assist", file_path=self.PATH, line=10,
+                source_symbol_id="m", signature=base_signature)], complete=True),
+        )
+
+    def _run(self, reader, head_texts):
+        path = self.PATH
+        with patch('shared.pr_check_scope.resolve_pr_check_workspace_scope',
+                   return_value=["ws-eng"]) as mock_scope:
+            result = check_breaking_changes(
+                "BREAKING_CHANGES", 123, "bcarpio/outcome-ops-ai-assist",
+                [path], "query-kb-lambda",
+                anchors={path: [10]},
+                change_blocks={path: [_blk(removed=(10,), head=10)]},
+                head_texts=head_texts, provider="gitlab", reader=reader,
+            )
+        return result, mock_scope
+
+    def test_scope_resolved_with_provider(self):
+        _, mock_scope = self._run(self._reader(), {})
+        assert mock_scope.call_args.kwargs["provider"] == "gitlab"
+
+    def test_signature_change_warns_with_anchored_finding(self):
+        head = "def fetch_pr_metadata(provider, pr_number, extra):\n    return 1\n"
+        result, _ = self._run(self._reader(), {self.PATH: head})
+        assert result["status"] == "WARN"
+        assert result["message"] == (
+            "Contract change with consumers in other repos (symbol graph)")
+        assert len(result["findings"]) == 1
+        f = result["findings"][0]
+        assert f["path"] == self.PATH and f["line"] == 10
+        assert "changed signature" in f["message"]
+        assert "eng-consumer/app/service.py:17" in f["message"]
+
+    def test_two_consumers_of_one_symbol_share_one_classification(self):
+        reader = self._reader()
+        reader._callers = SimpleNamespace(sites=[
+            SimpleNamespace(repo="eng-consumer", file_path="app/a.py", line=1,
+                            source_symbol_id="a"),
+            SimpleNamespace(repo="ops-consumer", file_path="app/b.py", line=2,
+                            source_symbol_id="b"),
+        ], complete=True)
+        head = "def fetch_pr_metadata(provider):\n    return 1\n"
+        with patch.object(handler_module, "_head_signatures",
+                          wraps=handler_module._head_signatures) as spy:
+            result, _ = self._run(reader, {self.PATH: head})
+        assert spy.call_count == 1
+        assert result["status"] == "WARN"
+        assert len(result["findings"]) == 2
+
+    def test_removed_symbol_warns(self):
+        head = "def renamed(provider, pr_number):\n    return 1\n"
+        result, _ = self._run(self._reader(), {self.PATH: head})
+        assert result["status"] == "WARN"
+        assert len(result["findings"]) == 1
+        assert "removed or renamed" in result["findings"][0]["message"]
+
+    def test_body_only_change_passes_and_lists_consumer(self):
+        head = "def fetch_pr_metadata(provider, pr_number):\n    return 2\n"
+        result, _ = self._run(self._reader(), {self.PATH: head})
+        assert result["status"] == "PASS"
+        assert result["findings"] == []
+        assert result["message"] == "No contract changes for consumers in other repos"
+        assert any(
+            "Behaviour changed (signature unchanged); consumers in eng-consumer: "
+            "app/service.py:17" in d for d in result["details"])
+
+    def test_base_signature_none_warns_manual_review(self):
+        head = "def fetch_pr_metadata(provider, pr_number):\n    return 2\n"
+        result, _ = self._run(self._reader(base_signature=None), {self.PATH: head})
+        assert result["status"] == "WARN"
+        assert result["message"] == (
+            f"Could not compare signature for {self.SID} - manual review")
+        assert result["findings"] == []
+        assert any("eng-consumer/app/service.py:17" in d for d in result["details"])
+
+    def test_no_head_text_warns_manual_review(self):
+        result, _ = self._run(self._reader(), {})
+        assert result["status"] == "WARN"
+        assert "manual review" in result["message"]
+        assert result["findings"] == []
+
+    def test_head_texts_none_warns_manual_review(self):
+        result, _ = self._run(self._reader(), None)
+        assert result["status"] == "WARN"
+        assert "manual review" in result["message"]
+
+    def test_unknown_language_warns_manual_review(self):
+        # Every plane-1 extension has an extractor today, so make the language
+        # lookup miss to exercise the "no extractor for the language" branch.
+        import extractor
+        with patch.object(extractor, "language_for_path", return_value=None):
+            result, _ = self._run(
+                self._reader(),
+                {self.PATH: "def fetch_pr_metadata(provider, pr_number):\n  pass\n"})
+        assert result["status"] == "WARN"
+        assert "manual review" in result["message"]
+
+    def test_extractor_raises_warns_manual_review(self):
+        import extractor
+        with patch.object(extractor, "extract_facts_from_bytes",
+                          side_effect=RuntimeError("boom")):
+            result, _ = self._run(
+                self._reader(), {self.PATH: "def fetch_pr_metadata(a):\n  pass\n"})
+        assert result["status"] == "WARN"
+        assert "manual review" in result["message"]
+
+    def test_same_repo_consumer_with_signature_change_passes(self):
+        head = "def fetch_pr_metadata(provider):\n    return 1\n"
+        result, _ = self._run(
+            self._reader(consumer_repo="outcome-ops-ai-assist"), {self.PATH: head})
+        assert result["status"] == "PASS"
+        assert result["findings"] == []
+
+    def test_body_only_with_undetermined_file_keeps_manual_review_message(self):
+        """Body-only on one file must not mask a fail-closed file's message."""
+        head = "def fetch_pr_metadata(provider, pr_number):\n    return 2\n"
+        with patch('shared.pr_check_scope.resolve_pr_check_workspace_scope',
+                   return_value=["ws-eng"]):
+            result = check_breaking_changes(
+                "BREAKING_CHANGES", 123, "bcarpio/outcome-ops-ai-assist",
+                [self.PATH, "lambda/shared/other.py"], "query-kb-lambda",
+                anchors={self.PATH: [10]},
+                change_blocks={self.PATH: [_blk(removed=(10,), head=10)]},
+                head_texts={self.PATH: head}, reader=self._reader(),
+            )
+        assert result["status"] == "WARN"
+        assert result["message"] == (
+            "Consumer analysis incomplete - manual review required")

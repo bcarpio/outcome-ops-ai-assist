@@ -917,6 +917,7 @@ def check_license_compliance(
         from shared.pr_check_scope import resolve_pr_check_workspace_scope
         scope_workspace_ids = resolve_pr_check_workspace_scope(
             check_type=check_type, repo_name=repository,
+            provider=provider,
         )
     except Exception as scope_exc:
         logger.warning(
@@ -925,13 +926,13 @@ def check_license_compliance(
         )
 
     # Attribute PR-analyzer Bedrock spend to the PR repo's OWNING workspace
-    # (the first GITHUB_REPO owner), NOT the retrieval scope above (which for
+    # (the first repo-row owner for this provider), NOT the retrieval scope above (which for
     # standards checks spans the repo's workspaces + all is_global). Fail-soft:
     # "" -> WS#SYSTEM (unattributed) rather than breaking the check.
     owning_ws = ""
     try:
         from shared.pr_check_scope import find_workspaces_for_repo
-        owning_ws = (sorted(find_workspaces_for_repo(repository)) or [""])[0]
+        owning_ws = (sorted(find_workspaces_for_repo(repository, provider=provider)) or [""])[0]
     except Exception as ws_exc:
         logger.warning(
             f"Could not resolve owning workspace for spend attribution: {ws_exc}"

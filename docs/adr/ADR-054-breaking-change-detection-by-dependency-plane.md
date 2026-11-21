@@ -129,6 +129,31 @@ Both have rules.
   to merge" text is not shown. A reviewer sees the plane-1 result, not two
   verdicts that can contradict each other.
 
+### Plane 1: contracts that cross a deployment boundary (v1.2)
+
+Plane 1 reports contracts between deployable units, not every call site.
+
+- **Same-repo callers and importers are not consumers.** They ship in the same
+  deploy as the changed symbol, so no contract between services can break, and
+  the repo's own tests cover them. A caller or importer counts as a consumer only
+  when it lives in another repo (and, per the rule above, that repo does not
+  define its own copy of the symbol).
+- **Signature changes WARN; body-only changes do not.** For a symbol with a
+  consumer in another repo, the check compares the symbol's signature on the base
+  branch, as recorded in the symbol graph, with its signature on the head branch,
+  produced by running the same extractor that builds the graph on the head
+  version of the file.
+  - A changed signature (parameters, return type) or a removed or renamed symbol
+    is a WARN that names the consuming repos.
+  - A body-only change is listed in the details as a behaviour change with its
+    consuming repos, without a WARN. The contract still holds; the reviewer sees
+    who might notice the new behaviour.
+  - A signature that cannot be compared (no extractor for the language, a graph
+    row written before signatures were recorded, a parse failure on either side)
+    fails closed: WARN "could not compare signature, manual review".
+- **Plane 2 and the fail-closed paths are unchanged.** The knowledge-base pass and
+  the "could not determine consumers" result behave as described above.
+
 ## Consequences
 
 - **Precision up, noise down.** Plane 1 becomes deterministic (graph edges, not
@@ -171,3 +196,6 @@ Both have rules.
 - v1.0: initial decision
 - v1.1 (2026-11-20): base-side changed-symbol resolution, own-definition
   consumer filter, single verdict
+- v1.2 (2026-11-21): plane 1 reports only consumers in other repos; base/head
+  signature comparison (signature change WARNs, body-only change is listed
+  without a WARN, uncomparable signature fails closed)

@@ -10,7 +10,7 @@ confidence (handler name + queue/topic/invocation explicitly mentioned).
 
 import json
 import logging
-from typing import Dict, List, Any, Literal, Optional, Set, Tuple
+from typing import Dict, List, Any, Literal, Mapping, Optional, Set, Tuple
 from collections import defaultdict
 
 import boto3
@@ -347,9 +347,15 @@ def symbol_graph_consumers(
 
     Returns:
         ``(consumers, undetermined_files)``.
-        ``consumers`` -- one dict per distinct external caller/importer:
+        ``consumers`` -- one dict per distinct caller/importer in ANOTHER repo:
         ``{changed_file, changed_line, changed_symbol_id, relation,
-        consumer_repo, consumer_file, consumer_line, truncated}``.
+        consumer_repo, consumer_file, consumer_line, truncated,
+        base_signature}``. ``base_signature`` is the graph's ``defines`` row
+        signature for the changed symbol in this repo + file (the
+        ``CallSite.signature`` dict), or None when the row has none
+        (pre-signature row, non-callable) or the file holds more than one
+        distinct definition of the id (overloads): the caller must then
+        fail closed rather than compare.
         ``changed_line`` is the HEAD anchor of the first block that resolved
         the symbol (``block.head_anchor``, else the file's first added line),
         or None when the file has no added line to anchor on. Callers MUST
@@ -358,10 +364,15 @@ def symbol_graph_consumers(
         because the graph was unavailable or errored. Per ADR-054 the caller
         MUST fail closed on these (manual-review WARN), never report "safe".
 
+    Same-repo callers and importers are never consumers: code in the same
+    repo ships in the same deploy, so no contract between deployables can
+    break and the repo's own tests cover it. Only consumers in another repo
+    are returned.
+
     Consumers in ANOTHER repo that itself defines the changed symbol id are
     dropped: symbol ids are not repo-qualified, so a repo carrying its own
     copy at the same path has caller edges to "the same" id while calling
-    only its own copy. Same-repo callers in other files are still reported.
+    only its own copy.
 
     ``reader`` is injectable for tests; in production it defaults to the shared
     ``symbol_graph_reader`` module.
@@ -373,18 +384,33 @@ def symbol_graph_consumers(
     consumers: List[Dict[str, Any]] = []
     undetermined: List[str] = []
     seen = set()
-    # sid -> repos that define it, across every scope workspace. Cached for the
+    # sid -> its defines sites across every scope workspace. Cached for the
     # run: the same shared symbol is often changed from several files.
-    defining_repos: Dict[str, Set[str]] = {}
+    definition_sites: Dict[str, List[Any]] = {}
+
+    def _definition_sites(sid: str) -> List[Any]:
+        if sid not in definition_sites:
+            sites: List[Any] = []
+            for ws in workspace_ids:
+                sites.extend(reader.definitions(ws, sid).sites)
+            definition_sites[sid] = sites
+        return definition_sites[sid]
 
     def _defining_repos(sid: str) -> Set[str]:
-        if sid not in defining_repos:
-            repos: Set[str] = set()
-            for ws in workspace_ids:
-                for site in reader.definitions(ws, sid).sites:
-                    repos.add(site.repo)
-            defining_repos[sid] = repos
-        return defining_repos[sid]
+        return {site.repo for site in _definition_sites(sid)}
+
+    def _base_signature(sid: str, file_path: str) -> Optional[dict]:
+        """The changed file's own defines-row signature for ``sid``, or None
+        when absent or ambiguous (several distinct definitions)."""
+        sigs = [
+            getattr(site, "signature", None)
+            for site in _definition_sites(sid)
+            if site.repo == repo and site.file_path == file_path
+        ]
+        distinct = {json.dumps(sig, sort_keys=True) for sig in sigs}
+        if len(distinct) != 1:
+            return None
+        return sigs[0]
 
     for file_path, blocks in changed_blocks_by_file.items():
         try:
@@ -467,8 +493,9 @@ def symbol_graph_consumers(
                     for ws in workspace_ids:
                         result = query(ws, sid)
                         for site in result.sites:
-                            # Exclude self-references inside the changed file.
-                            if site.repo == repo and site.file_path == file_path:
+                            # Same repo (including the changed file itself):
+                            # deploys together, so not a cross-repo consumer.
+                            if site.repo == repo:
                                 continue
                             # Exclude test-file consumers: a test using the symbol
                             # is expected-to-break, not a production-impact signal.
@@ -477,7 +504,7 @@ def symbol_graph_consumers(
                             # Exclude another repo that defines its own copy of
                             # this (non repo-qualified) symbol id: it calls its
                             # own definition, not the one this PR changed.
-                            if site.repo != repo and site.repo in _defining_repos(sid):
+                            if site.repo in _defining_repos(sid):
                                 continue
                             key = (
                                 relation, site.repo, site.file_path,
@@ -495,6 +522,7 @@ def symbol_graph_consumers(
                                 "consumer_file": site.file_path,
                                 "consumer_line": site.line,
                                 "truncated": not result.complete,
+                                "base_signature": _base_signature(sid, file_path),
                             })
 
         except reader.SymbolGraphUnavailable:
@@ -529,6 +557,141 @@ def symbol_graph_consumers(
     return consumers, undetermined
 
 
+# Contract-change kinds for a changed symbol with cross-repo consumers
+# (ADR-054 plane 1). "removed" and "signature" break the contract; "body"
+# changes behaviour only; "unknown" could not be compared and fails closed.
+ContractChange = Literal["removed", "signature", "body", "unknown"]
+
+_SignatureKey = Tuple[Tuple[Tuple[str, Optional[str]], ...], Optional[str]]
+
+
+def _signature_key(signature: Any) -> Optional[_SignatureKey]:
+    """Normalize a signature to ``((name, type), ...), returns)``.
+
+    Accepts the graph's ``CallSite.signature`` dict
+    (``{"params": [{"name", "type"?}], "returns"?}``) or the extractor's
+    ``Signature`` dataclass (``params`` of ``Param(name, type)``,
+    ``returns``). Empty type/return strings normalize to None, matching how
+    the writer omits them. None or an unrecognised shape returns None.
+    """
+    if signature is None:
+        return None
+    if isinstance(signature, dict):
+        raw_params = signature.get("params")
+        returns = signature.get("returns")
+        if not isinstance(raw_params, (list, tuple)):
+            return None
+        params = []
+        for p in raw_params:
+            if not isinstance(p, dict) or "name" not in p:
+                return None
+            params.append((str(p["name"]), p.get("type") or None))
+    else:
+        raw_params = getattr(signature, "params", None)
+        if raw_params is None:
+            return None
+        returns = getattr(signature, "returns", None)
+        params = [
+            (str(p.name), getattr(p, "type", None) or None) for p in raw_params
+        ]
+    return tuple(params), (returns or None)
+
+
+def _classify_contract_change(
+    symbol_id: str,
+    base_signature: Optional[dict],
+    head_signatures: Optional[Mapping[str, Any]],
+) -> ContractChange:
+    """Classify how a changed symbol's contract moved between base and head.
+
+    Pure: no reader, no I/O, so every branch is unit-testable.
+
+    Args:
+        symbol_id: the changed symbol's graph id.
+        base_signature: the graph's defines-row signature at base
+            (``CallSite.signature`` dict), or None when unknown.
+        head_signatures: symbol id -> head signature (``Signature`` or the
+            graph dict shape, None when the extractor captured none) for
+            every symbol the head file defines; None when the head file
+            could not be parsed (no head text, no extractor for the
+            language, extractor error).
+
+    Returns:
+        ``"removed"`` when the head file defines no such symbol (deleted or
+        renamed); ``"signature"`` when both signatures are known and differ
+        (param names + types in order, or the return type); ``"body"`` when
+        both are known and equal; ``"unknown"`` otherwise. Never guesses.
+    """
+    if head_signatures is None:
+        return "unknown"
+    if symbol_id not in head_signatures:
+        return "removed"
+    base_key = _signature_key(base_signature)
+    head_key = _signature_key(head_signatures[symbol_id])
+    if base_key is None or head_key is None:
+        return "unknown"
+    return "body" if base_key == head_key else "signature"
+
+
+def _head_signatures(
+    file_path: str, head_text: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """Symbol id -> head signature for every ``defines`` fact in the head file.
+
+    Runs the symbol-graph extractor (bundled into this Lambda as the
+    ``extractor`` package) on the head text, so ids match the graph's.
+    Returns None, meaning "cannot compare" (fail closed), when there is no
+    head text, the extractor is missing, the language has no extractor, the
+    path is one the graph never extracts, or the extractor raises. A symbol
+    defined more than once with differing signatures maps to None.
+    """
+    if head_text is None:
+        return None
+    try:
+        import extractor  # bundled at the Lambda zip root; lazy so a
+        # missing package fails this compare closed, not the module import.
+
+        language = extractor.language_for_path(file_path)
+        if language is None or extractor.get_extractor(language) is None:
+            logger.info(
+                f"[breaking_changes] no extractor for {file_path}; "
+                f"signature compare unavailable."
+            )
+            return None
+        if extractor.is_excluded_path(file_path):
+            return None
+        # No size cap: the file is already in the PR; skipping it would
+        # read as "symbol removed" instead of "unknown".
+        config = extractor.SymbolGraphFilter(max_file_bytes=0)
+        signatures: Dict[str, Any] = {}
+        for fact in extractor.extract_facts_from_bytes(
+            file_path, language, head_text.encode("utf-8"), config=config,
+        ):
+            if fact.kind != "defines":
+                continue
+            sid = fact.target_symbol_id
+            if sid in signatures and (
+                _signature_key(signatures[sid]) != _signature_key(fact.signature)
+            ):
+                signatures[sid] = None  # overloads: ambiguous, fail closed
+            elif sid not in signatures:
+                signatures[sid] = fact.signature
+        return signatures
+    except Exception as e:  # noqa: BLE001 -- ImportError, parse errors: fail closed
+        logger.warning(
+            f"[breaking_changes] head signature extraction failed for "
+            f"{file_path}: {e}; failing closed (manual review)."
+        )
+        return None
+
+
+# Detail/finding wording per contract-breaking change kind.
+_CONTRACT_CHANGE_TEXT: Dict[str, str] = {
+    "removed": "was removed or renamed",
+    "signature": "changed signature",
+}
+
+
 # Plane-2 PASS wording removed from ``details`` when plane 1 upgrades the
 # verdict to WARN, so a WARN never carries "safe to merge" text.
 _PLANE2_PASS_LINES = frozenset({
@@ -547,6 +710,7 @@ def check_breaking_changes(
     *,
     anchors: Optional[Dict[str, List[int]]] = None,
     change_blocks: Optional[Dict[str, List[Any]]] = None,
+    head_texts: Optional[Dict[str, str]] = None,
     provider: str = "github",
     connection_id: str | None = None,
     ado_org: str | None = None,
@@ -589,6 +753,18 @@ def check_breaking_changes(
     the base branch. ``None`` means the diff could not be parsed: every
     plane-1 file is then reported as undetermined (manual review), never
     silently skipped (ADR-054 fail closed).
+
+    ``head_texts`` maps repo-relative file path -> decoded head content.
+    Plane 1 re-parses it with the symbol-graph extractor to compare each
+    changed symbol's head signature with the graph's base one. A file
+    absent from it (deleted, binary, or the diff failed) cannot be compared
+    and fails closed to manual review.
+
+    Plane 1 verdict (ADR-054): only consumers in ANOTHER repo count (same
+    repo deploys together). A removed symbol or changed signature with such
+    consumers WARNs with line-anchored findings; a symbol whose signature
+    cannot be compared WARNs for manual review; a body-only change lists the
+    consumers in ``details`` without changing the status.
 
     Scope is split by plane (ADR-054/ADR-055). The heuristic path keeps the
     handler.py + terraform ``relevant_files`` set (handler-named by
@@ -645,7 +821,7 @@ def check_breaking_changes(
     try:
         from shared.pr_check_scope import resolve_pr_check_workspace_scope
         scope_workspace_ids = resolve_pr_check_workspace_scope(
-            check_type=check_type, repo_name=repository,
+            check_type=check_type, repo_name=repository, provider=provider,
         )
     except Exception as scope_exc:
         logger.warning(
@@ -825,10 +1001,12 @@ def check_breaking_changes(
     # Changed symbols are resolved on BASE-side lines from `change_blocks`
     # (the graph reflects the base branch); each finding anchors on a HEAD
     # line from the block or the file's first added line, and a consumer with
-    # no anchor stays in the details only (ADR-031: never guess a line). Fail
+    # no anchor stays in the details only (ADR-031: never guess a line). Only
+    # consumers in another repo count, and only a removed symbol or changed
+    # signature WARNs; a body-only change is listed without a warning. Fail
     # CLOSED: a file whose consumers cannot be determined (graph error, or no
-    # parsed diff blocks at all) becomes a manual-review WARN, never a silent
-    # "safe".
+    # parsed diff blocks at all), or a symbol whose signature cannot be
+    # compared, becomes a manual-review WARN, never a silent "safe".
     if scope_workspace_ids and plane1_files:
         # Symbol graph keys on the BARE repo name (reference_app_vs_repo_naming),
         # not the owner/repo (or org/project/repo) slug.
@@ -864,7 +1042,37 @@ def check_breaking_changes(
                 )
                 plane1_undetermined = list(plane1_undetermined) + undiffed
 
-        if plane1_consumers or plane1_undetermined:
+        # Classify each changed symbol's contract move (base graph
+        # signature vs head extractor signature). One head parse per file.
+        head_sig_cache: Dict[str, Optional[Dict[str, Any]]] = {}
+        kind_by_symbol: Dict[Tuple[str, str], ContractChange] = {}
+        for c in plane1_consumers:
+            key = (c["changed_file"], c["changed_symbol_id"])
+            if key in kind_by_symbol:
+                continue
+            path = c["changed_file"]
+            if path not in head_sig_cache:
+                head_sig_cache[path] = _head_signatures(
+                    path, (head_texts or {}).get(path))
+            kind_by_symbol[key] = _classify_contract_change(
+                c["changed_symbol_id"], c.get("base_signature"),
+                head_sig_cache[path],
+            )
+        logger.info(
+            f"[breaking_changes] contract classification for PR #{pr_number}: "
+            f"{sorted((f, s, k) for (f, s), k in kind_by_symbol.items())}"
+        )
+
+        def _kind(c: Dict[str, Any]) -> ContractChange:
+            return kind_by_symbol[(c["changed_file"], c["changed_symbol_id"])]
+
+        contract_consumers = [
+            c for c in plane1_consumers if _kind(c) in ("removed", "signature")]
+        unknown_consumers = [
+            c for c in plane1_consumers if _kind(c) == "unknown"]
+        body_consumers = [c for c in plane1_consumers if _kind(c) == "body"]
+
+        if contract_consumers or unknown_consumers or plane1_undetermined:
             # One verdict: plane 1 is about to WARN, so drop the plane-2 PASS
             # wording that would otherwise sit next to it.
             details[:] = [d for d in details if d not in _PLANE2_PASS_LINES]
@@ -872,17 +1080,20 @@ def check_breaking_changes(
             while details and details[-1] == "":
                 details.pop()
 
-        if plane1_consumers:
+        if contract_consumers:
             status = "WARN"
             if "safe to modify" in message:
-                message = "Direct consumers detected (symbol graph)"
+                message = (
+                    "Contract change with consumers in other repos (symbol graph)")
             details.append("")
-            details.append("**Code-symbol consumers (symbol graph):**")
-            for c in plane1_consumers:
+            details.append(
+                "**Contract changes with consumers in other repos (symbol graph):**")
+            for c in contract_consumers:
+                change_text = _CONTRACT_CHANGE_TEXT[_kind(c)]
                 details.append(
-                    f"- {c['relation']}: {c['consumer_repo']}/"
-                    f"{c['consumer_file']}:{c['consumer_line']} uses "
-                    f"`{c['changed_symbol_id']}`"
+                    f"- `{c['changed_symbol_id']}` {change_text}; "
+                    f"{c['relation']}: {c['consumer_repo']}/"
+                    f"{c['consumer_file']}:{c['consumer_line']}"
                 )
                 if c["changed_line"] is None:
                     # No HEAD line to anchor on (deletion-only file): details only.
@@ -894,13 +1105,45 @@ def check_breaking_changes(
                         side="RIGHT",
                         severity="warning",
                         message=(
-                            f"Potential breaking change to "
-                            f"`{c['changed_symbol_id']}`: {c['relation']} "
+                            f"Breaking contract change: `{c['changed_symbol_id']}` "
+                            f"{change_text}; {c['relation']} "
                             f"{c['consumer_repo']}/{c['consumer_file']}:"
                             f"{c['consumer_line']} depends on it."
                         ),
                         enclosing_symbol=None,
                     ).model_dump()
+                )
+
+        if unknown_consumers:
+            status = "WARN"
+            unknown_symbols = sorted({c["changed_symbol_id"] for c in unknown_consumers})
+            if "safe to modify" in message:
+                message = (
+                    f"Could not compare signature for {', '.join(unknown_symbols)} "
+                    f"- manual review"
+                )
+            details.append("")
+            details.append(
+                "**Could not compare signature (manual review); consumers in "
+                "other repos (symbol graph):**"
+            )
+            for c in unknown_consumers:
+                details.append(
+                    f"- `{c['changed_symbol_id']}`: {c['relation']}: "
+                    f"{c['consumer_repo']}/{c['consumer_file']}:{c['consumer_line']}"
+                )
+
+        if body_consumers:
+            # Behaviour-only change: listed, never warned, no inline finding.
+            details.append("")
+            by_symbol_repo: Dict[Tuple[str, str], List[str]] = defaultdict(list)
+            for c in body_consumers:
+                by_symbol_repo[(c["changed_symbol_id"], c["consumer_repo"])].append(
+                    f"{c['consumer_file']}:{c['consumer_line']}")
+            for (sid, consumer_repo), sites in by_symbol_repo.items():
+                details.append(
+                    f"- `{sid}`: Behaviour changed (signature unchanged); "
+                    f"consumers in {consumer_repo}: {', '.join(sites)}"
                 )
 
         if plane1_undetermined:
@@ -913,6 +1156,10 @@ def check_breaking_changes(
                 f"{', '.join(sorted(set(plane1_undetermined)))}** "
                 "(symbol graph or diff unavailable) - manual review required."
             )
+
+        if body_consumers and "safe to modify" in message:
+            # Still a PASS: say why consumers are listed without a warning.
+            message = "No contract changes for consumers in other repos"
 
     # BREAKING_CHANGES doesn't use Claude, return empty usage tracker
     return {

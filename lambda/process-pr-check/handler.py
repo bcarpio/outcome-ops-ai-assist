@@ -851,6 +851,7 @@ def run_check(
     anchors: Optional[Dict[str, List[int]]] = None,
     *,
     change_blocks: Optional[Dict[str, List["ChangeBlock"]]] = None,
+    head_texts: Optional[Dict[str, str]] = None,
     new_files: Optional[Set[str]] = None,
 ) -> Dict[str, Any]:
     """
@@ -869,6 +870,8 @@ def run_check(
         anchors: Added lines per file for checks that post inline findings
         change_blocks: Per-file ``pr_diff.ChangeBlock`` lists for
             BREAKING_CHANGES; ``None`` means the diff could not be computed
+        head_texts: Decoded head content per changed file for BREAKING_CHANGES
+            signature compare; ``None`` means the diff could not be computed
         new_files: Changed files added in this PR, for README_FRESHNESS;
             ``None`` means newness is unknown
 
@@ -931,6 +934,7 @@ def run_check(
             query_kb_lambda_name=QUERY_KB_LAMBDA_NAME,
             anchors=anchors,
             change_blocks=change_blocks,
+            head_texts=head_texts,
             **provider_kwargs,
         )
 
@@ -1122,10 +1126,19 @@ def _compute_anchors(job: CheckJob) -> Dict[str, List[int]]:
 
 def _compute_breaking_changes_inputs(
     job: CheckJob,
-) -> Tuple[Dict[str, List[int]], Optional[Dict[str, List["ChangeBlock"]]]]:
-    """``(anchors, change_blocks)`` for BREAKING_CHANGES from ONE diff fetch.
+) -> Tuple[
+    Dict[str, List[int]],
+    Optional[Dict[str, List["ChangeBlock"]]],
+    Optional[Dict[str, str]],
+]:
+    """``(anchors, change_blocks, head_texts)`` for BREAKING_CHANGES from ONE
+    diff fetch.
 
-    On failure returns ``({}, None)``: anchors degrade like every other
+    ``head_texts`` maps path -> decoded head content for every file that has
+    one (deleted and binary files are omitted); the check re-parses it to
+    compare a changed symbol's head signature with the graph's base one.
+
+    On failure returns ``({}, None, None)``: anchors degrade like every other
     inline check, and ``change_blocks=None`` tells the check it could not
     determine what changed so it fails closed (ADR-054). ``{}`` is never
     used to mean "failed".
@@ -1136,8 +1149,16 @@ def _compute_breaking_changes_inputs(
         logger.warning(
             "[inline] diff computation failed for %s (anchors fall back to "
             "summary-only, change blocks unknown): %s", job.check_type.value, e)
-        return {}, None
-    return _anchors_from_info(info), {p: i.blocks for p, i in info.items()}
+        return {}, None, None
+    head_texts = {
+        p: i.head_text for p, i in info.items()
+        if getattr(i, "head_text", None) is not None
+    }
+    return (
+        _anchors_from_info(info),
+        {p: i.blocks for p, i in info.items()},
+        head_texts,
+    )
 
 
 def _is_readme_handler_file(path: str) -> bool:
@@ -1477,9 +1498,10 @@ def process_check_job(job: CheckJob) -> CheckResult:
     # README_FRESHNESS needs to know which handler files are new in the PR.
     anchors: Optional[Dict[str, List[int]]] = None
     change_blocks: Optional[Dict[str, List["ChangeBlock"]]] = None
+    head_texts: Optional[Dict[str, str]] = None
     new_files: Optional[Set[str]] = None
     if job.check_type == CheckType.BREAKING_CHANGES:
-        anchors, change_blocks = _compute_breaking_changes_inputs(job)
+        anchors, change_blocks, head_texts = _compute_breaking_changes_inputs(job)
     elif job.check_type in (
         CheckType.TEST_COVERAGE,
         CheckType.ARCHITECTURAL_DUPLICATION,
@@ -1488,7 +1510,8 @@ def process_check_job(job: CheckJob) -> CheckResult:
     elif job.check_type == CheckType.README_FRESHNESS:
         new_files = _compute_new_handler_files(job)
     check_result = run_check(
-        job, anchors, change_blocks=change_blocks, new_files=new_files)
+        job, anchors, change_blocks=change_blocks, head_texts=head_texts,
+        new_files=new_files)
     usage = check_result.get("usage")
 
     # Build full result. PK is self-contained per (provider, repo, PR)

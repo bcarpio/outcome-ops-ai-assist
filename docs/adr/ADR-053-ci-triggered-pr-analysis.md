@@ -84,9 +84,11 @@ ci_oidc_github_subjects = ["repo:<org>/<repo>:pull_request"]
   org-wide webhook. A repo without the workflow simply isn't analyzed.
 - The customer must stand up a CI->AWS identity (or enable the fallback role).
 - Workspace scoping is resolved per repo, per check, from the workspaces table
-  (`shared/pr_check_scope.py`); BREAKING_CHANGES uses the consumer scope
-  (ADR-056 §5: the repo's workspace(s) + the workspaces they are shared with +
-  `is_global`). `analyze-pr` itself needs no workspace: it posts the
+  (`shared/pr_check_scope.py`), following the per-check table in ADR-037: the
+  retrieval checks use the read scope (the repo's workspace(s) + `is_global` +
+  every workspace shared with the repo's workspace), BREAKING_CHANGES uses the
+  consumer scope (ADR-056 §5), and README_FRESHNESS uses the repo's
+  workspace(s) only. `analyze-pr` itself needs no workspace: it posts the
   analysis-started note and the PR summary, and queues the checks.
 
 ## Implementation

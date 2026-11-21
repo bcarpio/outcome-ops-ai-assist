@@ -38,7 +38,26 @@ The process-pr-check Lambda function is the **worker** in the PR analysis system
 
 ## Check Handlers
 
-The Lambda routes to six specialized check handlers:
+The Lambda routes to six specialized check handlers.
+
+### Retrieval scope
+
+Each check reads the knowledge base only within a workspace scope resolved per
+repo from the workspaces table (`shared/pr_check_scope.py`, ADR-037):
+
+| Check | Scope |
+|---|---|
+| ADR_COMPLIANCE, TEST_COVERAGE, LICENSE_COMPLIANCE | Read scope |
+| ARCHITECTURAL_DUPLICATION | Read scope |
+| BREAKING_CHANGES | Consumer scope (ADR-056 §5) |
+| README_FRESHNESS | Repo's workspace(s) only |
+
+The read scope is the repo's workspace(s), every `is_global` workspace, and every
+workspace that allowed the repo's workspace to search it (its Sharing tab,
+stored as `search_allowed_workspaces`). The repo's workspace is found from the
+repo row for the PR's provider (GitHub, GitLab, or Azure DevOps). No workspace
+id is configured; the resolved scope is logged once per check as
+`[pr_check_scope] <check> scope for <provider>:<repo>: [ids]`.
 
 ### 1. ADR Compliance (`adr_compliance.py`)
 
@@ -61,7 +80,8 @@ The Lambda routes to six specialized check handlers:
 
 **Analysis Method:**
 - Summarizes PR functionality using Claude
-- Queries knowledge base for similar handlers
+- Queries knowledge base for similar handlers within the read scope (not every
+  workspace in the deployment)
 - Uses Claude to compare PR summary with existing code
 - Returns findings if duplicates detected
 
@@ -72,18 +92,27 @@ The Lambda routes to six specialized check handlers:
 
 ### 3. Breaking Changes (`breaking_changes.py`)
 
-**Purpose:** Detect dependencies and potential breaking changes
+**Purpose:** Report changes to contracts that other repos depend on (ADR-054)
 
 **Analysis Method:**
-- Summarizes changed handlers using Claude
-- Performs vector search for dependent handlers
-- Filters HIGH confidence dependencies (handler name + queue/topic references)
-- Reports dependencies that may be affected
+- Resolves the changed symbols on the base side of the diff from the symbol graph
+- Finds their callers and importers within the consumer scope; callers in the
+  same repo are not consumers, because they ship in the same deploy
+- For a consumer in another repo, compares the symbol's base signature (from the
+  graph) with its head signature (the graph's extractor run on the head file):
+  - Changed or removed signature: WARN naming the consuming repos
+  - Body-only change: listed in the details as a behaviour change, no WARN
+  - Signature that cannot be compared: WARN "could not compare signature,
+    manual review" (fail closed)
+- If consumers cannot be determined at all, reports "manual review" rather than
+  safe
 
 **Dependencies:**
-- Vector query Lambda (direct invocation, not RAG)
-- GitHub API (for file diffs)
-- Bedrock Claude (for handler summarization)
+- Symbol graph (DynamoDB, via `shared.symbol_graph_reader`)
+- Symbol-graph extractor, bundled with this Lambda (for head signatures)
+- Provider API (GitHub, GitLab, Azure DevOps) for diffs and head file content
+- Knowledge base (via query-kb Lambda) for the supplementary, low-confidence
+  handler-consumer search (ADR-054 keeps it only as a supplement)
 
 ### 4. README Freshness (`readme_freshness.py`)
 
