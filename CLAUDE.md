@@ -146,6 +146,19 @@ should change (e.g. a Fargate task-def image bump after an SSM tag moved), say w
 single change the operator should expect to see in the plan and to stop if the plan
 shows more — do NOT hand over a `-target` command to make it "quick."
 
+### The Backlog Lives in GitHub Issues (ADR-062)
+
+- Planned work, bugs, follow-ups and tech debt are **GitHub Issues** (Backlog item
+  template; one type, one priority, at least one area label; title
+  `<component>: <what should change>`). Never create backlog or
+  tech-debt files under `docs/`.
+- Never put `approved-for-generation` on a backlog issue: it triggers the
+  code-generation pipeline.
+- A `plan-<name>/` or `plan/` overview links the issue it implements; the PR says
+  `Closes #N`. A follow-up named in an ADR links its issue.
+- Issues are public: no customer names, account ids, workspace ids, private repo
+  names or credentials.
+
 ### Plans Drive Implementation; ADRs Capture Decisions
 
 Two distinct artifact families with no overlap:

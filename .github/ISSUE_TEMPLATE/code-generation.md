@@ -12,6 +12,8 @@ This template captures story-specific information for AI-assisted code generatio
 
 After completing this template, add the `approved-for-generation` label to trigger code generation.
 
+For planned work, follow-ups and tech debt, use the **Backlog item** template instead (ADR-062); never put `approved-for-generation` on a backlog issue.
+
 ---
 
 ## User Story

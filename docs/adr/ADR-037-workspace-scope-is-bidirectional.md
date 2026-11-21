@@ -17,8 +17,8 @@ scope model was implicit and inconsistent:
   workspace-scoped on write but the read walked the whole index.
   Whichever workspace's docs ranked highest globally drove the
   check result, regardless of which workspace the PR belonged to.
-  Filed as `docs/tech-debt.md` "PR-check handlers query the KB
-  workspace-blind" and reproduced live 2026-07-01 (identical
+  Filed as a tech-debt entry ("PR-check handlers query the KB
+  workspace-blind") and reproduced live 2026-07-01 (identical
   handler file, same Claude model, ADR-004 violations found in the
   workspace where the standards were ingested and missed in the
   workspace where they weren't).

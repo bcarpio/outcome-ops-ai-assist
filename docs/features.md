@@ -728,4 +728,4 @@ Three tiers, each with a deliberate lifetime:
 - `docs/adr/` — architectural decisions, including ADR-018 (audit),
   ADR-014 to 017 (code maps).
 - `docs/roadmap.md` — what's coming next.
-- `docs/backlog.md` — known gaps and tracked debt.
+- [GitHub Issues](https://github.com/bcarpio/outcome-ops-ai-assist/issues) — backlog: known gaps, follow-ups and tracked debt (ADR-062).

@@ -120,3 +120,17 @@ ui/               # React frontend + Express proxy server
 
 Questions or a change you're unsure about? Open an issue to discuss before investing in a
 large PR.
+
+## Backlog and issues
+
+The backlog is the repository's [GitHub Issues](https://github.com/bcarpio/outcome-ops-ai-assist/issues)
+(ADR-062). To propose work, open an issue with the **Backlog item** template and add one type
+label (`bug`, `enhancement`, `tech-debt`, `documentation`), one priority label
+(`priority: high|medium|low`) and at least one area label (`area: pr-checks`, `area: ingestion`,
+`area: symbol-graph`, `area: models`, `area: terraform`, `area: integrations`, `area: dx`).
+`good first issue` marks small, self-contained items. Title issues `<component>: <what should
+change>` (for example `BREAKING_CHANGES: compare signatures for Go functions`); name branches
+`<type>/<short-slug>`.
+
+Never add the `approved-for-generation` label to a backlog issue: it hands the issue to the
+code-generation pipeline. Reference the issue from your PR with `Closes #N`.
