@@ -39,7 +39,7 @@ fileignoreconfig:
   - filename: docs/adr/ADR-020-abap-parser-strategy.md
     checksum: 931213961e63b01d2cc86d058970dd8302d5f77104c82ce437ce28c5adc263b9
   - filename: docs/adr/ADR-035-bedrock-converse-vs-responses-dispatch.md
-    checksum: 2b7d46a17dc6f769960cf8b33d0c1e3288f845a98915dba81ed8fbdf5ff55ad2
+    checksum: 67d86cbad68a5f1f36293a8e763d4ddd690aa0998b90ba1ef3043028947b5817
   # Placeholder RSA key whose body is the literal string "fake".
   - filename: lambda/tests/unit/test_github_app.py
     checksum: 12113449f62a38effcdd8fcee1ee0c5b0a8255fd5eacfccb6b550f8a162587e8
