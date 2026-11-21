@@ -372,7 +372,7 @@ class TestAnalyzeReadmeWithClaude:
 
     @patch.object(bedrock_module, 'invoke_model')
     def test_analyze_readme_invalid_json_response(self, mock_invoke):
-        """Test: Handle invalid JSON response from Claude (fallback parsing)"""
+        """Test: an unparseable response raises instead of guessing a verdict"""
         # Arrange
         mock_invoke.return_value = _LegacyDictResponse({
             "output": {
@@ -386,18 +386,36 @@ class TestAnalyzeReadmeWithClaude:
         })
         usage_tracker = bedrock_module.UsageTracker()
 
-        # Act
-        result = analyze_readme_with_claude(
-            "+changes",
-            ["hello"],
-            [],
-            usage_tracker
-        )
+        # Act / Assert
+        with pytest.raises(ValueError, match="Could not parse"):
+            analyze_readme_with_claude(
+                "+changes",
+                ["hello"],
+                [],
+                usage_tracker
+            )
 
-        # Assert
-        assert "adequate" in result
-        assert "explanation" in result
-        assert result["explanation"] == "Could not parse analysis response"
+    @patch.object(bedrock_module, 'invoke_model')
+    def test_analyze_readme_truncated_json_never_passes(self, mock_invoke):
+        """A response cut off at max_tokens must not be read as adequate.
+
+        The old fallback treated any text containing "adequate" and "true"
+        as a PASS, so a truncated object fail-opened.
+        """
+        mock_invoke.return_value = _LegacyDictResponse({
+            "output": {
+                "message": {
+                    "content": [{
+                        "text": '{"adequate": false, "explanation": "true, the doc'
+                    }]
+                }
+            },
+            "usage": {"inputTokens": 100, "outputTokens": 2000}
+        })
+        usage_tracker = bedrock_module.UsageTracker()
+
+        with pytest.raises(ValueError):
+            analyze_readme_with_claude("+changes", ["hello"], [], usage_tracker)
 
     @patch.object(bedrock_module, 'invoke_model')
     def test_analyze_readme_bedrock_error(self, mock_invoke):

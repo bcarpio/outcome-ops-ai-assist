@@ -77,6 +77,7 @@ _BOTO_CONFIG = Config(connect_timeout=10, read_timeout=60, retries={"max_attempt
 # terraform source_path.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from shared import dual_write  # noqa: E402
+from shared.repo_presence import is_repo_connected  # noqa: E402
 from shared.gitlab_api import (  # noqa: E402
     get_default_branch,
     get_file_content,
@@ -150,6 +151,38 @@ def _now_iso() -> str:
 # ---------------------------------------------------------------------------
 
 
+# Source key for shared.repo_presence (ADR-052).
+_PRESENCE_SOURCE = "gitlab"
+
+
+def _repo_still_connected(workspace_id: str, slug: str, checkpoint: str) -> bool:
+    """Fresh, strongly consistent check that the repo row still exists.
+
+    A repo disconnected while its sync is running must not get documents
+    uploaded or code-map work dispatched after the delete swept it
+    (ADR-052). ``RepoPresenceError`` propagates so SQS retries the message
+    rather than the worker guessing.
+    """
+    if is_repo_connected(workspace_id, _PRESENCE_SOURCE, slug):
+        return True
+    logger.info(
+        "[gitlab-sync] repo removed, dropping sync for %s/%s (%s)",
+        workspace_id, slug, checkpoint,
+    )
+    return False
+
+
+def _repo_removed_result(slug: str, checkpoint: str, sync_id: str) -> Dict[str, Any]:
+    # Returned (not raised): a removed repo is final for this message, so
+    # it must not land in batchItemFailures.
+    return {
+        "slug": slug,
+        "status": "repo_removed",
+        "checkpoint": checkpoint,
+        "sync_id": sync_id,
+    }
+
+
 def _get_repo_row(workspace_id: str, slug: str) -> Optional[Dict[str, Any]]:
     table = _get_dynamodb().Table(WORKSPACES_TABLE)
     response = table.get_item(
@@ -176,8 +209,11 @@ def _acquire_repo_sync_lock(workspace_id: str, slug: str) -> bool:
         table.update_item(
             Key={"PK": f"WS#{workspace_id}", "SK": f"GITLAB_REPO#{slug}"},
             UpdateExpression="SET sync_lock_until = :until",
+            # attribute_exists(SK): never create a stub row for a repo that
+            # was removed between the presence check and this claim.
             ConditionExpression=(
-                "attribute_not_exists(sync_lock_until) OR sync_lock_until < :now"
+                "attribute_exists(SK) AND "
+                "(attribute_not_exists(sync_lock_until) OR sync_lock_until < :now)"
             ),
             ExpressionAttributeValues={
                 ":until": now + _SYNC_LOCK_TTL_SECONDS,
@@ -197,9 +233,14 @@ def _release_repo_sync_lock(workspace_id: str, slug: str) -> None:
         table.update_item(
             Key={"PK": f"WS#{workspace_id}", "SK": f"GITLAB_REPO#{slug}"},
             UpdateExpression="REMOVE sync_lock_until",
+            # Without this, releasing the lock after the repo was removed
+            # mid-sync would recreate the deleted row as a key-only stub,
+            # which then reads as still connected (ADR-052).
+            ConditionExpression="attribute_exists(SK)",
         )
     except ClientError:
-        # Best-effort; the TTL on the lock value auto-expires it.
+        # Best-effort; the TTL on the lock value auto-expires it. A
+        # conditional failure here means the row is gone: nothing to release.
         pass
 
 
@@ -442,6 +483,11 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
     }
     logger.info("GitLab sync start", extra=log_extra)
 
+    # Drop the message before any GitLab API call if the repo was removed
+    # after it was queued. A lookup error raises (retryable).
+    if not _repo_still_connected(workspace_id, slug, "start"):
+        return _repo_removed_result(slug, "start", sync_id)
+
     repo_row = _get_repo_row(workspace_id, slug)
     if repo_row is None:
         logger.warning("GitLab sync skip -- repo row missing: %s/%s", workspace_id, slug)
@@ -501,6 +547,10 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
         tree_paths = get_tree(access_token, slug, default_branch, base_url=_base)
         indexable = [p for p in tree_paths if _is_indexable(p)]
 
+        # The repo can be removed mid-sync: re-check right before uploading.
+        if not _repo_still_connected(workspace_id, slug, "before_upload"):
+            return _repo_removed_result(slug, "before_upload", sync_id)
+
         uploaded = 0
         upload_errors = 0
         for path in indexable:
@@ -556,6 +606,11 @@ def process_sync_message(message: Dict[str, Any]) -> Dict[str, Any]:
         # KB search via process-documents.
         if repo_type == "application" and uploaded > 0:
             indexable_paths = [p.lstrip("/") for p in indexable]
+            # Re-check right before dispatch: the upload loop can take
+            # long enough for a removal to land, and dispatching would
+            # regenerate code maps the delete already swept.
+            if not _repo_still_connected(workspace_id, slug, "before_dispatch"):
+                return _repo_removed_result(slug, "before_dispatch", sync_id)
             _enqueue_repo_summaries_job(
                 workspace_id=workspace_id,
                 slug=slug,

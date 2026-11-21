@@ -9,6 +9,9 @@
   through one shared helper so the contract cannot drift per provider.
   Written after GitLab repo removal left the architectural-summary +
   code-map vectors queryable in the knowledge base.
+- v1.1 (2026-11-20): Ingestion writers check that the repo is still
+  connected before persisting, and every delete runs a delayed second
+  pass, so in-flight ingestion cannot recreate a removed repo.
 
 ## Context
 
@@ -49,6 +52,21 @@ shapes 2, 3, and 4. Two further defects compounded it:
   `workspaces/{ws}/{source}/`, so the path doubled the `azure_devops/`
   segment and ADO deletes silently cleaned nothing.
 
+A complete delete is still not enough on its own, because ingestion work
+that was queued or running when the repo was removed can finish afterwards
+and write everything back. This happened in prd with a repo removed while
+its sync was in flight: the delete purged every shape above and the
+symbol-graph delete logged VERIFY clean, then about 15 minutes later an
+already-queued code-map job wrote roughly 70,000 symbol-graph facts, the
+code-map vectors, and the code-maps pointer back for a repo that no longer
+had a workspace row. Nothing re-syncs a removed repo, so the copy was
+permanent: it surfaced deleted code in chat and MCP retrieval and produced
+false consumers and duplication findings in PR checks. Deleting an idle
+repo always passes, which is why ordinary delete testing never caught it.
+No pipeline stage checked that the repo was still connected before it
+wrote; the SHA-advance step refuses a removed repo, but it runs after the
+vectors and facts are already written.
+
 ## Decision
 
 1. **One helper, all providers.** `shared.delete_dispatch` is the single
@@ -77,6 +95,36 @@ shapes 2, 3, and 4. Two further defects compounded it:
    share the `{ws}#{source}#{bare}#…` shape both delete sweeps purge. A
    GitLab slug keeps its literal `/` when embedded whole, which would
    dodge both sweeps — hence normalizing at the writer, not the deleter.
+
+### v1.1: a delete must survive in-flight ingestion
+
+4. **Every ingestion writer checks that the repo is still connected
+   immediately before it persists anything.** This covers the sync
+   Lambdas, the repo summary, the batch summary, and document embedding,
+   and it applies to every persistent write: vectors, symbol-graph facts,
+   the code-maps pointer, and S3 uploads. All writers use one shared
+   helper keyed by provider (`github`, `gitlab`, `azure_devops`) that does
+   a strongly consistent read of the repo's workspace row, so the check
+   has the same meaning for every code host. Long-running writers also
+   check at job start, so a removed repo does not spend LLM or embedding
+   work first; the start check alone is not sufficient, because the LLM
+   call itself is a race window. The two outcomes are handled differently:
+   - **Repo removed:** drop the work, log it, and acknowledge the message.
+     This is never a retryable failure, since retrying cannot bring a
+     removed repo back.
+   - **Lookup failed:** retry, never write. Writing data for a repo the
+     user removed is worse than a delayed write, because the removed repo
+     reappears in every search.
+
+5. **Every removal sends the cleanup twice.** The delete helper enqueues
+   the normal delete messages immediately and the same set again with a
+   15 minute delay, marked as a recheck. The delete-worker skips a recheck
+   message when the repo is connected again, so a repo re-added within the
+   window is never wiped. The immediate pass does not check presence,
+   because the UI queues the delete before it removes the workspace row.
+   With writers checking right before they write, the remaining race
+   window is seconds, well inside the 15 minute delay; the second pass
+   cleans up anything that slipped through it.
 
 ## Consequences
 
@@ -114,3 +162,10 @@ shapes 2, 3, and 4. Two further defects compounded it:
   `lambda/shared/delete_dispatch.py`, `lambda/delete-worker/handler.py`,
   `lambda/process-batch-summary/handler.py`, and the `_queue_delete_job`
   in the gitlab / azure-devops integrations.
+
+## Version History
+
+- v1.0 (2026-07-19): one provider-agnostic delete helper; provider-agnostic
+  code-map sweep; bare code-map vector keys for every provider
+- v1.1 (2026-11-20): writers check repo presence before persisting; delayed
+  second delete pass

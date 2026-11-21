@@ -34,6 +34,7 @@ from botocore.exceptions import ClientError
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared import dual_write  # noqa: E402
 from shared.audit_writer import log_source_sync  # noqa: E402
+from shared.repo_presence import is_repo_connected  # noqa: E402
 
 # Configure logging
 logger = logging.getLogger()
@@ -83,8 +84,11 @@ _HEAL_ATTRS = ("heal_target_sha", "heal_attempts", "heal_next_at")
 # the same no-op or bypass the heal budget.
 _NON_RETRY_STATUSES = (
     "success", "no_changes", "skipped", "already_running",
-    "heal_deferred", "heal_backoff", "stalled",
+    "heal_deferred", "heal_backoff", "stalled", "repo_removed",
 )
+
+# Source key for shared.repo_presence (ADR-052).
+_PRESENCE_SOURCE = "github"
 
 # Plain-language explanation per stalled reason, shown in the workspace
 # notification.
@@ -579,6 +583,41 @@ def classify_doc_type(file_path: str, standards_paths: List[str]) -> Optional[st
 # ============================================================================
 # DynamoDB Operations
 # ============================================================================
+
+
+def _repo_still_connected(
+    workspace_id: str, repo_name: str, checkpoint: str,
+) -> bool:
+    """Fresh, strongly consistent check that the repo row still exists.
+
+    A repo disconnected while its sync is running must not get documents
+    uploaded or code-map work dispatched after the delete swept it
+    (ADR-052). ``RepoPresenceError`` propagates: the caller treats it as a
+    retryable failure rather than guessing.
+    """
+    if is_repo_connected(workspace_id, _PRESENCE_SOURCE, repo_name):
+        return True
+    logger.info(
+        "[github-sync] repo removed, dropping sync for %s/%s (%s)",
+        workspace_id, repo_name, checkpoint,
+    )
+    return False
+
+
+def _repo_removed_result(repo_name: str, checkpoint: str) -> Dict:
+    """Result for a sync dropped because its repo was disconnected.
+
+    ``status`` is ``repo_removed``, which is in ``_NON_RETRY_STATUSES``: the
+    message is acknowledged, since retrying cannot bring the repo back.
+    ``checkpoint`` names where the removal was seen (``start``,
+    ``before_upload`` or ``before_dispatch``) so the log and audit row show
+    how far the sync got before it stopped.
+    """
+    return {
+        "status": "repo_removed",
+        "repo_name": repo_name,
+        "checkpoint": checkpoint,
+    }
 
 
 def get_repo(workspace_id: str, repo_name: str) -> Optional[Dict]:
@@ -1568,9 +1607,13 @@ def _advance_docs_sha_no_changes(
             UpdateExpression=(
                 "SET last_docs_sha = :sha, last_docs_sha_ts = :ts"
             ),
+            # _REPO_ROW_EXISTS first: UpdateItem upserts, and the OR branch
+            # is true on a missing item, so without it a repo removed
+            # mid-sync comes back as a stub row that reads as connected.
             ConditionExpression=(
-                "attribute_not_exists(last_docs_sha_ts) "
-                "OR last_docs_sha_ts < :ts"
+                f"{_REPO_ROW_EXISTS} AND "
+                "(attribute_not_exists(last_docs_sha_ts) "
+                "OR last_docs_sha_ts < :ts)"
             ),
             ExpressionAttributeValues={
                 ":sha": current_sha,
@@ -1717,6 +1760,11 @@ def process_sync_request(message: Dict) -> Dict:
     installation_id = message["installation_id"]
 
     logger.info(f"Processing sync for {workspace_id}/{repo_name}")
+
+    # Drop the message before any GitHub API call if the repo was removed
+    # after it was queued. A lookup error raises (retryable).
+    if not _repo_still_connected(workspace_id, repo_name, "start"):
+        return _repo_removed_result(repo_name, "start")
 
     # Get repo record
     repo = get_repo(workspace_id, repo_name)
@@ -2048,6 +2096,10 @@ def _process_standards_repo(
         f"doc files for standards repo"
     )
 
+    # The repo can be removed mid-sync: re-check right before uploading.
+    if not _repo_still_connected(workspace_id, repo_name, "before_upload"):
+        return _repo_removed_result(repo_name, "before_upload")
+
     # plan-git-truth /4 (race fix 2026-05-17): open the docs
     # ledger BEFORE the upload loop. S3 PUTs trigger process-documents
     # asynchronously and the first few invocations can finish
@@ -2193,6 +2245,10 @@ def _process_application_repo(
             f"{len(all_doc_files)} doc files changed since {last_commit_sha[:7] if last_commit_sha else '<none>'}"
         )
 
+    # The repo can be removed mid-sync: re-check right before uploading.
+    if not _repo_still_connected(workspace_id, repo_name, "before_upload"):
+        return _repo_removed_result(repo_name, "before_upload")
+
     # plan-git-truth /4 (race fix 2026-05-17): open the docs
     # ledger BEFORE the upload loop with expected_count = len(doc_files).
     # S3 PUTs trigger process-documents asynchronously and the first
@@ -2277,6 +2333,12 @@ def _process_application_repo(
             "docs_uploaded": docs_uploaded,
             "commit_sha": current_sha,
         }
+
+    # Re-check right before dispatch: the doc uploads above can take long
+    # enough for a removal to land, and dispatching would regenerate code
+    # maps and summaries the delete already swept.
+    if not _repo_still_connected(workspace_id, repo_name, "before_dispatch"):
+        return _repo_removed_result(repo_name, "before_dispatch")
 
     # plan-git-truth open the code_map_dispatch ledger row
     # BEFORE publishing the repo-summaries SQS message. If the

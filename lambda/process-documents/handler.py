@@ -48,6 +48,7 @@ from shared.audit_writer import (
     log_admin_action,
 )
 from shared.pii import MODE_STRICT, read_workspace_mode, redact
+from shared.repo_presence import RepoPresenceError, is_repo_connected
 
 # Bedrock model configuration
 EMBEDDING_MODEL_ID = os.environ.get(
@@ -902,6 +903,46 @@ def _close_docs_unit(
         )
 
 
+# Code-host sources and the S3 object metadata key each sync Lambda sets to
+# the repo's full provider slug (the same slug its workspaces-table repo row
+# is keyed on). Every other source (confluence, jira, uploads, ...) is not a
+# repo and is never presence-checked.
+_REPO_SLUG_METADATA_KEY = {
+    "github": "github_repo_name",
+    "gitlab": "gitlab_slug",
+    "azure_devops": "azure_devops_slug",
+}
+
+
+def _repo_removed(
+    workspace_id: str, source: str, metadata: Dict[str, str], key: str
+) -> bool:
+    """True when ``key`` belongs to a code-host repo that is no longer
+    connected to the workspace (ADR-052: nothing may recreate per-doc
+    vectors after removal).
+
+    The slug comes from the object metadata the sync Lambda wrote, never
+    from the key: ``{slug}/{path}`` has no separator, so the key alone is
+    ambiguous. Objects that cannot be attributed to a repo (no slug in the
+    metadata, e.g. legacy uploads) are not guarded.
+
+    Raises ``RepoPresenceError`` when the lookup fails, so the caller fails
+    the record and the invocation is retried.
+    """
+    metadata_key = _REPO_SLUG_METADATA_KEY.get(source)
+    if metadata_key is None:
+        return False
+    repo_slug = (metadata or {}).get(metadata_key, "")
+    if not repo_slug or not workspace_id:
+        logger.info(
+            "[process-documents] no repo slug in metadata, presence guard "
+            "skipped for %s",
+            key,
+        )
+        return False
+    return not is_repo_connected(workspace_id, source, repo_slug)
+
+
 def process_document(bucket: str, key: str) -> Dict[str, Any]:
     """
     Process a single document from S3.
@@ -996,6 +1037,13 @@ def process_document(bucket: str, key: str) -> Dict[str, Any]:
             if not embedding:
                 logger.warning(f"Failed to generate embedding for chunk {i} of {filename}")
 
+        # Checked as late as possible so a repo removed while this document
+        # was being extracted and embedded is still caught. The S3 object is
+        # left in place; the delete worker's delayed pass owns cleanup.
+        if _repo_removed(workspace_id, source, metadata, key):
+            logger.info(f"[process-documents] repo removed, skipping {key}")
+            return {"status": "skipped", "reason": "Repo removed", "key": key}
+
         # Store vectors
         vectors_stored = store_vectors(
             workspace_id=workspace_id,
@@ -1050,11 +1098,31 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     """
     S3-triggered handler for document processing.
 
-    Triggered by ObjectCreated events on the knowledge base bucket.
+    Triggered by ObjectCreated events on the knowledge base bucket via an S3
+    bucket notification (asynchronous invoke). There is NO SQS event source
+    mapping, so there is no batch to report partial failures for: a failed
+    record is retried by raising, which re-runs the async invocation (vector
+    keys are deterministic, so re-processing the records that succeeded is
+    safe).
     """
     logger.info(f"Process documents handler invoked")
 
     results = []
+    failed_keys: List[str] = []
+
+    def _process(bucket: str, key: str) -> None:
+        try:
+            results.append(process_document(bucket, key))
+        except RepoPresenceError as exc:
+            # Fail closed: without a presence answer the document may
+            # belong to a removed repo, so nothing is written. The record
+            # is reported failed and the invocation raised below, so the
+            # async retry re-runs it.
+            logger.error(
+                f"[process-documents] repo presence lookup failed for {key}: {exc}"
+            )
+            failed_keys.append(key)
+            results.append({"status": "error", "key": key, "error": str(exc)})
 
     for record in event.get("Records", []):
         # Handle S3 event
@@ -1067,10 +1135,11 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                 logger.debug(f"Skipping non-workspace key: {key}")
                 continue
 
-            result = process_document(bucket, key)
-            results.append(result)
+            _process(bucket, key)
 
-        # Handle SQS event (for reprocessing)
+        # Manual reprocessing: an operator invokes the function directly
+        # with {"Records": [{"body": "{\"bucket\": ..., \"key\": ...}"}]}.
+        # Not an SQS consumer (no event source mapping exists).
         elif "body" in record:
             try:
                 body = json.loads(record["body"])
@@ -1078,10 +1147,17 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                 key = body.get("key")
 
                 if key:
-                    result = process_document(bucket, key)
-                    results.append(result)
+                    _process(bucket, key)
             except json.JSONDecodeError:
                 logger.error(f"Invalid JSON in SQS message")
+
+    if failed_keys:
+        # Vector writes are idempotent (deterministic keys), so retrying the
+        # whole invocation is safe for the records that did succeed.
+        raise RepoPresenceError(
+            f"repo presence lookup failed for {len(failed_keys)} document(s): "
+            + ", ".join(failed_keys)
+        )
 
     successful = sum(1 for r in results if r.get("status") == "success")
     logger.info(f"Document processing completed: {successful}/{len(results)} successful")

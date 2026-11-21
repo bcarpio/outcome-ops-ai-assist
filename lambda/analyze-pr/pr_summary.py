@@ -122,7 +122,7 @@ def build_pr_summary(
     )
 
     parts = [
-        "## PR summary",
+        "## PR Summary",
         "",
         _resolve_prose(prose, usage),
         "",

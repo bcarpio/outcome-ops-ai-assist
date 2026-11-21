@@ -329,6 +329,9 @@ module "delete_worker_lambda_secondary" {
       ENV       = var.environment
       APP_NAME  = var.app_name
       KB_BUCKET = module.knowledge_base_bucket_secondary.s3_bucket_id
+      # Repo-delete re-add check (mirrors primary): reads the secondary-region
+      # workspaces table.
+      WORKSPACES_TABLE = module.workspaces_table_secondary[0].dynamodb_table_id
       # delete_symbol_graph cleans every per-repo store in the secondary
       # region: symbol-graph facts + pointer, code-maps ingest state rows,
       # and pending-work fan-out counters (delete-bug 02).
@@ -350,6 +353,12 @@ module "delete_worker_lambda_secondary" {
           module.code_maps_table_secondary[0].dynamodb_table_arn,
           module.code_map_pending_work_table_secondary[0].dynamodb_table_arn,
         ]
+      }
+      # Mirrors primary workspaces_read: GetItem for the re-add check.
+      workspaces_read = {
+        effect    = "Allow"
+        actions   = ["dynamodb:GetItem"]
+        resources = [module.workspaces_table_secondary[0].dynamodb_table_arn]
       }
       s3_kb = {
         effect  = "Allow"

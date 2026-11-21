@@ -97,6 +97,12 @@ module "analyze_pr_lambda" {
     BEDROCK_ADVANCED_MODEL_ID = var.bedrock_advanced_model_id
     BEDROCK_BASIC_MODEL_ID    = var.bedrock_basic_model_id
     BEDROCK_DEFAULT_BACKEND   = var.bedrock_default_backend
+    # Pricing for the summary comment's usage footer (same tfvars the PR
+    # checks use), so its Cost line matches theirs instead of fallbacks.
+    BEDROCK_ADVANCED_INPUT_PRICE  = tostring(var.bedrock_advanced_input_price)
+    BEDROCK_ADVANCED_OUTPUT_PRICE = tostring(var.bedrock_advanced_output_price)
+    BEDROCK_BASIC_INPUT_PRICE     = tostring(var.bedrock_basic_input_price)
+    BEDROCK_BASIC_OUTPUT_PRICE    = tostring(var.bedrock_basic_output_price)
     },
     # ADR-016 v1.2 -- analyze-pr's summary comment is the pr-analyzer workload.
     local.bedrock_pr_analyzer_env,

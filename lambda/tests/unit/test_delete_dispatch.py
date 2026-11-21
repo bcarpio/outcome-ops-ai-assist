@@ -8,11 +8,14 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 _LAMBDA_ROOT = Path(__file__).resolve().parents[2]
 if str(_LAMBDA_ROOT) not in sys.path:
     sys.path.insert(0, str(_LAMBDA_ROOT))
 
 from shared.delete_dispatch import (  # noqa: E402
+    RECHECK_DELAY_SECONDS,
     build_repo_delete_messages,
     dispatch_repo_delete,
     region_from_sqs_url,
@@ -101,8 +104,8 @@ def test_dispatch_passes_source_through():
 def test_dispatch_single_region():
     client = MagicMock()
     sent = dispatch_repo_delete("ws1", "owner/repo", [(client, "https://q/primary")])
-    assert sent == 3
-    assert client.send_message.call_count == 3
+    assert sent == 6  # 3 immediate + 3 delayed recheck
+    assert client.send_message.call_count == 6
     # Every message went to the primary URL.
     for c in client.send_message.call_args_list:
         assert c.kwargs["QueueUrl"] == "https://q/primary"
@@ -114,9 +117,9 @@ def test_dispatch_dual_region_sends_to_both():
         "ws1", "owner/repo",
         [(primary, "https://q/primary"), (secondary, "https://q/secondary")],
     )
-    assert sent == 6  # 3 messages x 2 regions
-    assert primary.send_message.call_count == 3
-    assert secondary.send_message.call_count == 3
+    assert sent == 12  # 3 messages x 2 passes x 2 regions
+    assert primary.send_message.call_count == 6
+    assert secondary.send_message.call_count == 6
     # Both regions got an identical delete_symbol_graph.
     sec_bodies = [json.loads(c.kwargs["MessageBody"]) for c in secondary.send_message.call_args_list]
     assert any(b["action"] == "delete_symbol_graph" and b["repo_bare"] == "repo" for b in sec_bodies)
@@ -127,8 +130,61 @@ def test_dispatch_skips_empty_url():
     sent = dispatch_repo_delete(
         "ws1", "owner/repo", [(primary, "https://q/primary"), (secondary, "")]
     )
-    assert sent == 3
+    assert sent == 6
     secondary.send_message.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "source,slug,bare",
+    [
+        ("github", "owner/repo", "repo"),
+        ("gitlab", "group/subgroup/project", "project"),
+        ("azure_devops", "org/project/repo", "repo"),
+    ],
+)
+def test_build_messages_carry_repo_and_source(source, slug, bare):
+    # The delayed recheck needs source + full slug on EVERY message to look
+    # up the repo row; delete_symbol_graph gains source too.
+    msgs = build_repo_delete_messages("ws1", slug, source=source)
+    assert len(msgs) == 3
+    for m in msgs:
+        assert m["source"] == source
+        assert m["repo"] == slug
+        assert "recheck" not in m  # the builder emits the immediate shape
+    sg = [m for m in msgs if m["action"] == "delete_symbol_graph"][0]
+    assert sg["repo_bare"] == bare
+
+
+def test_dispatch_second_pass_is_delayed_recheck():
+    client = MagicMock()
+    dispatch_repo_delete(
+        "ws1", "org/project/repo", [(client, "https://q/primary")],
+        source="azure_devops",
+    )
+    calls = client.send_message.call_args_list
+    immediate = [c for c in calls if "DelaySeconds" not in c.kwargs]
+    delayed = [c for c in calls if "DelaySeconds" in c.kwargs]
+    assert len(immediate) == 3
+    assert len(delayed) == 3
+    assert RECHECK_DELAY_SECONDS == 900
+    imm_bodies = [json.loads(c.kwargs["MessageBody"]) for c in immediate]
+    del_bodies = [json.loads(c.kwargs["MessageBody"]) for c in delayed]
+    # Immediate pass is unchanged: no recheck flag.
+    assert all("recheck" not in b for b in imm_bodies)
+    for c, b in zip(delayed, del_bodies):
+        assert c.kwargs["DelaySeconds"] == 900
+        assert c.kwargs["QueueUrl"] == "https://q/primary"
+        assert b["recheck"] is True
+    # The delayed copies are the same messages plus the flag.
+    assert [{k: v for k, v in b.items() if k != "recheck"} for b in del_bodies] == imm_bodies
+    # Immediate messages are all sent before any delayed one.
+    assert calls.index(delayed[0]) > calls.index(immediate[-1])
+
+
+def test_dispatch_no_targets_sends_nothing():
+    client = MagicMock()
+    assert dispatch_repo_delete("ws1", "owner/repo", [(client, "")]) == 0
+    client.send_message.assert_not_called()
 
 
 def test_region_from_sqs_url():

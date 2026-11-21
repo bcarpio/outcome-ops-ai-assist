@@ -102,6 +102,13 @@ def _mock_dual_write():
         yield mock
 
 
+@pytest.fixture(autouse=True)
+def _presence():
+    """Repo presence (ADR-052): connected unless a test says otherwise."""
+    with patch.object(handler, "is_repo_connected", return_value=True) as mock:
+        yield mock
+
+
 def _msg(**overrides):
     base = {
         "workspace_id": "w1",
@@ -425,3 +432,109 @@ class TestLambdaHandler:
         }
         result = handler.lambda_handler(event, None)
         assert result["batchItemFailures"] == [{"itemIdentifier": "m2"}]
+
+
+# ---------------------------------------------------------------------------
+# Repo removed mid-flight (ADR-052): start, before upload, before dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestRepoRemovedGuards:
+
+    def _run(self, mock_table, _presence, presence_side_effect):
+        _presence.side_effect = presence_side_effect
+        mock_table.get_item.return_value = {"Item": _repo_row(repo_type="application")}
+        with patch.object(handler, "get_default_branch", return_value="main") as branch, \
+                patch.object(handler, "get_latest_commit_sha", return_value="sha-B"), \
+                patch.object(handler, "refresh_access_token", return_value="access-token") as tok, \
+                patch.object(handler, "get_tree_recursive", return_value=[
+        {"path": "/src/main.py", "gitObjectType": "blob", "size": 10},
+        {"path": "/docs/README.md", "gitObjectType": "blob", "size": 10},
+    ]) as tree, \
+                patch.object(handler, "get_file_content", return_value=b"body"), \
+                patch.object(handler, "_enqueue_repo_summaries_job") as enqueue:
+            result = handler.process_sync_message(_msg(triggered_by="manual"))
+        return result, branch, tok, tree, enqueue
+
+    def test_removed_at_start_makes_no_provider_calls(
+        self, mock_table, _presence, _mock_dual_write, caplog,
+    ):
+        caplog.set_level("INFO")
+        result, branch, tok, tree, enqueue = self._run(mock_table, _presence, [False])
+        assert result["status"] == "repo_removed"
+        assert result["checkpoint"] == "start"
+        tok.assert_not_called()
+        branch.assert_not_called()
+        tree.assert_not_called()
+        mock_table.get_item.assert_not_called()
+        assert not _mock_dual_write.ddb_update_item.called
+        assert not _mock_dual_write.s3_put_object.called
+        enqueue.assert_not_called()
+        _presence.assert_called_once_with("w1", "azure_devops", "example-org/example-project/example-repo")
+        assert (
+            "[azure-devops-sync] repo removed, dropping sync for w1/" in caplog.text
+        )
+
+    def test_removed_before_upload_uploads_and_dispatches_nothing(
+        self, mock_table, _presence, _mock_dual_write,
+    ):
+        result, _, _, tree, enqueue = self._run(mock_table, _presence, [True, False])
+        assert result["status"] == "repo_removed"
+        assert result["checkpoint"] == "before_upload"
+        tree.assert_called_once()
+        assert not _mock_dual_write.s3_put_object.called
+        enqueue.assert_not_called()
+
+    def test_removed_before_dispatch_keeps_uploads_but_does_not_dispatch(
+        self, mock_table, _presence, _mock_dual_write,
+    ):
+        result, _, _, _, enqueue = self._run(
+            mock_table, _presence, [True, True, False],
+        )
+        assert result["status"] == "repo_removed"
+        assert result["checkpoint"] == "before_dispatch"
+        assert _mock_dual_write.s3_put_object.call_count == 2
+        enqueue.assert_not_called()
+
+    def test_connected_runs_all_three_checks_and_dispatches(
+        self, mock_table, _presence, _mock_dual_write,
+    ):
+        result, _, _, _, enqueue = self._run(
+            mock_table, _presence, [True, True, True],
+        )
+        assert result["status"] == "success"
+        assert _presence.call_count == 3
+        enqueue.assert_called_once()
+
+    def test_lookup_error_at_start_raises(self, mock_table, _presence):
+        from shared.repo_presence import RepoPresenceError
+        with pytest.raises(RepoPresenceError):
+            self._run(mock_table, _presence, RepoPresenceError("ddb down"))
+
+    def test_lookup_error_mid_sync_marks_failed_and_raises(
+        self, mock_table, _presence, _mock_dual_write,
+    ):
+        from shared.repo_presence import RepoPresenceError
+        with pytest.raises(RepoPresenceError):
+            self._run(
+                mock_table, _presence, [True, RepoPresenceError("ddb down")],
+            )
+        assert not _mock_dual_write.s3_put_object.called
+        statuses = [
+            c.kwargs["ExpressionAttributeValues"].get(":status")
+            for c in _mock_dual_write.ddb_update_item.call_args_list
+        ]
+        assert "failed" in statuses
+
+    def test_lambda_handler_removed_is_not_redelivered(self, mock_table, _presence):
+        _presence.return_value = False
+        event = {"Records": [{"messageId": "m1", "body": json.dumps(_msg())}]}
+        assert handler.lambda_handler(event, None) == {"batchItemFailures": []}
+
+    def test_lambda_handler_lookup_error_is_redelivered(self, mock_table, _presence):
+        from shared.repo_presence import RepoPresenceError
+        _presence.side_effect = RepoPresenceError("ddb down")
+        event = {"Records": [{"messageId": "m1", "body": json.dumps(_msg())}]}
+        assert handler.lambda_handler(event, None) == {
+            "batchItemFailures": [{"itemIdentifier": "m1"}],
+        }

@@ -274,3 +274,37 @@ def test_no_change_docs_advance_routes_through_dual_write(tables):
     assert call.args[1] == {"PK": f"WS#{WORKSPACE_ID}", "SK": f"GITHUB_REPO#{REPO}"}
     assert ":sha" in call.kwargs["ExpressionAttributeValues"]
     assert call.kwargs["ExpressionAttributeValues"][":sha"] == NEW_SHA
+
+
+def test_no_change_docs_advance_never_recreates_removed_repo_row(tables):
+    """A repo removed mid-sync must not come back as a stub row.
+
+    UpdateItem upserts, and ``attribute_not_exists(last_docs_sha_ts)`` is
+    true on a missing item, so the advance has to require the row first.
+    A stub row would make the repo read as connected again (ADR-052 v1.1).
+    """
+    gs = _load_module_as(
+        "_test_gs_nochange_removed",
+        _LAMBDA_ROOT / "github-sync" / "handler.py",
+    )
+
+    gs._advance_docs_sha_no_changes(WORKSPACE_ID, REPO, NEW_SHA, 200)
+
+    resp = tables.Table(WORKSPACES_TABLE).get_item(
+        Key={"PK": f"WS#{WORKSPACE_ID}", "SK": f"GITHUB_REPO#{REPO}"}
+    )
+    assert "Item" not in resp
+
+
+def test_no_change_docs_advance_still_advances_existing_row(tables):
+    _seed_ws_row(tables)
+    gs = _load_module_as(
+        "_test_gs_nochange_existing",
+        _LAMBDA_ROOT / "github-sync" / "handler.py",
+    )
+
+    gs._advance_docs_sha_no_changes(WORKSPACE_ID, REPO, NEW_SHA, 200)
+
+    row = _read_ws_row(tables)
+    assert row["last_docs_sha"] == NEW_SHA
+    assert int(row["last_docs_sha_ts"]) == 200

@@ -89,6 +89,13 @@ def reset_mocks():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _presence():
+    """Repo presence (ADR-052): connected unless a test says otherwise."""
+    with patch.object(handler_module, "is_repo_connected", return_value=True) as mock:
+        yield mock
+
+
 @pytest.fixture
 def mock_table():
     """Create mock DynamoDB table."""
@@ -2827,3 +2834,138 @@ class TestGenerateJwt:
         with pytest.raises(ValueError, match="private key not configured"):
             handler_module.generate_jwt()
 
+
+# ============================================================================
+# Repo removed mid-flight (ADR-052): start, before upload, before dispatch
+# ============================================================================
+
+
+class TestRepoRemovedGuards:
+    """Each sync re-checks repo presence at three points and stops cleanly
+    (non-retry status) once the repo row is gone."""
+
+    _MSG = {
+        "workspace_id": "ws_test",
+        "repo_name": "acme/my-repo",
+        "installation_id": "12345",
+        "trigger": "manual",
+    }
+    _TREE = [
+        {"path": "README.md", "type": "blob", "sha": "aaa", "size": 500},
+        {"path": "src/main.py", "type": "blob", "sha": "bbb", "size": 1200},
+    ]
+
+    def _run(self, _presence, presence_side_effect, repo_type="application"):
+        """Full process_sync_request with GitHub, S3 and SQS stubbed."""
+        _presence.side_effect = presence_side_effect
+        repo_row = {
+            "repo_type": repo_type,
+            "include_code_maps": True,
+            "last_sync_status": "success",
+        }
+        mocks = {}
+        names = {
+            "get_repo": {"return_value": repo_row},
+            "update_sync_status": {},
+            "get_installation_token": {"return_value": "tok"},
+            "resolve_sync_branch": {"return_value": "main"},
+            "get_latest_commit": {"return_value": ("head123", 1700000000)},
+            "get_repo_tree": {"return_value": self._TREE},
+            "fetch_ingestion_config": {"return_value": []},
+            "get_file_content": {"return_value": "# README"},
+            "upload_file_to_s3": {"return_value": "key"},
+            "_open_docs_pending_batch": {},
+            "_advance_docs_sha_no_changes": {},
+            "_queue_orphan_detection": {},
+            "_open_code_map_dispatch_ledger": {},
+            "queue_repo_for_code_maps": {"return_value": True},
+            "log_source_sync": {},
+        }
+        patchers = [
+            patch.object(handler_module, n, **kw) for n, kw in names.items()
+        ]
+        try:
+            for n, p in zip(names, patchers):
+                mocks[n] = p.start()
+            result = process_sync_request(dict(self._MSG))
+        finally:
+            for p in patchers:
+                p.stop()
+        return result, mocks
+
+    def test_removed_at_start_makes_no_github_calls(self, _presence, caplog):
+        caplog.set_level("INFO")
+        result, m = self._run(_presence, [False])
+        assert result["status"] == "repo_removed"
+        assert result["checkpoint"] == "start"
+        assert "repo_removed" in handler_module._NON_RETRY_STATUSES
+        m["get_repo"].assert_not_called()
+        m["update_sync_status"].assert_not_called()
+        m["get_installation_token"].assert_not_called()
+        m["get_latest_commit"].assert_not_called()
+        m["upload_file_to_s3"].assert_not_called()
+        m["queue_repo_for_code_maps"].assert_not_called()
+        _presence.assert_called_once_with("ws_test", "github", "acme/my-repo")
+        assert (
+            "[github-sync] repo removed, dropping sync for ws_test/acme/my-repo"
+            in caplog.text
+        )
+
+    def test_removed_before_upload_uploads_and_dispatches_nothing(self, _presence):
+        result, m = self._run(_presence, [True, False])
+        assert result["status"] == "repo_removed"
+        assert result["checkpoint"] == "before_upload"
+        m["get_repo_tree"].assert_called_once()
+        m["_open_docs_pending_batch"].assert_not_called()
+        m["upload_file_to_s3"].assert_not_called()
+        m["_queue_orphan_detection"].assert_not_called()
+        m["_open_code_map_dispatch_ledger"].assert_not_called()
+        m["queue_repo_for_code_maps"].assert_not_called()
+
+    def test_standards_removed_before_upload_uploads_nothing(self, _presence):
+        result, m = self._run(_presence, [True, False], repo_type="standards")
+        assert result["status"] == "repo_removed"
+        assert result["checkpoint"] == "before_upload"
+        m["_open_docs_pending_batch"].assert_not_called()
+        m["upload_file_to_s3"].assert_not_called()
+        m["_queue_orphan_detection"].assert_not_called()
+
+    def test_removed_before_dispatch_keeps_uploads_opens_no_ledger(self, _presence):
+        result, m = self._run(_presence, [True, True, False])
+        assert result["status"] == "repo_removed"
+        assert result["checkpoint"] == "before_dispatch"
+        assert m["upload_file_to_s3"].call_count == 1
+        m["_open_code_map_dispatch_ledger"].assert_not_called()
+        m["queue_repo_for_code_maps"].assert_not_called()
+
+    def test_connected_runs_all_three_checks_and_dispatches(self, _presence):
+        result, m = self._run(_presence, [True, True, True])
+        assert result["status"] == "success"
+        assert _presence.call_count == 3
+        m["_open_code_map_dispatch_ledger"].assert_called_once()
+        m["queue_repo_for_code_maps"].assert_called_once()
+
+    def test_lookup_error_at_start_raises(self, _presence):
+        from shared.repo_presence import RepoPresenceError
+        with pytest.raises(RepoPresenceError):
+            self._run(_presence, RepoPresenceError("ddb down"))
+
+    def test_lookup_error_mid_sync_is_a_retryable_error(self, _presence):
+        from shared.repo_presence import RepoPresenceError
+        result, m = self._run(_presence, [True, True, RepoPresenceError("ddb down")])
+        assert result["status"] == "error"
+        assert result["status"] not in handler_module._NON_RETRY_STATUSES
+        m["queue_repo_for_code_maps"].assert_not_called()
+
+    def test_lambda_handler_removed_is_not_redelivered(self, _presence):
+        _presence.return_value = False
+        event = {"Records": [{"messageId": "m1", "body": json.dumps(self._MSG)}]}
+        assert lambda_handler(event, None) == {"batchItemFailures": []}
+
+    def test_lambda_handler_lookup_error_is_redelivered(self, _presence):
+        from shared.repo_presence import RepoPresenceError
+        _presence.side_effect = RepoPresenceError("ddb down")
+        event = {"Records": [{"messageId": "m1", "body": json.dumps(self._MSG)}]}
+        assert lambda_handler(event, None) == {
+            "batchItemFailures": [{"itemIdentifier": "m1"}],
+        }

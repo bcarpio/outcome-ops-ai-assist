@@ -142,7 +142,7 @@ def test_empty_changed_files_renders_cleanly(monkeypatch):
     body, _usage = build_pr_summary(
         metadata=_Meta([], {}), diffs_by_file={}, checks_to_run=[],
     )
-    assert "## PR summary" in body
+    assert "## PR Summary" in body
     assert "Nothing much." in body
     assert "Checks queued:** none" in body
     assert "Files changed (" not in body

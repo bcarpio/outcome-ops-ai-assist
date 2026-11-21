@@ -22,7 +22,14 @@ Message Format:
     "repo": "owner/repo",             # For code-map orphan detection
     "expected_keys": ["k1", "k2"],    # For code-map orphan detection
     "repo_bare": "repo",              # For delete_symbol_graph (bare repo name)
+    "recheck": true,                  # Delayed second pass of a repo delete
 }
+
+Repo deletes are dispatched twice (shared.delete_dispatch): once
+immediately and once ~15 minutes later with ``recheck: true``. On the
+recheck pass the worker first asks whether the repo was re-added
+(``shared.repo_presence``) and skips the purge if so. Messages without
+``recheck`` never do a presence lookup.
 """
 
 import json
@@ -887,6 +894,39 @@ def handle_delete_symbol_graph(message: Dict) -> Dict[str, Any]:
     }
 
 
+def _repo_readded(message: Dict[str, Any]) -> bool:
+    """For a ``recheck`` message: True iff the repo is connected again.
+
+    Returns False (run the action) when the message lacks ``source`` or
+    ``repo`` (legacy shape) or names a non-code-host source: a re-add
+    cannot be verified and the immediate pass already ran, so repeating
+    the idempotent cleanup is the safe default. A failed lookup raises
+    ``RepoPresenceError`` so the record retries (ADR-029): an unknown
+    answer must never delete.
+    """
+    workspace_id = message.get("workspace_id") or ""
+    source = message.get("source") or ""
+    repo = message.get("repo") or ""
+    if not workspace_id or not source or not repo:
+        logger.info(
+            f"[delete-worker] recheck without source/repo for "
+            f"{workspace_id}/{repo}, running action (cannot verify re-add)"
+        )
+        return False
+    if source not in _CODE_HOST_SOURCES:
+        logger.warning(
+            f"[delete-worker] recheck for non-code-host source {source!r} "
+            f"({workspace_id}/{repo}), running action"
+        )
+        return False
+
+    # Imported here so a packaging gap fails only the recheck records
+    # (retried, never dropped) instead of the whole worker at import.
+    from shared.repo_presence import is_repo_connected
+
+    return is_repo_connected(workspace_id, source, repo)
+
+
 def lambda_handler(event: Dict, context: Any) -> Dict:
     """
     SQS-triggered handler for delete operations.
@@ -913,6 +953,18 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             action = message.get("action")
 
             logger.info(f"Processing delete action: {action}")
+
+            if message.get("recheck") and _repo_readded(message):
+                logger.info(
+                    f"[delete-worker] repo re-added, skipping recheck for "
+                    f"{message.get('workspace_id')}/{message.get('repo')}"
+                )
+                results.append({
+                    "status": "skipped",
+                    "action": action,
+                    "reason": "repo re-added",
+                })
+                continue
 
             if action == "delete_document":
                 result = handle_delete_document(message)

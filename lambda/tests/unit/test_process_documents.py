@@ -2224,3 +2224,158 @@ class TestLambdaHandlerEdgeCases:
         body = json.loads(result["body"])
         assert len(body["results"]) == 0
 
+
+
+# ============================================================================
+# Removed-repo guard (ADR-052)
+# ============================================================================
+
+
+RepoPresenceError = handler_module.RepoPresenceError
+
+
+def _stub_object(metadata):
+    body_mock = MagicMock()
+    body_mock.read.return_value = b"Substantial document content here. " + b"x" * 100
+    mock_s3_client.get_object.return_value = {"Body": body_mock, "Metadata": metadata}
+
+
+class TestRemovedRepoGuard:
+    """Code-host documents of a removed repo are not embedded into vectors."""
+
+    @pytest.mark.parametrize(
+        "source,key,metadata,slug",
+        [
+            (
+                "github",
+                "workspaces/ws_abc/github/acme/widgets/docs/a.md",
+                {"github_repo_name": "acme/widgets"},
+                "acme/widgets",
+            ),
+            (
+                "gitlab",
+                "workspaces/ws_abc/gitlab/grp/sub/widgets/docs/a.md",
+                {"gitlab_slug": "grp/sub/widgets"},
+                "grp/sub/widgets",
+            ),
+            (
+                "azure_devops",
+                "workspaces/ws_abc/azure_devops/org/proj/widgets/docs/a.md",
+                {"azure_devops_slug": "org/proj/widgets"},
+                "org/proj/widgets",
+            ),
+        ],
+    )
+    def test_removed_repo_writes_no_vectors(
+        self, vector_config, mock_bedrock_embedding, source, key, metadata, slug
+    ):
+        _stub_object(metadata)
+        with patch.object(
+            handler_module, "is_repo_connected", return_value=False
+        ) as presence, patch.object(handler_module, "_close_docs_unit") as close:
+            result = process_document("test-kb-bucket", key)
+
+        presence.assert_called_once_with("ws_abc", source, slug)
+        assert result == {"status": "skipped", "reason": "Repo removed", "key": key}
+        mock_s3vectors_client.put_vectors.assert_not_called()
+        mock_s3_client.delete_object.assert_not_called()
+        close.assert_not_called()
+
+    @pytest.mark.parametrize("source", ["confluence", "jira", "uploads", "github_attachment"])
+    def test_non_repo_source_not_guarded(
+        self, vector_config, mock_bedrock_embedding, source
+    ):
+        _stub_object({"github_repo_name": "acme/widgets"})
+        with patch.object(handler_module, "is_repo_connected") as presence:
+            result = process_document(
+                "test-kb-bucket", f"workspaces/ws_abc/{source}/space/page.md"
+            )
+
+        presence.assert_not_called()
+        assert result["status"] == "success"
+        mock_s3vectors_client.put_vectors.assert_called()
+
+    def test_connected_repo_unchanged(self, vector_config, mock_bedrock_embedding):
+        _stub_object({"github_repo_name": "acme/widgets"})
+        with patch.object(
+            handler_module, "is_repo_connected", return_value=True
+        ) as presence:
+            result = process_document(
+                "test-kb-bucket", "workspaces/ws_abc/github/acme/widgets/docs/a.md"
+            )
+
+        presence.assert_called_once_with("ws_abc", "github", "acme/widgets")
+        assert result["status"] == "success"
+        assert result["vectors_stored"] >= 1
+        mock_s3vectors_client.put_vectors.assert_called()
+
+    def test_code_host_without_slug_metadata_not_guarded(
+        self, vector_config, mock_bedrock_embedding
+    ):
+        """Unattributable objects (no slug metadata) skip the guard."""
+        _stub_object({})
+        with patch.object(handler_module, "is_repo_connected") as presence:
+            result = process_document(
+                "test-kb-bucket",
+                "workspaces/ws_abc/github/widgets/architectural-summary.txt",
+            )
+
+        presence.assert_not_called()
+        assert result["status"] == "success"
+
+    def test_lookup_error_propagates_from_process_document(
+        self, vector_config, mock_bedrock_embedding
+    ):
+        _stub_object({"gitlab_slug": "grp/widgets"})
+        with patch.object(
+            handler_module,
+            "is_repo_connected",
+            side_effect=RepoPresenceError("ddb down"),
+        ):
+            with pytest.raises(RepoPresenceError):
+                process_document(
+                    "test-kb-bucket", "workspaces/ws_abc/gitlab/grp/widgets/a.md"
+                )
+
+        mock_s3vectors_client.put_vectors.assert_not_called()
+
+    def test_lookup_error_fails_record_in_handler(
+        self, vector_config, mock_bedrock_embedding
+    ):
+        """A lookup failure reports the record failed and raises for retry,
+        while other records in the event still complete."""
+        bad_key = "workspaces/ws_abc/github/acme/widgets/a.md"
+        good_key = "workspaces/ws_abc/confluence/space/page.html"
+        event = {
+            "Records": [
+                {"s3": {"bucket": {"name": "test-kb-bucket"}, "object": {"key": bad_key}}},
+                {"s3": {"bucket": {"name": "test-kb-bucket"}, "object": {"key": good_key}}},
+            ]
+        }
+
+        def fake_process(bucket, key):
+            if key == bad_key:
+                raise RepoPresenceError("ddb down")
+            return {"status": "success", "key": key}
+
+        with patch.object(
+            handler_module, "process_document", side_effect=fake_process
+        ) as proc:
+            with pytest.raises(RepoPresenceError, match=bad_key):
+                lambda_handler(event, None)
+
+        assert [c.args[1] for c in proc.call_args_list] == [bad_key, good_key]
+
+    def test_lookup_error_fails_sqs_record(self, vector_config, mock_bedrock_embedding):
+        key = "workspaces/ws_abc/azure_devops/org/proj/widgets/a.md"
+        _stub_object({"azure_devops_slug": "org/proj/widgets"})
+        event = {"Records": [{"body": json.dumps({"bucket": "b", "key": key})}]}
+        with patch.object(
+            handler_module,
+            "is_repo_connected",
+            side_effect=RepoPresenceError("ddb down"),
+        ):
+            with pytest.raises(RepoPresenceError):
+                lambda_handler(event, None)
+
+        mock_s3vectors_client.put_vectors.assert_not_called()

@@ -551,6 +551,10 @@ module "delete_worker_lambda" {
         "!.*\\.pyc",
         "!\\.pytest_cache/.*",
       ]
+    },
+    {
+      path          = "${path.module}/../lambda/shared"
+      prefix_in_zip = "shared"
     }
   ]
 
@@ -566,6 +570,10 @@ module "delete_worker_lambda" {
       ENV       = var.environment
       APP_NAME  = var.app_name
       KB_BUCKET = module.knowledge_base_bucket.s3_bucket_id
+      # Repo-delete re-add check (ADR-052 v1.1): on the delayed recheck pass
+      # the worker reads the workspace's repo row and skips the purge if the
+      # repo was re-added after the delete was enqueued.
+      WORKSPACES_TABLE = module.workspaces_table[0].dynamodb_table_id
       # delete_symbol_graph cleans every per-repo store the SHA-truth ledger
       # writes: symbol-graph facts + pointer, code-maps ingest state rows,
       # and pending-work fan-out counters.
@@ -592,6 +600,17 @@ module "delete_worker_lambda" {
         module.symbol_graph_table.dynamodb_table_arn,
         module.code_maps_table.dynamodb_table_arn,
         module.code_map_pending_work_table.dynamodb_table_arn,
+      ]
+    }
+
+    # Read the workspace repo row for the re-add check (GetItem only).
+    workspaces_read = {
+      effect = "Allow"
+      actions = [
+        "dynamodb:GetItem",
+      ]
+      resources = [
+        module.workspaces_table[0].dynamodb_table_arn,
       ]
     }
 

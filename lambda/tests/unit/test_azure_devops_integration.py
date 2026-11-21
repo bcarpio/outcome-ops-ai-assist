@@ -885,8 +885,20 @@ class TestDisconnect:
         # Cascade removes c1's two repos; each repo now enqueues the FULL
         # 3-message delete contract (slug delete_prefix + bare delete_prefix
         # + delete_symbol_graph) via shared.delete_dispatch (ADR-052), so
-        # 2 repos x 3 = 6 messages. Single region (no secondary queue).
-        assert mock_sqs.send_message.call_count == 6
+        # 2 repos x 3 = 6 messages, each sent again as a delayed recheck
+        # pass, so 12. Single region (no secondary queue).
+        assert mock_sqs.send_message.call_count == 12
+        calls = mock_sqs.send_message.call_args_list
+        delayed = [c for c in calls if c.kwargs.get("DelaySeconds") == 900]
+        assert len(delayed) == 6
+        assert all(
+            json.loads(c.kwargs["MessageBody"])["recheck"] is True
+            for c in delayed
+        )
+        assert all(
+            "recheck" not in json.loads(c.kwargs["MessageBody"])
+            for c in calls if "DelaySeconds" not in c.kwargs
+        )
         bodies = [
             json.loads(c.kwargs["MessageBody"])
             for c in mock_sqs.send_message.call_args_list
