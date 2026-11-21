@@ -89,9 +89,9 @@ Because Terra + Luna reach **us-west-2** (the default region), an all-GPT deploy
 can run advanced=Terra / basic=Luna in the home region without the us-east-2
 relocation the us-east-2-only GPT-5.5 forced — the region obstacle behind the
 demo-only OpenAI scope is removed. Two caveats remain: (1) Sol is still
-us-east-1/us-east-2 only; (2) cost attribution — `audit.py` hardcodes per-model
-pricing and ignores the `bedrock_*_price` tfvars (see `docs/tech-debt.md`), so a
-GPT-5.6 deploy mis-attributes `cost_usd` until that is reconciled. Exact Mantle
+us-east-1/us-east-2 only; (2) cost attribution reads the advanced/basic
+`bedrock_*_price` tfvars (`shared.audit`), so set them to the GPT-5.6 rates when
+swapping models or `cost_usd` will be mis-attributed. Exact Mantle
 model-ID strings are not returned by `list-foundation-models` (Mantle-served);
 confirm them in the Bedrock console model catalog before deploying.
 

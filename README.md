@@ -251,6 +251,8 @@ OutcomeOps applies the same playbook to AI-assisted development:
 - [ADR Template](docs/adr/TEMPLATE.md) - Template for new ADRs
 
 **For Developers**
+- [Contributing](CONTRIBUTING.md) - Setup, conventions, and how the backlog works
+- [Backlog (GitHub Issues)](https://github.com/bcarpio/outcome-ops-ai-assist/issues) - Planned work, follow-ups and tracked debt ([ADR-062](docs/adr/ADR-062-backlog-in-github-issues.md))
 - [Claude Guidance](CLAUDE.md) - AI assistant development best practices
 - [Backstory](docs/backstory.md) - Why OutcomeOps exists
 

@@ -141,7 +141,7 @@ def invoke_claude_with_retry(prompt: str, model: str = "haiku", max_retries: int
     Despite the legacy name, this routes through shared.model_client.invoke
     -- Converse for anthropic/meta/nova/gpt-oss, Bedrock-Mantle Responses
     for openai.gpt-5*/codex per ADR-035. The Lambda rename is tracked in
-    docs/backlog.md.
+    GitHub issue #34.
 
     Args:
         prompt: The prompt to send to the model
