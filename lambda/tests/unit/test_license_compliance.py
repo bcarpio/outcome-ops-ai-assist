@@ -756,3 +756,23 @@ class TestLicenseCheckSkipsOutOfScope:
             )
         assert result["status"] == "FAIL"
         assert result["message"] == "Prohibited licenses detected in 1 file(s)"
+
+
+class TestDiffHeaderMarkers:
+    """New/deleted markers come from the git header, never from file content."""
+
+    def test_added_code_mentioning_deleted_file_mode_is_not_deleted(self):
+        diff = (
+            "diff --git a/x.py b/x.py\nindex 1..2 100644\n@@ -1 +1,2 @@\n"
+            " a = 1\n+    return \"deleted file mode\" in file_diff\n"
+        )
+        assert is_deleted_file(diff) is False
+        assert "deleted file mode" in license_scan_text("x.py", diff)
+
+    def test_added_code_mentioning_new_file_mode_is_not_new(self):
+        diff = "diff --git a/x.py b/x.py\n@@ -1 +1,2 @@\n a\n+'new file mode'\n"
+        assert is_new_file(diff) is False
+
+    def test_header_markers_detected(self):
+        assert is_new_file("diff --git a/x b/x\nnew file mode 100644\n@@ -0,0 +1 @@\n+a\n")
+        assert is_deleted_file("diff --git a/x b/x\ndeleted file mode 100644\n@@ -1 +0,0 @@\n-a\n")

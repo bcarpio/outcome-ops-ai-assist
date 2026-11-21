@@ -600,9 +600,23 @@ def detect_license_patterns(text: str) -> Dict[str, List[str]]:
 _FENCE_RE = re.compile(r"^\s*(```|~~~)")
 
 
+def _diff_header_has(file_diff: str, marker: str) -> bool:
+    """True when a git header line (before the first hunk) starts with ``marker``.
+
+    Searching the whole diff is wrong: a file whose added code contains the
+    text "deleted file mode" would be read as deleted.
+    """
+    for line in file_diff.split("\n"):
+        if line.startswith("@@"):
+            return False
+        if line.startswith(marker):
+            return True
+    return False
+
+
 def is_deleted_file(file_diff: str) -> bool:
     """True when the diff removes the whole file (it can add no license text)."""
-    return "deleted file mode" in file_diff
+    return _diff_header_has(file_diff, "deleted file mode")
 
 
 def license_scan_text(file_path: str, file_diff: str) -> str:
@@ -688,8 +702,7 @@ def is_source_file(file_path: str) -> bool:
 
 def is_new_file(file_diff: str) -> bool:
     """Check if file is newly added (not just modified)."""
-    # New files have "new file mode" in diff
-    return "new file mode" in file_diff
+    return _diff_header_has(file_diff, "new file mode")
 
 
 def analyze_with_claude(
