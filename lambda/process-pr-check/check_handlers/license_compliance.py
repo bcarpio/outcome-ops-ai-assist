@@ -625,7 +625,7 @@ def license_scan_text(file_path: str, file_diff: str) -> str:
     Only ADDED lines count: removing license text (or deleting a file that
     mentions a license) can never introduce one. For Markdown, only added
     lines inside fenced code blocks count (ADR-008 scans code blocks, not
-    prose), so a doc that merely names GPL or AGPL is not a finding. Fence
+    prose), so a doc that merely names a prohibited license is not a finding. Fence
     state is tracked over the head side of each hunk (context and added
     lines) and resets at every hunk header.
     """
