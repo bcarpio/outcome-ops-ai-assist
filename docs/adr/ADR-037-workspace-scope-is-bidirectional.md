@@ -238,7 +238,7 @@ def query_s3_vectors(
   workspace) on each check invocation. Not a hot path (once per check
   per workspace), but at F500 scale (10^3 workspaces × 10^3 checks
   per day) this warrants a follow-up to add a GSI on `is_global`
-  and cache the repo→workspace lookup.
+  and cache the repo→workspace lookup (tracked in GitHub issue #28).
 - **Global membership grants broad read.** Members of an
   `is_global` workspace see every other workspace's content when
   querying from the global workspace. For most orgs

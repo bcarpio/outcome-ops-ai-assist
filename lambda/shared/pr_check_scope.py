@@ -3,8 +3,8 @@
 """
 Per-check-type retrieval scope resolver for PR checks.
 
-Closes docs/tech-debt.md entry "PR-check handlers query the KB
-workspace-blind". Different checks want different retrieval scopes:
+Fixes PR checks that queried the KB workspace-blind (ADR-037).
+Different checks want different retrieval scopes:
 
 - Read-scope checks (ADR_COMPLIANCE / TEST_COVERAGE / LICENSE_COMPLIANCE
   / ARCHITECTURAL_DUPLICATION) retrieve from every workspace the repo's
