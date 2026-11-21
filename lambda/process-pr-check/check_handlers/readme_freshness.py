@@ -568,12 +568,12 @@ def check_readme_freshness(
     )
 
     # Attribute PR-analyzer Bedrock spend to the PR repo's OWNING workspace
-    # (the first GITHUB_REPO owner). Fail-soft: "" -> WS#SYSTEM (unattributed)
+    # (the first repo-row owner for this provider). Fail-soft: "" -> WS#SYSTEM (unattributed)
     # rather than breaking the check.
     owning_ws = ""
     try:
         from shared.pr_check_scope import find_workspaces_for_repo
-        owning_ws = (sorted(find_workspaces_for_repo(repository)) or [""])[0]
+        owning_ws = (sorted(find_workspaces_for_repo(repository, provider=provider)) or [""])[0]
     except Exception as ws_exc:
         logger.warning(
             f"Could not resolve owning workspace for spend attribution: {ws_exc}"

@@ -2821,11 +2821,11 @@ class TestSyncInlineFindings(_InlineJobMixin):
         mock_store.assert_not_called()
 
 
-def _info(added_lines, blocks=None, is_new=False):
+def _info(added_lines, blocks=None, is_new=False, head_text=None):
     """A pr_diff.FileDiffInfo for worker-wiring tests."""
     from shared.pr_diff import FileDiffInfo
     return FileDiffInfo(added_lines=list(added_lines), blocks=list(blocks or []),
-                        is_new=is_new)
+                        is_new=is_new, head_text=head_text)
 
 
 class TestComputeAnchors:
@@ -2947,7 +2947,7 @@ class TestBreakingChangesDiffWiring:
         blk_b = ChangeBlock(removed_base_lines=(), insert_after_base_line=2,
                             head_anchor=None)
         info = {
-            "src/a.py": _info([5], [blk_a]),
+            "src/a.py": _info([5], [blk_a], head_text="def a():\n    pass\n"),
             "src/b.py": _info([], [blk_b]),
         }
         mock_dif, mock_check = self._run(self._job(), return_value=info)
@@ -2957,6 +2957,8 @@ class TestBreakingChangesDiffWiring:
         kwargs = mock_check.call_args.kwargs
         assert kwargs["anchors"] == {"src/a.py": [5]}
         assert kwargs["change_blocks"] == {"src/a.py": [blk_a], "src/b.py": [blk_b]}
+        # Files without head text (deleted / binary) are omitted.
+        assert kwargs["head_texts"] == {"src/a.py": "def a():\n    pass\n"}
 
     def test_diff_failure_gives_empty_anchors_and_none_blocks(self):
         mock_dif, mock_check = self._run(
@@ -2965,14 +2967,17 @@ class TestBreakingChangesDiffWiring:
         kwargs = mock_check.call_args.kwargs
         assert kwargs["anchors"] == {}
         assert kwargs["change_blocks"] is None
+        assert kwargs["head_texts"] is None
 
     def test_helper_failure_returns_empty_and_none(self):
         job = self._job()
         with patch("process_pr_check_handler.get_github_token",
                    side_effect=RuntimeError("SSM down")):
-            anchors, blocks = handler_module._compute_breaking_changes_inputs(job)
+            anchors, blocks, head_texts = (
+                handler_module._compute_breaking_changes_inputs(job))
         assert anchors == {}
         assert blocks is None
+        assert head_texts is None
 
 
 class TestReadmeFreshnessNewFiles:

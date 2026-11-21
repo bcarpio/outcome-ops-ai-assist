@@ -6,14 +6,20 @@ Per-check-type retrieval scope resolver for PR checks.
 Closes docs/tech-debt.md entry "PR-check handlers query the KB
 workspace-blind". Different checks want different retrieval scopes:
 
-- Standards checks (ADR_COMPLIANCE / TEST_COVERAGE / LICENSE_COMPLIANCE
-  / BREAKING_CHANGES) walk the repo's workspace(s) + all ``is_global``
-  workspaces so enterprise / security / compliance standards apply
-  cross-portfolio.
+- Read-scope checks (ADR_COMPLIANCE / TEST_COVERAGE / LICENSE_COMPLIANCE
+  / ARCHITECTURAL_DUPLICATION) retrieve from every workspace the repo's
+  workspace may READ: the repo's own workspace(s) + all ``is_global``
+  workspaces + every workspace whose ``METADATA.search_allowed_workspaces``
+  lists a repo workspace (the Sharing tab grant). Standards may live in any
+  connector's content (Confluence etc.) in a global OR a sharing workspace.
+- BREAKING_CHANGES finds a changed producer's consumers, so it uses the
+  FORWARD consumer scope (ADR-056 section 5), not the read scope.
 - README_FRESHNESS is about *this* repo's README specifically; scoped
-  to the repo's workspace(s) only.
-- ARCHITECTURAL_DUPLICATION is a cross-portfolio similarity check
-  by design; scans every workspace.
+  to the repo's workspace(s) only. Unknown check types get the same
+  local-only fallback.
+
+The repo's own workspace(s) are found per provider (ADR-052): the repo row
+SK prefix comes from ``shared.repo_presence.SOURCE_SK_PREFIX``.
 
 Design mirrors ``lambda/chat/handler.py::resolve_chat_workspace_scope``
 but the trigger is check_type instead of user membership.
@@ -27,29 +33,24 @@ from typing import Iterable, List, Optional, Set
 
 import boto3
 
+from shared.repo_presence import SOURCE_SK_PREFIX
 
 logger = logging.getLogger(__name__)
 
 
-# Standards checks whose retrieval scope should include all is_global
-# workspaces alongside the repo's own workspace(s).
-STANDARDS_CHECKS: Set[str] = {
+# Read-scope checks: retrieve from every workspace the repo's workspace may
+# read (own + is_global + workspaces that shared with it).
+READ_SCOPE_CHECKS: Set[str] = {
     "ADR_COMPLIANCE",
     "TEST_COVERAGE",
     "LICENSE_COMPLIANCE",
-    "BREAKING_CHANGES",
+    "ARCHITECTURAL_DUPLICATION",
 }
 
 # Local-only checks: scope to the repo's workspace(s) only. README
 # freshness is about this repo's README, not org standards.
 LOCAL_ONLY_CHECKS: Set[str] = {
     "README_FRESHNESS",
-}
-
-# Cross-portfolio checks: scope to every workspace in the deployment.
-# Similarity-across-repos is the whole point.
-CROSS_PORTFOLIO_CHECKS: Set[str] = {
-    "ARCHITECTURAL_DUPLICATION",
 }
 
 
@@ -73,18 +74,32 @@ def _get_workspaces_table_name() -> str:
 def find_workspaces_for_repo(
     repo_name: str,
     table=None,
+    *,
+    provider: str = "github",
 ) -> List[str]:
-    """Return every workspace_id that has a GITHUB_REPO row for this repo.
+    """Return every workspace_id that has a repo row for this repo.
 
     A repo can be added to multiple workspaces (rare but supported);
-    all owning workspaces contribute to the "local" retrieval scope
-    for standards checks + README_FRESHNESS.
+    all owning workspaces contribute to the "local" retrieval scope.
 
     Scans the workspaces table filtered on
-    ``SK = GITHUB_REPO#{repo_name}``. Not a hot path (once per PR
-    check per repo); paginated for correctness.
+    ``SK = {SOURCE_SK_PREFIX[provider]}{repo_name}`` (``GITHUB_REPO#``,
+    ``GITLAB_REPO#`` or ``AZDO_REPO#``; ADR-052 provider parity).
+    ``repo_name`` is the provider slug that keys the repo row (GitHub
+    ``owner/repo``, GitLab full project path, ADO ``org/project/repo``).
+    An unknown provider returns [] and logs a warning; it never falls back
+    to the GitHub prefix. Not a hot path (once per PR check per repo);
+    paginated for correctness.
     """
     if not repo_name:
+        return []
+    prefix = SOURCE_SK_PREFIX.get(provider)
+    if prefix is None:
+        logger.warning(
+            "[pr_check_scope] unknown provider %r for repo %s; no repo workspace",
+            provider,
+            repo_name,
+        )
         return []
     if table is None:
         table = _get_dynamodb().Table(_get_workspaces_table_name())
@@ -92,7 +107,7 @@ def find_workspaces_for_repo(
     workspace_ids: List[str] = []
     scan_kwargs = {
         "FilterExpression": "SK = :sk",
-        "ExpressionAttributeValues": {":sk": f"GITHUB_REPO#{repo_name}"},
+        "ExpressionAttributeValues": {":sk": f"{prefix}{repo_name}"},
     }
     while True:
         response = table.scan(**scan_kwargs)
@@ -145,8 +160,8 @@ def list_global_workspace_ids(table=None) -> List[str]:
 
 
 def list_all_workspace_ids(table=None) -> List[str]:
-    """Every workspace in the deployment. Used only by
-    ARCHITECTURAL_DUPLICATION (cross-portfolio similarity)."""
+    """Every workspace in the deployment. Used by process-batch-summary and
+    by the consumer scope when the producer's workspace is ``is_global``."""
     return _list_workspace_ids_by_filter(
         "SK = :sk AND begins_with(PK, :pk_prefix)",
         {":sk": "METADATA", ":pk_prefix": "WS#"},
@@ -204,8 +219,11 @@ def list_workspaces_granting_access(
 def resolve_repo_definition_scope(
     repo_name: str,
     table=None,
+    *,
+    provider: str = "github",
 ) -> List[str]:
-    """The workspace scope a repo's cross-repo references RESOLVE against
+    """The workspace scope a repo may READ: what its cross-repo references
+    RESOLVE against and what its read-scope PR checks retrieve from
     (the REVERSE / consumer-side direction).
 
     ADR-056 §1: the repo's own workspace(s) + every ``is_global`` workspace +
@@ -221,7 +239,7 @@ def resolve_repo_definition_scope(
     if table is None:
         table = _get_dynamodb().Table(_get_workspaces_table_name())
 
-    repo_workspaces = find_workspaces_for_repo(repo_name, table)
+    repo_workspaces = find_workspaces_for_repo(repo_name, table, provider=provider)
     combined: Set[str] = set(repo_workspaces)
     combined.update(list_global_workspace_ids(table))
     combined.update(list_workspaces_granting_access(repo_workspaces, table))
@@ -268,6 +286,8 @@ def _forward_grants(
 def resolve_consumer_query_scope(
     repo_name: str,
     table=None,
+    *,
+    provider: str = "github",
 ) -> List[str]:
     """The workspaces where a producer repo's CONSUMERS may live
     (the FORWARD / producer-side direction).
@@ -286,7 +306,7 @@ def resolve_consumer_query_scope(
     if table is None:
         table = _get_dynamodb().Table(_get_workspaces_table_name())
 
-    repo_workspaces = find_workspaces_for_repo(repo_name, table)
+    repo_workspaces = find_workspaces_for_repo(repo_name, table, provider=provider)
     combined: Set[str] = set(repo_workspaces)
     global_ids = set(list_global_workspace_ids(table))
     combined.update(global_ids)
@@ -302,44 +322,52 @@ def resolve_pr_check_workspace_scope(
     check_type: str,
     repo_name: str,
     table=None,
+    *,
+    provider: str = "github",
 ) -> List[str]:
     """Return the workspace_ids a PR check should retrieve from.
 
     Per-check-type routing:
-    - STANDARDS_CHECKS: repo's workspace(s) + all is_global.
+    - READ_SCOPE_CHECKS (ADR_COMPLIANCE, TEST_COVERAGE, LICENSE_COMPLIANCE,
+      ARCHITECTURAL_DUPLICATION): ``resolve_repo_definition_scope``, i.e.
+      repo's workspace(s) + all is_global + workspaces that shared with them.
+    - BREAKING_CHANGES: ``resolve_consumer_query_scope`` (forward scope).
     - LOCAL_ONLY_CHECKS (README_FRESHNESS): repo's workspace(s) only.
-    - CROSS_PORTFOLIO_CHECKS (ARCHITECTURAL_DUPLICATION): every workspace.
     - Anything unrecognized falls back to LOCAL_ONLY behavior to be
       safe -- broadening on an unknown check_type could leak content
       across scopes.
 
-    Returns a sorted, deduped list.
+    Logs the resolved scope once at INFO. Returns a sorted, deduped list.
     """
     if not check_type:
         return []
     if table is None:
         table = _get_dynamodb().Table(_get_workspaces_table_name())
 
-    if check_type in CROSS_PORTFOLIO_CHECKS:
-        return sorted(list_all_workspace_ids(table))
+    if check_type in READ_SCOPE_CHECKS:
+        # Standards text and duplicate candidates come from whatever the repo's
+        # workspace may read: own + is_global + workspaces that granted it
+        # search access. Never every workspace in the deployment.
+        scope = resolve_repo_definition_scope(repo_name, table, provider=provider)
+    elif check_type == "BREAKING_CHANGES":
+        # BREAKING_CHANGES finds a changed producer's CONSUMERS, which live in
+        # the workspaces that can read the producer (ADR-056 section 5) -- the
+        # FORWARD scope: repo's workspace(s) + the workspaces they granted + all
+        # workspaces if the producer is global. The read (definition) scope
+        # would miss a consumer in a workspace the producer granted, because a
+        # grant is one-directional.
+        scope = resolve_consumer_query_scope(repo_name, table, provider=provider)
+    else:
+        # LOCAL_ONLY_CHECKS + fallback for unknown check types.
+        scope = sorted(
+            set(find_workspaces_for_repo(repo_name, table, provider=provider))
+        )
 
-    # BREAKING_CHANGES finds a changed producer's CONSUMERS, which live in the
-    # workspaces that can read the producer (ADR-056 §5) -- the FORWARD scope:
-    # repo's workspace(s) + the workspaces they granted + all workspaces if the
-    # producer is global. The reverse (definition) scope would miss a consumer in
-    # a workspace the producer granted, because a grant is one-directional. The
-    # other standards checks keep repo + is_global (they retrieve standards TEXT,
-    # not graph edges; forward grants are a producer->consumer notion, not a
-    # whose-ADRs-apply one).
-    if check_type == "BREAKING_CHANGES":
-        return resolve_consumer_query_scope(repo_name, table)
-
-    repo_workspaces = find_workspaces_for_repo(repo_name, table)
-
-    if check_type in STANDARDS_CHECKS:
-        combined: Set[str] = set(repo_workspaces)
-        combined.update(list_global_workspace_ids(table))
-        return sorted(combined)
-
-    # LOCAL_ONLY_CHECKS + fallback for unknown check types.
-    return sorted(set(repo_workspaces))
+    logger.info(
+        "[pr_check_scope] %s scope for %s:%s: %s",
+        check_type,
+        provider,
+        repo_name,
+        scope,
+    )
+    return scope

@@ -24,6 +24,7 @@ from extractor.base import (  # noqa: E402
     SymbolGraphFilter,
     get_extractor,
     is_excluded_path,
+    language_for_path,
     make_symbol_id,
     register_language,
     supported_languages,
@@ -123,6 +124,33 @@ class TestExclusion:
         assert "defines" in FACT_KINDS
         assert "imports" in FACT_KINDS
         assert "calls" in FACT_KINDS
+
+
+class TestLanguageForPath:
+    @pytest.mark.parametrize(
+        "path,expected",
+        [
+            ("lambda/handler.py", "python"),
+            ("ui/src/app.ts", "typescript"),
+            ("ui/src/App.TSX", "typescript"),
+            ("src/Main.java", "java"),
+            ("src/Program.cs", "csharp"),
+            ("cmd/main.go", "go"),
+            ("src/zreport.abap", "abap"),
+        ],
+    )
+    def test_known_extensions(self, path, expected):
+        assert language_for_path(path) == expected
+
+    @pytest.mark.parametrize("path", ["README.md", "main.tf", "Makefile", "lib.pyc"])
+    def test_unknown_extension_returns_none(self, path):
+        assert language_for_path(path) is None
+
+    def test_exported_from_package(self):
+        import extractor
+
+        assert "language_for_path" in extractor.__all__
+        assert extractor.language_for_path("a.go") == "go"
 
 
 class TestRegistry:

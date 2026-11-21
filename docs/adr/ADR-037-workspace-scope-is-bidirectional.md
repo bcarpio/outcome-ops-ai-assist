@@ -89,17 +89,43 @@ bidirectional scope primitive. When true:
 
   | Check | Scope |
   |---|---|
-  | `ADR_COMPLIANCE` | Repo's workspace(s) + all `is_global` |
-  | `TEST_COVERAGE` | Repo's workspace(s) + all `is_global` |
-  | `LICENSE_COMPLIANCE` | Repo's workspace(s) + all `is_global` |
-  | `BREAKING_CHANGES` | Repo's workspace(s) + all `is_global` |
+  | `ADR_COMPLIANCE`, `TEST_COVERAGE`, `LICENSE_COMPLIANCE` | Read scope |
+  | `ARCHITECTURAL_DUPLICATION` | Read scope |
+  | `BREAKING_CHANGES` | Consumer scope (ADR-056 §5) |
   | `README_FRESHNESS` | Repo's workspace(s) only |
-  | `ARCHITECTURAL_DUPLICATION` | Every workspace (feature, not bug) |
 
-  README_FRESHNESS is about *this* repo's README; broadening to
-  org standards would drag in irrelevant docs. ARCHITECTURAL_DUPLICATION
-  is a cross-portfolio similarity check by design — that's the
-  whole point.
+  **Read scope** is the set of workspaces the repo's workspace may read:
+  the repo's workspace(s), plus every `is_global` workspace, plus every
+  workspace that allowed the repo's workspace to search it (that
+  workspace's `search_allowed_workspaces`, set on its Sharing tab).
+  Check types not in the table fall back to the repo's workspace(s)
+  only.
+
+  Why one read scope for every retrieval check (v1.2):
+  - Standards can live in any workspace and come from any connector
+    (Confluence, Git, and so on). An org may publish them in a global
+    workspace, or share a workspace with specific teams. Both must
+    apply to a PR check, so the checks honor `is_global` and sharing
+    the same way chat does.
+  - `ARCHITECTURAL_DUPLICATION` used to scan every workspace in the
+    deployment, which ignored access control: a PR could be compared
+    against content its own workspace has no right to read. It now
+    sees exactly what the repo's workspace may read.
+  - No workspace id is configured or hard-coded anywhere. Scope comes
+    only from workspace rows (`is_global`, `search_allowed_workspaces`,
+    and the repo rows).
+
+  `README_FRESHNESS` is about *this* repo's README; broadening to org
+  standards would drag in irrelevant docs. `BREAKING_CHANGES` asks a
+  different question (who depends on this repo, not what this repo may
+  read), so it uses the consumer direction from ADR-056 §5.
+
+- **Repo lookup is provider-aware.** The repo's workspace(s) are found
+  from the repo row for the PR's code host: GitHub, GitLab, or Azure
+  DevOps, each with its own repo-row key, using the same per-provider
+  keys as the repo-presence helper (ADR-052). A GitLab or Azure DevOps
+  PR finds its own workspace the same way a GitHub PR does, instead of
+  getting only the global workspaces.
 
 - **Precedence on conflict.** When retrieval walks multiple
   workspaces and standards contradict, local (repo's workspace)
@@ -152,14 +178,15 @@ PR-check scope resolution:
 ```python
 # lambda/shared/pr_check_scope.py
 def resolve_pr_check_workspace_scope(
-    check_type: str, repo_name: str,
+    check_type: str, repo_name: str, table=None, *, provider: str = "github",
 ) -> List[str]:
-    if check_type in CROSS_PORTFOLIO_CHECKS:  # ARCHITECTURAL_DUPLICATION
-        return list_all_workspace_ids()
-    repo_workspaces = find_workspaces_for_repo(repo_name)
-    if check_type in STANDARDS_CHECKS:
-        return sorted(set(repo_workspaces) | set(list_global_workspace_ids()))
-    return sorted(set(repo_workspaces))  # README_FRESHNESS + unknown fallback
+    if check_type in READ_SCOPE_CHECKS:
+        # repo ws + is_global + workspaces that shared with the repo ws
+        return resolve_repo_definition_scope(repo_name, table, provider=provider)
+    if check_type == "BREAKING_CHANGES":
+        return resolve_consumer_query_scope(repo_name, table, provider=provider)
+    # README_FRESHNESS + unknown fallback
+    return find_workspaces_for_repo(repo_name, table, provider=provider)
 ```
 
 Retrieval on the query-kb side accepts the resolved list:
@@ -206,10 +233,10 @@ def query_s3_vectors(
 ### Tradeoffs
 
 - **Scan cost on PR-check retrieval.** The scope resolver runs
-  three filtered DynamoDB scans (repo→workspace, is_global set,
-  and — for `ARCHITECTURAL_DUPLICATION` — every workspace) on
-  each check invocation. Not a hot path (once per check per
-  workspace), but at F500 scale (10^3 workspaces × 10^3 checks
+  filtered DynamoDB scans (repo to workspace, the `is_global` set,
+  and, for the read scope, the workspaces that shared with the repo's
+  workspace) on each check invocation. Not a hot path (once per check
+  per workspace), but at F500 scale (10^3 workspaces × 10^3 checks
   per day) this warrants a follow-up to add a GSI on `is_global`
   and cache the repo→workspace lookup.
 - **Global membership grants broad read.** Members of an
@@ -219,11 +246,12 @@ def query_s3_vectors(
   visibility (Jira/ServiceNow/wiki). For the rare org that
   wants to restrict, the escape hatch is (a) don't grant
   membership casually, and (b) v2 `content_only` sub-flag.
-- **`ARCHITECTURAL_DUPLICATION`'s "every workspace" scope**
-  grows linearly with the deployment. At current customer scale
-  (≤ 100 workspaces) this is fine; at 10^4 workspaces a
-  `max_workspaces` cap or index sharding becomes necessary.
-  Deferred as backlog.
+- **`ARCHITECTURAL_DUPLICATION` no longer sees every workspace.**
+  Since v1.2 it is bounded by the read scope, so duplication in a
+  workspace that neither is global nor shared with the repo's
+  workspace is not reported. That is the access-control boundary
+  working as intended; an org that wants a cross-portfolio view
+  marks the relevant workspaces global or shares them.
 - **Bidirectionality is a coarse primitive.** The Fortune 500
   three-tier model (Enterprise → Org → Team) flattens to
   two-tier (global vs local). Enterprise gets `is_global=true`
@@ -332,5 +360,11 @@ Version History:
   honor `is_global` (fourth per-surface fix). Covers all 8
   symbol-graph tools plus `read_source` and
   `list_workspace_documents`.
+- v1.2 (2026-11-21): PR retrieval checks (`ADR_COMPLIANCE`,
+  `TEST_COVERAGE`, `LICENSE_COMPLIANCE`, `ARCHITECTURAL_DUPLICATION`)
+  use the read scope (repo workspace(s) + `is_global` + workspaces
+  shared with the repo's workspace). `ARCHITECTURAL_DUPLICATION` no
+  longer scans every workspace. Repo-to-workspace lookup is
+  provider-aware (GitHub, GitLab, Azure DevOps).
 
 <!-- Confluence sync -->

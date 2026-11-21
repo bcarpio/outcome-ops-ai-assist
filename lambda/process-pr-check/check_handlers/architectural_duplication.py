@@ -711,13 +711,13 @@ def check_architectural_duplication(
                 file_diffs[file] = "(Diff unavailable)"
 
         # Attribute PR-analyzer Bedrock spend to the PR repo's OWNING workspace
-        # (the first GITHUB_REPO owner), NOT the cross-portfolio retrieval scope
-        # (every workspace) resolved below -- that would massively over-count.
+        # (the first repo-row owner for this provider), NOT the retrieval scope
+        # resolved below (which spans every workspace the repo can read).
         # Fail-soft: "" -> WS#SYSTEM (unattributed) rather than breaking the check.
         owning_ws = ""
         try:
             from shared.pr_check_scope import find_workspaces_for_repo
-            owning_ws = (sorted(find_workspaces_for_repo(repository)) or [""])[0]
+            owning_ws = (sorted(find_workspaces_for_repo(repository, provider=provider)) or [""])[0]
         except Exception as ws_exc:
             logger.warning(
                 f"Could not resolve owning workspace for spend attribution: "
@@ -731,15 +731,16 @@ def check_architectural_duplication(
         search_queries = extract_functional_keywords(pr_summary, file_diffs, usage_tracker, workspace_id=owning_ws)
         logger.info(f"Generated {len(search_queries)} search queries: {search_queries}")
 
-        # Resolve per-check retrieval scope. ARCHITECTURAL_DUPLICATION
-        # is a cross-portfolio similarity check -- scope covers every
-        # workspace in the deployment. Fail-soft: falls back to
-        # workspace-blind on any error.
+        # Resolve per-check retrieval scope: the repo's read scope (its
+        # own workspace(s), every is_global workspace, and every workspace
+        # that shares with it). Fail-soft: falls back to workspace-blind
+        # on any error.
         scope_workspace_ids: Optional[List[str]] = None
         try:
             from shared.pr_check_scope import resolve_pr_check_workspace_scope
             scope_workspace_ids = resolve_pr_check_workspace_scope(
                 check_type=check_type, repo_name=repository,
+                provider=provider,
             )
         except Exception as scope_exc:
             logger.warning(

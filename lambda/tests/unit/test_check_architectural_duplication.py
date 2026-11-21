@@ -730,3 +730,54 @@ class TestSelfReferenceFilter:
         )
 
         assert result["status"] == "PASS"
+
+
+# --- Provider passthrough to the scope resolver (ADR-052 provider parity) ---
+
+from contextlib import ExitStack  # noqa: E402
+
+
+@pytest.mark.parametrize("provider,repository,ado_kwargs", [
+    ("gitlab", "group/sub/project", {}),
+    ("azure_devops", "org/project/repo",
+     {"ado_org": "org", "ado_project": "project", "ado_repo": "repo"}),
+])
+def test_arch_dup_passes_provider_to_scope_resolvers(provider, repository, ado_kwargs):
+    with ExitStack() as stack:
+        stack.enter_context(patch(
+            'shared.pr_metadata.fetch_pr_metadata',
+            return_value=MagicMock(base_sha="b", head_sha="h"),
+        ))
+        if provider == "gitlab":
+            stack.enter_context(patch('check_handlers.gitlab_context.get_gitlab_token', return_value="gl"))
+            stack.enter_context(patch('check_handlers.gitlab_context.get_gitlab_base_url', return_value="https://gl"))
+        else:
+            stack.enter_context(patch('check_handlers.ado_context.refresh_ado_token', return_value="ado"))
+        scope = stack.enter_context(patch(
+            'shared.pr_check_scope.resolve_pr_check_workspace_scope', return_value=["ws-a", "ws-b"],
+        ))
+        owners = stack.enter_context(patch(
+            'shared.pr_check_scope.find_workspaces_for_repo', return_value=["ws-a"],
+        ))
+        stack.enter_context(patch.object(handler_module, '_fetch_arch_dup_file_diff', return_value="+x"))
+        summarize = stack.enter_context(patch.object(handler_module, 'summarize_pr_with_claude', return_value="does x"))
+        stack.enter_context(patch.object(handler_module, 'extract_functional_keywords', return_value=["x"]))
+        kb = stack.enter_context(patch.object(
+            handler_module, 'query_knowledge_base', return_value={"answer": "", "sources": []},
+        ))
+        stack.enter_context(patch.object(
+            handler_module, 'analyze_similarity_with_claude',
+            return_value={"hasSimilar": False, "findings": []},
+        ))
+        result = check_architectural_duplication(
+            "ARCHITECTURAL_DUPLICATION", 1, repository, ["lambda/x/handler.py"], "qkb", "/p",
+            provider=provider, connection_id="c", **ado_kwargs,
+        )
+
+    assert result["status"] == "PASS"
+    scope.assert_called_once_with(
+        check_type="ARCHITECTURAL_DUPLICATION", repo_name=repository, provider=provider,
+    )
+    owners.assert_called_once_with(repository, provider=provider)
+    assert kb.call_args.kwargs["workspace_ids"] == ["ws-a", "ws-b"]
+    assert summarize.call_args.kwargs["workspace_id"] == "ws-a"

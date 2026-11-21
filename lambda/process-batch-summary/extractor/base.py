@@ -202,6 +202,28 @@ def is_excluded_path(file_path: str) -> bool:
     return False
 
 
+# Map a repo-relative file path to the symbol-graph extractor language.
+# Returns ``None`` when the extension is unknown. Callers treat the
+# extractor pass as best-effort and silently skip any unrecognized file.
+LANGUAGE_BY_EXT: Dict[str, str] = {
+    ".py": "python",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".java": "java",
+    ".cs": "csharp",
+    ".go": "go",
+    ".abap": "abap",
+}
+
+
+def language_for_path(file_path: str) -> Optional[str]:
+    lower = file_path.lower()
+    for suffix, language in LANGUAGE_BY_EXT.items():
+        if lower.endswith(suffix):
+            return language
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Language registry
 # ---------------------------------------------------------------------------

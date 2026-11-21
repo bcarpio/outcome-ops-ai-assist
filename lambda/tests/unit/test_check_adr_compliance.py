@@ -520,3 +520,75 @@ def test_extract_adr_json_plain_and_fenced():
     assert _extract_adr_json(fenced)["compliant"] is True
     # A response with only prose braces and no compliant-object returns None.
     assert _extract_adr_json('see `{"foo": 1}` for details') is None
+
+
+# --- Provider passthrough to the scope resolver (ADR-052 provider parity) ---
+
+from contextlib import ExitStack  # noqa: E402
+
+_PROVIDER_JOBS = [
+    ("gitlab", "group/sub/project", {}),
+    ("azure_devops", "org/project/repo",
+     {"ado_org": "org", "ado_project": "project", "ado_repo": "repo"}),
+]
+
+
+def _enter_provider_auth(stack, provider, module):
+    stack.enter_context(patch(
+        'shared.pr_metadata.fetch_pr_metadata',
+        return_value=MagicMock(base_sha="b", head_sha="h"),
+    ))
+    if provider == "gitlab":
+        stack.enter_context(patch('check_handlers.gitlab_context.get_gitlab_token', return_value="gl"))
+        stack.enter_context(patch('check_handlers.gitlab_context.get_gitlab_base_url', return_value="https://gl"))
+    else:
+        stack.enter_context(patch.object(module, 'refresh_ado_token', return_value="ado"))
+
+
+@pytest.mark.parametrize("provider,repository,ado_kwargs", _PROVIDER_JOBS)
+def test_adr_compliance_passes_provider_to_scope_resolvers(provider, repository, ado_kwargs):
+    empty = {"status": "PASS", "message": "", "details": [], "findings": []}
+    with ExitStack() as stack:
+        _enter_provider_auth(stack, provider, handler_module)
+        scope = stack.enter_context(patch(
+            'shared.pr_check_scope.resolve_pr_check_workspace_scope', return_value=["ws-a"],
+        ))
+        owners = stack.enter_context(patch(
+            'shared.pr_check_scope.find_workspaces_for_repo', return_value=["ws-a"],
+        ))
+        lam = stack.enter_context(patch.object(handler_module, 'analyze_lambda_handlers', return_value=empty))
+        stack.enter_context(patch.object(handler_module, 'analyze_terraform_files', return_value=empty))
+        result = check_adr_compliance(
+            "ADR_COMPLIANCE", 1, repository, ["lambda/x/handler.py"], "qkb", "/p",
+            provider=provider, connection_id="c", **ado_kwargs,
+        )
+
+    assert result["status"] == "PASS"
+    scope.assert_called_once_with(
+        check_type="ADR_COMPLIANCE", repo_name=repository, provider=provider,
+    )
+    owners.assert_called_once_with(repository, provider=provider)
+    assert lam.call_args.kwargs["workspace_ids"] == ["ws-a"]
+    assert lam.call_args.kwargs["workspace_id"] == "ws-a"
+
+
+def test_adr_compliance_scope_resolver_failure_falls_back_workspace_blind():
+    empty = {"status": "PASS", "message": "", "details": [], "findings": []}
+    with ExitStack() as stack:
+        _enter_provider_auth(stack, "gitlab", handler_module)
+        stack.enter_context(patch(
+            'shared.pr_check_scope.resolve_pr_check_workspace_scope', side_effect=RuntimeError("ddb"),
+        ))
+        stack.enter_context(patch(
+            'shared.pr_check_scope.find_workspaces_for_repo', side_effect=RuntimeError("ddb"),
+        ))
+        lam = stack.enter_context(patch.object(handler_module, 'analyze_lambda_handlers', return_value=empty))
+        stack.enter_context(patch.object(handler_module, 'analyze_terraform_files', return_value=empty))
+        result = check_adr_compliance(
+            "ADR_COMPLIANCE", 1, "group/project", ["lambda/x/handler.py"], "qkb", "/p",
+            provider="gitlab", connection_id="c",
+        )
+
+    assert result["status"] == "PASS"
+    assert lam.call_args.kwargs["workspace_ids"] is None
+    assert lam.call_args.kwargs["workspace_id"] == ""

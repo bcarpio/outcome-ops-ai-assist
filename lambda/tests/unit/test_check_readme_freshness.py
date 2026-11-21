@@ -806,3 +806,24 @@ class TestPRSource:
                 github_token_param="/p", connection_id=None,
                 ado_org=None, ado_project=None, ado_repo=None,
             )
+
+
+# --- Provider passthrough to the owning-workspace lookup (ADR-052 parity) ---
+
+@pytest.mark.parametrize("provider,repository", [
+    ("gitlab", "group/sub/project"),
+    ("azure_devops", "org/project/repo"),
+])
+def test_readme_freshness_passes_provider_to_owning_workspace_lookup(provider, repository):
+    source = MagicMock()
+    source.file_at.return_value = None  # no .outcomeops.yaml: default doc locations
+    source.file_diffs.return_value = {}
+    with patch.object(handler_module, '_PRSource', return_value=source), \
+         patch('shared.pr_check_scope.find_workspaces_for_repo', return_value=["ws-a"]) as owners:
+        result = check_readme_freshness(
+            "README_FRESHNESS", 1, repository, ["terraform/main.tf", "README.md"], "/p",
+            provider=provider, connection_id="c",
+        )
+
+    assert result["status"] == "PASS"
+    owners.assert_called_once_with(repository, provider=provider)

@@ -7,6 +7,7 @@ Public surface:
 
     extract_facts(file_path, language) -> Iterator[Fact]
     extract_facts_from_bytes(file_path, language, source) -> Iterator[Fact]
+    language_for_path(file_path) -> Optional[str]
 
 Importing this package registers every per-language extractor (Python,
 TypeScript/TSX, Java, C#, Go, ABAP) via the side-effect dispatch table
@@ -31,6 +32,7 @@ from .base import (
     SymbolGraphFilter,
     get_extractor,
     is_excluded_path,
+    language_for_path,
     make_symbol_id,
     supported_languages,
 )
@@ -64,6 +66,7 @@ __all__ = [
     "extract_facts",
     "extract_facts_from_bytes",
     "is_excluded_path",
+    "language_for_path",
     "make_symbol_id",
     "resolve_repo_facts",
     "supported_languages",
