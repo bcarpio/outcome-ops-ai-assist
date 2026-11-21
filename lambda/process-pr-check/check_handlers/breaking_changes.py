@@ -511,6 +511,21 @@ def symbol_graph_consumers(
             )
             undetermined.append(file_path)
 
+    # A file that calls the symbol always imports it too, so its importer
+    # edge says nothing the caller edge does not: report it once, as the
+    # caller. An importer with no call site in that file (re-export, passed
+    # as a value) stays.
+    calling_files = {
+        (c["changed_symbol_id"], c["consumer_repo"], c["consumer_file"])
+        for c in consumers if c["relation"] == "caller"
+    }
+    consumers = [
+        c for c in consumers
+        if c["relation"] != "importer"
+        or (c["changed_symbol_id"], c["consumer_repo"], c["consumer_file"])
+        not in calling_files
+    ]
+
     return consumers, undetermined
 
 
@@ -853,6 +868,9 @@ def check_breaking_changes(
             # One verdict: plane 1 is about to WARN, so drop the plane-2 PASS
             # wording that would otherwise sit next to it.
             details[:] = [d for d in details if d not in _PLANE2_PASS_LINES]
+            # Drop the blank separators the removed lines leave behind.
+            while details and details[-1] == "":
+                details.pop()
 
         if plane1_consumers:
             status = "WARN"

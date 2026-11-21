@@ -35,6 +35,7 @@ import requests
 # Make shared/ importable when running as a Lambda; the deploy package
 # includes lambda/shared/ at zip root via terraform source_path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.audit import ADVANCED_PRICING, BASIC_PRICING
 from shared.audit_writer import ACTION_PR_ANALYZED, log_admin_action
 from shared import dual_write
 import yaml
@@ -771,22 +772,44 @@ def _upsert_gitlab_comment(
 _SUMMARY_MAX_DIFF_FILES = int(os.environ.get("PR_SUMMARY_MAX_DIFF_FILES", "12"))
 
 
-def _render_summary_footer(usage, tier: str) -> str:
-    """Collapsed token-usage footer for the summary comment (ADR-016).
+# Display name + per-1M-token pricing per model tier. Pricing comes from the
+# same tfvars-driven BEDROCK_*_PRICE env vars (via shared.audit) that every PR
+# check's usage block uses, so the summary's cost matches theirs.
+_TIER_DISPLAY = {
+    "advanced": ("Advanced Model", ADVANCED_PRICING),
+    "basic": ("Basic Model", BASIC_PRICING),
+}
 
-    ``tier`` is reported as-is (the builder owns the tier choice); it is never
-    hardcoded here so a tfvar model swap stays accurately labelled. Returns an
-    empty string when the model call failed (usage is None) so the summary still
-    posts without a misleading zero-cost footer.
+
+def _render_summary_footer(usage, tier: str) -> str:
+    """Collapsed usage footer for the summary comment (ADR-016).
+
+    Same Model / Tokens / Cost lines as the PR check comments. ``tier`` is
+    reported as-is (the builder owns the tier choice); it is never hardcoded
+    here so a tfvar model swap stays accurately labelled. Returns an empty
+    string when the model call failed (usage is None) so the summary still
+    posts without a misleading zero-cost footer. An unknown tier is shown by
+    name with no cost line rather than a made-up price.
     """
     if usage is None:
         return ""
+    total = usage.input_tokens + usage.output_tokens
+    display, pricing = _TIER_DISPLAY.get(tier, (tier, None))
+    lines = [
+        f"Model: {display}",
+        f"Tokens: {usage.input_tokens:,} input + {usage.output_tokens:,} output"
+        f" = {total:,} total",
+    ]
+    if pricing is not None:
+        cost = (
+            usage.input_tokens / 1_000_000 * pricing["input"]
+            + usage.output_tokens / 1_000_000 * pricing["output"]
+        )
+        lines.append(f"Cost: ${cost:.4f}")
     return (
         "\n\n<details>\n<summary>Usage</summary>\n\n"
-        f"- model tier: {tier} (pr-analyzer workload)\n"
-        f"- input tokens: {usage.input_tokens}\n"
-        f"- output tokens: {usage.output_tokens}\n"
-        "</details>"
+        + "\n\n".join(lines)
+        + "\n\n</details>"
     )
 
 

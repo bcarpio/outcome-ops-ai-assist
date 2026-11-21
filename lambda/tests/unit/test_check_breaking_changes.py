@@ -647,6 +647,35 @@ class TestSymbolGraphConsumers:
             "lambda/x/handler.py", "lambda/y/handler.py"}
         assert all(c["changed_symbol_id"] == "pkg.mod::func" for c in consumers)
 
+    def test_importer_in_a_calling_file_is_reported_once_as_caller(self):
+        """A file that calls the symbol also imports it; report that file once
+        (as the caller), not twice. An import-only file is still reported."""
+        fake = self._FakeSGR(
+            at_line=SimpleNamespace(target_symbol_id="pkg.mod::func"),
+            callers_result=SimpleNamespace(
+                sites=[SimpleNamespace(repo="myrepo",
+                                       file_path="lambda/x/handler.py",
+                                       line=42, source_symbol_id="x::f")],
+                complete=True),
+            importers_result=SimpleNamespace(
+                sites=[SimpleNamespace(repo="myrepo",
+                                       file_path="lambda/x/handler.py",
+                                       line=3, source_symbol_id="x"),
+                       SimpleNamespace(repo="myrepo",
+                                       file_path="lambda/y/reexport.py",
+                                       line=5, source_symbol_id="y")],
+                complete=True),
+        )
+        consumers, _ = symbol_graph_consumers(
+            ["ws1"], "myrepo",
+            {"lambda/shared/mod.py": [_blk(removed=(10,), head=10)]},
+            reader=fake)
+
+        assert sorted((c["relation"], c["consumer_file"]) for c in consumers) == [
+            ("caller", "lambda/x/handler.py"),
+            ("importer", "lambda/y/reexport.py"),
+        ]
+
     def test_distinct_symbols_get_their_own_changed_line(self):
         """Two changed lines resolving different symbols -> each consumer finding
         carries the line that resolved its symbol (not the file's first line)."""

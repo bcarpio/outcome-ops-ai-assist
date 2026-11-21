@@ -274,7 +274,9 @@ Examples:
         response_text, usage = call_bedrock(
             prompt=prompt,
             model_id=SONNET_MODEL_ID,
-            max_tokens=500,
+            # Headroom for models that think before the JSON: at 500 a
+            # Claude 5.x response was cut off mid-object and never parsed.
+            max_tokens=2000,
             temperature=0.1,
             workspace_id=workspace_id
         )
@@ -306,13 +308,11 @@ Examples:
             logger.error(f"Attempted to parse: {json_text}")
             logger.error(f"Parse error: {e}")
 
-            # Fallback: try to extract explanation from text
-            adequate = "adequate" in response_text.lower() and "true" in response_text.lower()
-
-            return {
-                "adequate": adequate,
-                "explanation": "Could not parse analysis response"
-            }
+            # Never guess a verdict from fragments: a truncated
+            # '{"adequate": false, ...' contains both "adequate" and "true"
+            # only by accident, and a PASS here hides missing docs. Raise so
+            # the check reports "could not verify" (manual review).
+            raise ValueError("Could not parse documentation analysis response") from e
 
     except Exception as e:
         logger.error(f"Error calling Claude for README analysis: {e}")

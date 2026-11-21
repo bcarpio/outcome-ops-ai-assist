@@ -54,10 +54,32 @@ def test_footer_reports_tokens_and_tier():
     # The tier is passed in (from pr_summary.SUMMARY_MODEL_TIER), never hardcoded,
     # so a tfvar model swap stays accurately labelled.
     footer = _handler_module._render_summary_footer(_Usage(13, 27), "advanced")
-    assert "input tokens: 13" in footer
-    assert "output tokens: 27" in footer
-    assert "advanced (pr-analyzer workload)" in footer
+    assert "Model: Advanced Model" in footer
+    assert "Tokens: 13 input + 27 output = 40 total" in footer
     assert "<details>" in footer
+
+
+def test_footer_reports_cost_from_tier_pricing(monkeypatch):
+    # Same tfvars-driven pricing the PR checks use; 1M in + 1M out at
+    # $3 / $15 is $18.
+    monkeypatch.setitem(_handler_module._TIER_DISPLAY, "advanced",
+                        ("Advanced Model", {"input": 3.0, "output": 15.0}))
+    footer = _handler_module._render_summary_footer(
+        _Usage(1_000_000, 1_000_000), "advanced")
+    assert "Cost: $18.0000" in footer
+    assert "Tokens: 1,000,000 input + 1,000,000 output = 2,000,000 total" in footer
+
+
+def test_footer_basic_tier_named_and_priced():
+    footer = _handler_module._render_summary_footer(_Usage(10, 10), "basic")
+    assert "Model: Basic Model" in footer
+    assert "Cost: $" in footer
+
+
+def test_footer_unknown_tier_has_no_cost_line():
+    footer = _handler_module._render_summary_footer(_Usage(10, 10), "mystery")
+    assert "Model: mystery" in footer
+    assert "Cost:" not in footer
 
 
 # --------------------------------------------------------------------------- #
@@ -180,12 +202,12 @@ def test_store_deferred_ado_summary_writes_body_and_expected_set(monkeypatch):
     monkeypatch.setattr(_handler_module, "dynamodb", _DDB())
     _handler_module._store_deferred_ado_summary(
         pk="PR#azure_devops#bcarpio/OutcomeOps/repo#4",
-        body="## PR summary\n\nprose\n\n**Checks queued:** ADR_COMPLIANCE",
+        body="## PR Summary\n\nprose\n\n**Checks queued:** ADR_COMPLIANCE",
         expected_checks=["ADR_COMPLIANCE", "LICENSE_COMPLIANCE"],
     )
     item = captured["item"]
     assert item["PK"] == "PR#azure_devops#bcarpio/OutcomeOps/repo#4"
     assert item["SK"] == _handler_module.DEFERRED_SUMMARY_SK
-    assert item["summaryBody"].startswith("## PR summary")
+    assert item["summaryBody"].startswith("## PR Summary")
     # Stored as a DynamoDB String Set the fan-in matches completion against.
     assert item["expectedChecks"] == {"ADR_COMPLIANCE", "LICENSE_COMPLIANCE"}

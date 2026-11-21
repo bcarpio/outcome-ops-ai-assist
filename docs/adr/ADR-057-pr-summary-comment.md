@@ -137,7 +137,7 @@ markdown, usage = build_pr_summary(
 ```
 
 ```
-## PR summary
+## PR Summary
 
 <model prose: one concise paragraph on what the diff does; no counts, no file list>
 
@@ -146,7 +146,7 @@ markdown, usage = build_pr_summary(
 > Note: diffs for N file(s) were too large to include, so the summary above
 > may not cover them.          <- only when some diff was capped; N is code-computed
 
-<details><summary>Usage</summary> model tier / input+output tokens </details>
+<details><summary>Usage</summary> Model / Tokens / Cost, same lines as the PR checks </details>
 ```
 
 ## Consequences
