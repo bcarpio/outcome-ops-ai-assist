@@ -640,3 +640,139 @@ def test_license_compliance_passes_provider_to_scope_resolvers(provider, reposit
     )
     owners.assert_called_once_with(repository, provider=provider)
     assert kb.call_args.kwargs["workspace_ids"] == ["ws-a"]
+
+
+license_scan_text = license_module.license_scan_text
+is_deleted_file = license_module.is_deleted_file
+extract_file_diff_from_full_diff = license_module.extract_file_diff_from_full_diff
+
+
+class TestLicenseScanScope:
+    """Only text the PR adds is scanned; Markdown only in code blocks."""
+
+    def test_removed_lines_are_not_scanned(self):
+        diff = "@@ -1,2 +1,1 @@\n-# GNU Affero General Public License\n def handler():\n"
+        assert "Affero" not in license_scan_text("lambda/x/handler.py", diff)
+
+    def test_added_source_lines_are_scanned(self):
+        diff = "@@ -0,0 +1,1 @@\n+# GNU General Public License v3\n"
+        assert "General Public License" in license_scan_text("src/a.py", diff)
+
+    def test_markdown_prose_is_not_scanned(self):
+        diff = "@@ -0,0 +1,2 @@\n+Prohibited: GPL, AGPL and SSPL.\n+Allowed: MIT.\n"
+        assert license_scan_text("docs/policy.md", diff) == ""
+
+    def test_markdown_added_code_block_is_scanned(self):
+        diff = (
+            "@@ -0,0 +1,4 @@\n+Intro\n+```python\n"
+            "+# GNU General Public License v3\n+```\n"
+        )
+        text = license_scan_text("docs/example.md", diff)
+        assert "General Public License" in text
+        assert "Intro" not in text
+
+    def test_markdown_fence_opened_by_context_line(self):
+        diff = "@@ -1,2 +1,3 @@\n ```\n+# GNU Affero General Public License\n ```\n"
+        assert "Affero" in license_scan_text("README.md", diff)
+
+    def test_fence_state_resets_per_hunk(self):
+        diff = "@@ -1,1 +1,2 @@\n ```\n+code\n@@ -9,0 +10,1 @@\n+AGPL in prose\n"
+        assert license_scan_text("README.md", diff) == "code"
+
+    def test_diff_metadata_is_ignored(self):
+        diff = "diff --git a/a.py b/a.py\nindex 1..2\n--- a/a.py\n+++ b/a.py\n@@ -0,0 +1 @@\n+x = 1\n"
+        assert license_scan_text("a.py", diff) == "x = 1"
+
+    def test_is_deleted_file(self):
+        assert is_deleted_file("diff --git a/x b/x\ndeleted file mode 100644\n")
+        assert not is_deleted_file("diff --git a/x b/x\nnew file mode 100644\n")
+
+    def test_full_diff_extraction_matches_exact_path(self):
+        full = (
+            "diff --git a/.github/docs/backlog.md b/.github/docs/backlog.md\n+template\n"
+            "diff --git a/docs/backlog.md b/docs/backlog.md\n-old AGPL text\n"
+        )
+        out = extract_file_diff_from_full_diff(full, "docs/backlog.md")
+        assert "old AGPL text" in out and "template" not in out
+
+
+class TestLicenseCheckSkipsOutOfScope:
+    """End to end: a docs PR that deletes a license-policy file passes."""
+
+    def _run(self, diffs, claude_status="PASS"):
+        with patch('license_compliance_handler.get_github_token', return_value="t"), \
+             patch('license_compliance_handler.query_knowledge_base',
+                   return_value={"answer": "GPL/AGPL/SSPL prohibited", "sources": []}), \
+             patch('license_compliance_handler.fetch_pr_file_diff',
+                   side_effect=lambda repo, pr, path, tok: diffs[path]), \
+             patch('license_compliance_handler.analyze_with_claude',
+                   return_value={"status": claude_status,
+                                 "explanation": "No prohibited licenses detected",
+                                 "suggestions": []}) as mock_claude:
+            result = check_license_compliance(
+                check_type="LICENSE_COMPLIANCE", pr_number=46,
+                repository="owner/repo", changed_files=list(diffs),
+                query_kb_lambda_name="query-kb",
+                github_token_param="/dev/app/github/token",
+            )
+        return result, mock_claude
+
+    def test_deleted_and_prose_only_markdown_are_skipped(self):
+        diffs = {
+            "docs/backlog.md": "diff --git a/docs/backlog.md b/docs/backlog.md\n"
+                               "deleted file mode 100644\n@@ -1 +0,0 @@\n-AGPL and SSPL\n",
+            "CONTRIBUTING.md": "@@ -1 +1,2 @@\n line\n+Never use GPL code.\n",
+            "lambda/x/handler.py": "@@ -1 +1 @@\n-'''old'''\n+'''new'''\n",
+        }
+        result, mock_claude = self._run(diffs)
+        assert result["status"] == "PASS"
+        assert mock_claude.call_count == 1  # only the .py file
+        assert result["message"] == "All 1 scanned file(s) passed license compliance"
+        joined = "\n".join(result["details"])
+        assert "Not scanned" in joined
+        assert "`docs/backlog.md`" in joined and "`CONTRIBUTING.md`" in joined
+
+    def test_fail_count_counts_failed_files_not_explanations(self):
+        diffs = {
+            "a.py": "@@ -0,0 +1 @@\n+# GNU General Public License v3\n",
+            "b.py": "@@ -0,0 +1 @@\n+x = 1\n",
+        }
+        results = iter([
+            {"status": "FAIL", "explanation": "GPL detected", "suggestions": []},
+            {"status": "PASS", "explanation": "No prohibited licenses detected", "suggestions": []},
+        ])
+        with patch('license_compliance_handler.get_github_token', return_value="t"), \
+             patch('license_compliance_handler.query_knowledge_base',
+                   return_value={"answer": "policy", "sources": []}), \
+             patch('license_compliance_handler.fetch_pr_file_diff',
+                   side_effect=lambda repo, pr, path, tok: diffs[path]), \
+             patch('license_compliance_handler.analyze_with_claude',
+                   side_effect=lambda *a, **k: next(results)):
+            result = check_license_compliance(
+                check_type="LICENSE_COMPLIANCE", pr_number=1,
+                repository="owner/repo", changed_files=["a.py", "b.py"],
+                query_kb_lambda_name="query-kb",
+                github_token_param="/dev/app/github/token",
+            )
+        assert result["status"] == "FAIL"
+        assert result["message"] == "Prohibited licenses detected in 1 file(s)"
+
+
+class TestDiffHeaderMarkers:
+    """New/deleted markers come from the git header, never from file content."""
+
+    def test_added_code_mentioning_deleted_file_mode_is_not_deleted(self):
+        diff = (
+            "diff --git a/x.py b/x.py\nindex 1..2 100644\n@@ -1 +1,2 @@\n"
+            " a = 1\n+    return \"deleted file mode\" in file_diff\n"
+        )
+        assert is_deleted_file(diff) is False
+        assert "deleted file mode" in license_scan_text("x.py", diff)
+
+    def test_added_code_mentioning_new_file_mode_is_not_new(self):
+        diff = "diff --git a/x.py b/x.py\n@@ -1 +1,2 @@\n a\n+'new file mode'\n"
+        assert is_new_file(diff) is False
+
+    def test_header_markers_detected(self):
+        assert is_new_file("diff --git a/x b/x\nnew file mode 100644\n@@ -0,0 +1 @@\n+a\n")
+        assert is_deleted_file("diff --git a/x b/x\ndeleted file mode 100644\n@@ -1 +0,0 @@\n-a\n")

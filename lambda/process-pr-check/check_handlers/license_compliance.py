@@ -161,7 +161,9 @@ def extract_file_diff_from_full_diff(full_diff: str, file_path: str) -> str:
     capturing = False
 
     for line in lines:
-        if line.startswith("diff --git") and file_path in line:
+        # Exact header match: a substring test would let "docs/backlog.md"
+        # capture ".github/ISSUE_TEMPLATE/docs/backlog.md" and similar.
+        if line.startswith("diff --git") and line.endswith(f" b/{file_path}"):
             capturing = True
             file_diff_lines.append(line)
         elif capturing and line.startswith("diff --git"):
@@ -595,6 +597,61 @@ def detect_license_patterns(text: str) -> Dict[str, List[str]]:
     return findings
 
 
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+
+
+def _diff_header_has(file_diff: str, marker: str) -> bool:
+    """True when a git header line (before the first hunk) starts with ``marker``.
+
+    Searching the whole diff is wrong: a file whose added code contains the
+    text "deleted file mode" would be read as deleted.
+    """
+    for line in file_diff.split("\n"):
+        if line.startswith("@@"):
+            return False
+        if line.startswith(marker):
+            return True
+    return False
+
+
+def is_deleted_file(file_diff: str) -> bool:
+    """True when the diff removes the whole file (it can add no license text)."""
+    return _diff_header_has(file_diff, "deleted file mode")
+
+
+def license_scan_text(file_path: str, file_diff: str) -> str:
+    """The text a PR adds that license detection should scan.
+
+    Only ADDED lines count: removing license text (or deleting a file that
+    mentions a license) can never introduce one. For Markdown, only added
+    lines inside fenced code blocks count (ADR-008 scans code blocks, not
+    prose), so a doc that merely names a prohibited license is not a finding. Fence
+    state is tracked over the head side of each hunk (context and added
+    lines) and resets at every hunk header.
+    """
+    is_markdown = file_path.lower().endswith(".md")
+    picked: List[str] = []
+    in_fence = False
+    for line in file_diff.split("\n"):
+        if line.startswith("@@"):
+            in_fence = False
+            continue
+        if line.startswith(("+++", "---", "diff --git", "index ")):
+            continue
+        if line.startswith("+"):
+            body, added = line[1:], True
+        elif line.startswith(" "):
+            body, added = line[1:], False
+        else:
+            continue  # removed line or diff metadata
+        if is_markdown and _FENCE_RE.match(body):
+            in_fence = not in_fence
+            continue
+        if added and (in_fence or not is_markdown):
+            picked.append(body)
+    return "\n".join(picked)
+
+
 def check_copyright_header(file_diff: str) -> bool:
     """
     Check if new file has copyright header.
@@ -645,8 +702,7 @@ def is_source_file(file_path: str) -> bool:
 
 def is_new_file(file_diff: str) -> bool:
     """Check if file is newly added (not just modified)."""
-    # New files have "new file mode" in diff
-    return "new file mode" in file_diff
+    return _diff_header_has(file_diff, "new file mode")
 
 
 def analyze_with_claude(
@@ -774,8 +830,11 @@ def analyze_file_comprehensive(
 
     Returns combined analysis with status and explanation.
     """
-    # Phase 1: License header detection (always run)
-    license_findings = detect_license_patterns(file_diff)
+    # Phase 1: License header detection (always run). Only text the PR
+    # adds is scanned; Markdown contributes only its added code blocks.
+    license_findings = detect_license_patterns(
+        license_scan_text(file_path, file_diff)
+    )
     is_new = is_new_file(file_diff)
     has_copyright = check_copyright_header(file_diff)
 
@@ -984,6 +1043,8 @@ def check_license_compliance(
     file_analyses = {}  # Group files by issue type
     overall_status = "PASS"
     phase2_count = 0
+    fail_count = 0
+    skipped_files: List[str] = []
 
     for file_path in source_files:
         try:
@@ -1004,6 +1065,17 @@ def check_license_compliance(
                 head_sha=head_sha,
             )
 
+            # A deleted file adds nothing, and a Markdown file whose change
+            # adds no code-block lines has nothing in scope (ADR-008): no
+            # model call, nothing to report.
+            if is_deleted_file(file_diff) or (
+                file_path.lower().endswith(".md")
+                and not license_scan_text(file_path, file_diff).strip()
+            ):
+                skipped_files.append(file_path)
+                logger.info(f"File {file_path}: skipped (no added license-scoped content)")
+                continue
+
             # Comprehensive analysis (Phase 1 + Phase 2)
             is_ai_generated = file_path in ai_generated_files
             analysis = analyze_file_comprehensive(
@@ -1021,6 +1093,7 @@ def check_license_compliance(
             # Track overall status (FAIL > WARN > PASS)
             if analysis["status"] == "FAIL":
                 overall_status = "FAIL"
+                fail_count += 1
             elif analysis["status"] == "WARN" and overall_status != "FAIL":
                 overall_status = "WARN"
 
@@ -1049,14 +1122,22 @@ def check_license_compliance(
             file_results.append(f"- `{file_path}`")
 
     # Build final message
+    if skipped_files:
+        file_results.append(
+            "\n**Not scanned (deleted, or Markdown with no added code blocks):**"
+        )
+        file_results.extend(f"- `{f}`" for f in skipped_files)
+
+    scanned_count = len(source_files) - len(skipped_files)
     if overall_status == "FAIL":
-        fail_count = sum(len(files) for exp, files in file_analyses.items() if 'prohibited' in exp.lower() or 'gpl' in exp.lower())
+        # Count files whose verdict was FAIL, not explanations that happen
+        # to mention "prohibited" (a PASS says "no prohibited licenses").
         message = f"Prohibited licenses detected in {fail_count} file(s)"
     elif overall_status == "WARN":
         similarity_msg = f" ({phase2_count} code similarity warnings)" if phase2_count > 0 else ""
-        message = f"License review required for {len(source_files)} file(s){similarity_msg}"
+        message = f"License review required for {scanned_count} file(s){similarity_msg}"
     else:
-        message = f"All {len(source_files)} file(s) passed license compliance"
+        message = f"All {scanned_count} scanned file(s) passed license compliance"
 
     return {
         "checkType": check_type,
