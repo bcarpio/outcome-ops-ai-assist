@@ -122,6 +122,9 @@ github_usernames_to_tag = "yourusername"
 # rerank_min_score             = 0.15  # Min relevance score (0-1) to include in results
 # code_map_score_boost         = 1.5   # Code-map score multiplier vs docs (>= 1.0; ADR-033 v1.1)
 # retrieval_lane_floor         = 0.25  # Min share of slots each lane keeps (0-0.5)
+# chat_source_lines_enabled    = true  # Attach real source lines of graph-matched symbols to chat (ADR-030 v1.2)
+# chat_source_lines_per_symbol = 80    # Max lines per symbol (10-300)
+# chat_source_max_symbols      = 3     # Max symbols per turn (1-10)
 
 # ============================================================================
 # Bedrock Model Pricing (USD per million tokens)

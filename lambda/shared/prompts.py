@@ -111,20 +111,19 @@ CODE_OVER_DOCS_RULES = """When code and documentation genuinely disagree about a
 - If you can quote only ONE source for the value (only a doc, or only the code), that single source IS your evidence -- use it as stated. Do NOT infer an unquoted "the code says otherwise" value in order to flag the doc as wrong. A drift finding whose code side you cannot quote is a fabrication, not a finding. (Exception: STRUCTURAL ATTRIBUTION claims like "X is called from Y at line N" -- those are governed by STRUCTURAL_ATTRIBUTION_RULES below and require code-map evidence, not doc-only evidence, regardless of disagreement.)
 - Do NOT average or hedge. This applies to specific-value disagreements only, not stylistic or wording differences."""
 
-# Verify exact values against source before asserting them. The code-map
-# deliberately omits literals (ADR-027) and the symbol graph stores
-# anchors but not values -- when an exact value matters, ask the
-# `read_source` MCP tool to fetch the real line. Triggered on EVERY
-# specific value claim, not only when docs and code-map disagree (per
-# plan-read-source-adjudicator: a fabrication with no contradicting doc
-# never trips a discrepancy gate and would ship silently).
-READ_SOURCE_VERIFICATION_RULES = """When you are about to state a SPECIFIC code value (a literal, a key prefix like 'MAGIC_TOKEN#', a numeric threshold, an algorithm choice, a function signature's parameter list, a return type) and the user's answer depends on it being correct:
-- Call the `read_source` MCP tool to fetch the actual source line BEFORE asserting the value. Do this for every specific value claim -- not only when documentation and code-map appear to disagree.
-- Prefer `at_graph_sha: true` + `symbol: "<canonical id>"` so the tool resolves the file:line via the symbol graph and pins the read to the workspace's current graph SHA. This eliminates SHA-skew between the graph anchor and the repo's HEAD.
-- When you don't have a canonical symbol id, pass `repo` + `file_path` + `line` directly. If you suspect the line may have shifted, also pass the symbol you're searching for so the tool returns `relocated_to_line` -- the actual position of that symbol within the read window.
-- Quote the returned line in your answer and cite it (e.g., "src/auth/handler.py:514 reads `token_urlsafe(16)`").
-- If `read_source` returns a value that disagrees with what the code-map summary suggested, treat the source line as authoritative (ADR-025 "code wins"). Surface the disagreement to the user.
-- If `read_source` is unavailable or returns an error, say so -- do not fall back to a guessed value."""
+# Exact values come from source, not from summaries. The code-map
+# deliberately omits literals (ADR-027) and the symbol graph stores anchors
+# but not values. Chat attaches the real lines of graph-matched symbols as a
+# SOURCE LINES block (ADR-030 v1.2); neither chat nor the RAG path has a tool
+# loop, so the rule names the block, not a tool. A value with no source line
+# behind it is stated as unverified: a fabricated value with no contradicting
+# doc would otherwise ship silently.
+SOURCE_LINES_GROUNDING_RULES = """Exact code values (an error code or message, a status code, a response or request field name, a key prefix like 'MAGIC_TOKEN#', a numeric threshold, a constant, a parameter list):
+- If a SOURCE LINES block is in the context, it is the actual code at the symbol graph's commit. Take exact values from it, quote the line, and cite it as file:line (e.g., "lambda/auth/handler.py:514 reads `token_urlsafe(16)`").
+- SOURCE LINES win over code-map summaries and documentation. If a summary or doc says something different, say so and use the source value (ADR-025 "code wins").
+- Code-map summaries describe behavior and outcome categories but deliberately omit exact values. Never fill in an exact value a summary leaves out, and never turn a summary's paraphrase ("an error such as...", "something like...") into a specific code or message.
+- If the exact value is not in any SOURCE LINES block, describe the outcome by its role and say the exact value needs to be checked in source, naming the file and symbol when you know them. Do not guess.
+- If the SOURCE LINES block says a file could not be read, say the value is unverified."""
 
 # Verify which SYMBOL contains a cited line. Closes the wrong-enclosing-
 # symbol failure mode: chat answers that write "<name> (file:line)"
@@ -275,7 +274,7 @@ INSTRUCTIONS:
 
 {VALUE_GROUNDING_RULES}
 
-{READ_SOURCE_VERIFICATION_RULES}
+{SOURCE_LINES_GROUNDING_RULES}
 
 {LINE_CITATION_GROUNDING_RULES}
 
@@ -319,7 +318,7 @@ You also have access to conversation memory - summaries of earlier parts of long
 
 {VALUE_GROUNDING_RULES}
 
-{READ_SOURCE_VERIFICATION_RULES}
+{SOURCE_LINES_GROUNDING_RULES}
 
 {LINE_CITATION_GROUNDING_RULES}
 

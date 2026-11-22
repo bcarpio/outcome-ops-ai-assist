@@ -385,6 +385,14 @@ def test_augment_returns_nine_callers_for_log_audit_entry(_inject_clients):
     assert "Defined at: lambda/shared/audit.py:142" in graph_block
     # Graph fired — no skip reason.
     assert out["graph_skip_reason"] is None
+    # The definition site is returned for the source-lines read (ADR-030 v1.2).
+    assert out["graph_definitions"] == [{
+        "workspace_id": WORKSPACE_ID,
+        "symbol": target,
+        "repo": REPO,
+        "file_path": "lambda/shared/audit.py",
+        "line": 142,
+    }]
 
 
 def test_augment_structural_no_symbol_sets_no_symbol_reason(_inject_clients):
@@ -431,6 +439,7 @@ def test_augment_pattern_intent_skips_graph_query(_inject_clients):
     assert out["decision"].intent == "pattern"
     assert out["graph_block"] == ""
     assert out["graph_skip_reason"] == "intent_pattern"
+    assert out["graph_definitions"] == []
 
 
 def test_augment_no_workspace_skips_router_and_graph(_inject_clients):

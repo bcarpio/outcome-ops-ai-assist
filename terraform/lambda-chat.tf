@@ -102,6 +102,24 @@ module "chat_streaming_lambda" {
       WORKSPACES_TABLE               = module.workspaces_table[0].dynamodb_table_id
       OAUTH_KMS_KEY_ARN              = aws_kms_key.oauth_tokens[0].arn
 
+      # ADR-030 v1.2: chat attaches the real source lines of graph-matched
+      # symbols to the synthesis context (shared.source_reader). Reading
+      # them mints a token for the workspace's code host: a GitHub App
+      # installation token (app id + key from SSM), or a refreshed Azure
+      # DevOps / GitLab OAuth token (same env as analyze-pr). Empty values
+      # on deploys without that host make its branch return a clean error.
+      CHAT_SOURCE_LINES_ENABLED            = tostring(var.chat_source_lines_enabled)
+      CHAT_SOURCE_LINES_PER_SYMBOL         = tostring(var.chat_source_lines_per_symbol)
+      CHAT_SOURCE_MAX_SYMBOLS              = tostring(var.chat_source_max_symbols)
+      GITHUB_BASE_URL                      = var.github_base_url
+      AZURE_DEVOPS_TENANT_ID               = var.azure_devops_tenant_id
+      AZURE_DEVOPS_CLIENT_ID               = var.azure_devops_client_id
+      AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = var.azure_devops_client_secret_ssm_param
+      GITLAB_BASE_URL                      = var.gitlab_base_url
+      GITLAB_CLIENT_ID                     = var.gitlab_client_id
+      GITLAB_CLIENT_SECRET_SSM_PARAM       = local.gitlab_secret_ssm_path
+      GITLAB_INSTANCES                     = local.gitlab_instances_env
+
       # Symbol-graph router + context builder. IAM read access is
       # attached separately in iam_symbol_graph.tf; the env vars here
       # let the chat handler resolve the tables without per-cold-start
@@ -245,13 +263,45 @@ module "chat_streaming_lambda" {
       ]
     }
 
-    # KMS decrypt for OAuth key (MCP credential decryption)
+    # KMS for the OAuth key: Decrypt for MCP credentials and stored refresh
+    # tokens; Encrypt so a code-host token refresh (ADR-030 v1.2 source
+    # lines) can cache the access token and persist the rotated refresh
+    # token. Without Encrypt the rotation is silently lost and the next
+    # consumer of the connection fails.
     oauth_kms_decrypt = {
       effect = "Allow"
       actions = [
-        "kms:Decrypt"
+        "kms:Decrypt",
+        "kms:Encrypt",
+        "kms:GenerateDataKey*"
       ]
       resources = local.oauth_kms_token_key_arns
+    }
+
+    # Code-host token refresh writes the cached access token and rotated
+    # refresh token back to the AZDO_TOKEN# / GITLAB_TOKEN# rows.
+    workspaces_token_write = {
+      effect = "Allow"
+      actions = [
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem"
+      ]
+      resources = [
+        module.workspaces_table[0].dynamodb_table_arn
+      ]
+    }
+
+    # Code-host OAuth client secrets whose SSM path is customer-set and
+    # may sit outside the /<env>/<app>/ prefix granted by ssm_read.
+    code_host_secrets_read = {
+      effect  = "Allow"
+      actions = ["ssm:GetParameter"]
+      resources = concat(
+        local.gitlab_secret_ssm_arns,
+        var.azure_devops_client_secret_ssm_param != "" ? [
+          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.azure_devops_client_secret_ssm_param}"
+        ] : [],
+      )
     }
 
     # Bedrock Rerank API for post-retrieval reranking

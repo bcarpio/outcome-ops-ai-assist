@@ -208,3 +208,77 @@ sides. On the ADO branch the SHA is passed to the items API as
   reject an ADO-shaped repo against such a workspace. Deferred
   until a customer surfaces the requirement — no in-product
   design for this yet.
+
+## v1.2: Chat reads the source itself
+
+### Context
+
+The v1.0 decision told "the chat synthesizer" to call `read_source` on
+every specific value claim. Chat never had that tool: `read_source` is an
+MCP-server tool, and only an MCP client's own model (Claude Code, Cursor)
+can call it. Chat and the RAG path (`ask-claude`, used by query-kb) are
+single-shot synthesis with no tool loop. Both prompts still carried the
+"call the `read_source` MCP tool" rule, so an answer could read as if a
+value had been checked when it had not.
+
+The gap showed up on a magic-link question. The code-map for the auth
+handler was current, but, as ADR-027 intends, it described the error
+outcomes by role instead of quoting their codes, and it merged two of
+them. With no source line in context, the model filled the gap with
+plausible but wrong error codes. ADR-033 v1.1 makes code-maps win the
+retrieval contest more often, which raises the cost of that gap.
+
+### Decision
+
+1. **One shared reader.** Host resolution, token minting, repo-slug
+   resolution, the file fetch and the window slice move from the MCP
+   server into `lambda/shared/source_reader.py`. The MCP `read_source`
+   tool and chat both call it, so the two surfaces cannot drift.
+2. **Chat attaches source lines server-side.** When hybrid retrieval
+   (ADR-059) resolves the question's symbol in the graph, it returns
+   the definition sites (`graph_definitions`). Chat reads a window of
+   real lines for up to `chat_source_max_symbols` sites (default 3),
+   `chat_source_lines_per_symbol` lines each (default 80), pinned to the
+   symbol graph's commit SHA so the graph's line numbers match the
+   content. The windows go into the context as a `SOURCE LINES` block
+   labelled with file, line span and commit.
+3. **Prompt rule names the block, not a tool.** `SOURCE_LINES_GROUNDING_RULES`
+   replaces the tool-call rule in both the chat and RAG prompts:
+   - exact values come from `SOURCE LINES`, quoted and cited as file:line;
+   - source lines win over code-map summaries and documentation;
+   - a summary's paraphrase is never turned into a specific value;
+   - with no source line, the answer describes the outcome by role and
+     says the exact value needs checking in source.
+4. **Fail-soft and bounded.** A read failure (no host connection, token
+   refresh failure, 404, file over 1 MB) never fails the chat turn. The
+   block lists the symbol as unreadable so the model says the value is
+   unverified. The block is capped at about 24,000 characters.
+   `chat_source_lines_enabled` is the kill switch.
+
+### v1.2 Consequences
+
+- **Exact values in chat come from code** for any question whose
+  symbol resolves in the graph. This is the read-from-source guarantee
+  ADR-027 names as its durable fix.
+- **Coverage follows the graph.** A question that names no resolvable
+  symbol gets no source lines. The prompt rule still stops the model
+  from inventing a value; it says the value needs checking instead.
+- **Chat mints code-host tokens.** The chat Lambda (primary and
+  secondary) gains the same env and grants analyze-pr already has:
+  - Azure DevOps and GitLab OAuth env;
+  - `kms:Encrypt` on the OAuth-tokens key and `PutItem` / `UpdateItem` on
+    the workspaces table, so a refresh can persist the rotated refresh
+    token;
+  - read on customer-set client-secret SSM paths;
+  - `PyJWT[crypto]` to sign the GitHub App JWT.
+- **Cost and latency.** At most `chat_source_max_symbols` file fetches
+  per graph-firing turn, plus one token mint per host. No change for
+  turns where the graph does not fire.
+
+## Version History
+
+- v1.0: MCP `read_source` tool, GitHub via the workspace's App installation.
+- v1.1: Platform-agnostic dispatch (Azure DevOps; GitLab via ADR-050).
+- v1.2 (2026-11-22): Shared `source_reader` module; chat attaches source
+  lines for graph-matched symbols server-side; the chat and RAG prompts
+  name the `SOURCE LINES` block instead of a tool they do not have.
