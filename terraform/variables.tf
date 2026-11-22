@@ -473,6 +473,26 @@ variable "rerank_min_score" {
   default     = 0.15
 }
 
+variable "code_map_score_boost" {
+  type        = number
+  description = "Multiplier applied to code-map relevance scores before the code-map and docs lanes compete for result slots (ADR-033 v1.1: code outranks docs). 1.0 = no preference."
+  default     = 1.5
+  validation {
+    condition     = var.code_map_score_boost >= 1.0
+    error_message = "code_map_score_boost must be >= 1.0; below 1.0 would rank docs above code."
+  }
+}
+
+variable "retrieval_lane_floor" {
+  type        = number
+  description = "Minimum share of result slots (0-0.5) each retrieval lane keeps when it has candidates, so the boost cannot shut either lane out (ADR-033 v1.1)."
+  default     = 0.25
+  validation {
+    condition     = var.retrieval_lane_floor >= 0 && var.retrieval_lane_floor <= 0.5
+    error_message = "retrieval_lane_floor must be between 0 and 0.5."
+  }
+}
+
 # Bedrock model pricing (USD per million tokens)
 variable "bedrock_advanced_input_price" {
   type        = number

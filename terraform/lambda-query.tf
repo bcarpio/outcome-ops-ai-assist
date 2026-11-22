@@ -171,6 +171,8 @@ module "query_kb_lambda" {
       RERANK_ENABLED                 = tostring(var.bedrock_rerank_enabled)
       RERANK_MAX_FETCH               = tostring(var.rerank_max_fetch)
       RERANK_MIN_SCORE               = tostring(var.rerank_min_score)
+      CODE_MAP_SCORE_BOOST           = tostring(var.code_map_score_boost)
+      RETRIEVAL_LANE_FLOOR           = tostring(var.retrieval_lane_floor)
       # Workspace metadata table for source-workspace name
       # resolution. Empty when the deploy has enable_workspaces=false;
       # the resolver treats missing as "no lookup available".

@@ -109,6 +109,8 @@ module "chat_streaming_lambda_secondary" {
       RERANK_ENABLED                     = tostring(var.bedrock_rerank_enabled)
       RERANK_MAX_FETCH                   = tostring(var.rerank_max_fetch)
       RERANK_MIN_SCORE                   = tostring(var.rerank_min_score)
+      CODE_MAP_SCORE_BOOST               = tostring(var.code_map_score_boost)
+      RETRIEVAL_LANE_FLOOR               = tostring(var.retrieval_lane_floor)
       RAG_MAX_DOC_CHARS                  = tostring(var.rag_max_doc_chars)
       WORKSPACES_TABLE                   = module.workspaces_table_secondary[0].dynamodb_table_id
       OAUTH_KMS_KEY_ARN                  = aws_kms_replica_key.oauth_tokens_secondary[0].arn

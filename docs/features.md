@@ -51,9 +51,12 @@ Keep entries terse — this is the index, not the spec.
   member is enumerated from retrieved chunks or the count is not
   claimed. Model-authored-aggregates are banned by prompt discipline
   + response validation. ADR-032.
-- **Dual-channel retrieval + per-lane rerank** — code-map channel and
-  documentation channel retrieve independently, rerank per lane, then
-  merge for synthesis. Prevents doc-drift from dominating grounded
+- **Dual-channel retrieval + per-lane rerank + code-over-docs boost** —
+  code-map channel and documentation channel retrieve independently,
+  rerank per lane, then merge with code-map scores boosted
+  (`code_map_score_boost`, default 1.5) and a per-lane floor
+  (`retrieval_lane_floor`, default 0.25); duplicate chunks dropped by
+  `content_hash`. Prevents doc-drift from dominating grounded
   code answers. Closes the "the docs say X but the code does Y" moat
   violation. ADR-033. Lives in the shared retrieval seam
   (`shared/retrieval.py::search_kb_dual_channel`) so **all three retrieval

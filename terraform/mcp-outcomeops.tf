@@ -112,6 +112,8 @@ module "mcp_outcomeops" {
     BEDROCK_RERANK_MODEL_ID = var.bedrock_rerank_model_id
     RERANK_ENABLED          = tostring(var.bedrock_rerank_enabled)
     RERANK_MAX_FETCH        = tostring(var.rerank_max_fetch)
+    CODE_MAP_SCORE_BOOST    = tostring(var.code_map_score_boost)
+    RETRIEVAL_LANE_FLOOR    = tostring(var.retrieval_lane_floor)
     # search_hybrid (ADR-059) runs the shared hybrid augmentation, whose
     # router classify_intent calls the BASIC chat model. The Claude app
     # inference profiles are disabled in prd (Control Tower region-deny

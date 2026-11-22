@@ -120,6 +120,8 @@ github_usernames_to_tag = "yourusername"
 # bedrock_rerank_price_per_1k  = 2.00  # USD per 1,000 search queries
 # rerank_max_fetch             = 90    # Max documents to over-fetch for reranking
 # rerank_min_score             = 0.15  # Min relevance score (0-1) to include in results
+# code_map_score_boost         = 1.5   # Code-map score multiplier vs docs (>= 1.0; ADR-033 v1.1)
+# retrieval_lane_floor         = 0.25  # Min share of slots each lane keeps (0-0.5)
 
 # ============================================================================
 # Bedrock Model Pricing (USD per million tokens)
