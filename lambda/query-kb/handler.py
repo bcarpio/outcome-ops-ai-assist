@@ -575,7 +575,9 @@ def handler(event, context):
 
         # Step 2: Query S3 Vectors for relevant documents
         logger.info("[query-kb] Querying S3 Vectors...")
-        fetch_k = min(top_k * 4, RERANK_MAX_FETCH) if RERANK_ENABLED else top_k
+        # Without rerank, fetch 2x so each lane has a full top_k of candidates
+        # and the boosted merge (not the 50/50 fetch) decides the mix.
+        fetch_k = min(top_k * 4, RERANK_MAX_FETCH) if RERANK_ENABLED else top_k * 2
         context_docs = query_s3_vectors(
             query_embedding, fetch_k, repo_filter, doc_types,
             workspace_ids=workspace_ids,
@@ -613,6 +615,12 @@ def handler(event, context):
                 context_docs = [d for d in context_docs if d.get("rerank_score", 0) >= RERANK_MIN_SCORE]
                 logger.info(f"[query-kb] Min score filter ({RERANK_MIN_SCORE}): {before_count} -> {len(context_docs)} docs")
             logger.info(f"[query-kb] Reranked and filtered to {len(context_docs)} docs (requested {top_k})")
+        elif any(d.get("lane") for d in context_docs):
+            # No rerank: boosted merge on cosine scores so code-maps still
+            # outrank docs (ADR-033 v1.1).
+            context_docs = shared_retrieval.merge_dual_channel(context_docs, top_k)
+        else:
+            context_docs = context_docs[:top_k]
 
         # Step 2.75: Opt-in hybrid augmentation (ADR-023 seam). Fuse
         # deterministic symbol-graph facts into the context for structural

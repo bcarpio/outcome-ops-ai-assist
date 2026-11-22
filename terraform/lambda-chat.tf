@@ -92,6 +92,8 @@ module "chat_streaming_lambda" {
       RERANK_ENABLED                     = tostring(var.bedrock_rerank_enabled)
       RERANK_MAX_FETCH                   = tostring(var.rerank_max_fetch)
       RERANK_MIN_SCORE                   = tostring(var.rerank_min_score)
+      CODE_MAP_SCORE_BOOST               = tostring(var.code_map_score_boost)
+      RETRIEVAL_LANE_FLOOR               = tostring(var.retrieval_lane_floor)
       RAG_MAX_DOC_CHARS                  = tostring(var.rag_max_doc_chars)
       # chat message hygiene knobs.
       CHAT_MESSAGE_TTL_SECONDS       = tostring(var.chat_message_ttl_seconds)

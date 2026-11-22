@@ -137,6 +137,8 @@ module "mcp_outcomeops_secondary" {
     BEDROCK_RERANK_MODEL_ID = var.bedrock_rerank_model_id
     RERANK_ENABLED          = tostring(var.bedrock_rerank_enabled)
     RERANK_MAX_FETCH        = tostring(var.rerank_max_fetch)
+    CODE_MAP_SCORE_BOOST    = tostring(var.code_map_score_boost)
+    RETRIEVAL_LANE_FLOOR    = tostring(var.retrieval_lane_floor)
     # search_hybrid (ADR-059, HA parity): router classify_intent needs the
     # BASIC chat model. Claude app profiles are disabled in prd (region-deny
     # SCP), so fall back to the us.* system-profile model id -- mirror of

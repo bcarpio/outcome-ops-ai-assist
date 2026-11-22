@@ -1041,7 +1041,9 @@ def search_knowledge_base(
 
     top_k = max(1, min(int(top_k), MAX_TOP_K))
 
-    fetch_k = min(top_k * 4, RERANK_MAX_FETCH) if RERANK_ENABLED else top_k
+    # Without rerank, fetch 2x so each lane has a full top_k of candidates
+    # and the boosted merge (not the 50/50 fetch) decides the mix.
+    fetch_k = min(top_k * 4, RERANK_MAX_FETCH) if RERANK_ENABLED else top_k * 2
 
     try:
         # Dual-channel (ADR-033): the engineer surface (Claude Code / Cursor)
@@ -1083,7 +1085,9 @@ def search_knowledge_base(
         if min_score > 0:
             docs = [d for d in docs if d.get("rerank_score", 0) >= min_score]
     else:
-        docs = docs[:top_k]
+        # No rerank: boosted merge on cosine scores so code-maps still
+        # outrank docs (ADR-033 v1.1) instead of a code-first truncation.
+        docs = shared_retrieval.merge_dual_channel(docs, top_k)
 
     return docs
 

@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import math
+import os
 import re
 import time
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -46,7 +48,6 @@ CODE_MAP_TYPES: Tuple[str, ...] = (
     "tests-summary",
     "code-map",
     "csharp-services-summary",
-    "docs-summary",
     "frontend-tests-summary",
     "frontend-components-summary",
     "frontend-utils-summary",
@@ -63,6 +64,10 @@ CODE_MAP_TYPES: Tuple[str, ...] = (
 
 DOC_TYPES: Tuple[str, ...] = (
     "adr",
+    # A platform-authored summary OF documentation is still documentation:
+    # it carries the docs' claims, not the code's, so it ranks in the docs
+    # lane and never receives the code-map score boost (ADR-033 v1.1).
+    "docs-summary",
     "markdown",
     "html",
     "pdf",
@@ -74,6 +79,130 @@ DOC_TYPES: Tuple[str, ...] = (
     "xlsx",   # Excel spreadsheets (extracted-to-text via process-documents)
     "csv",    # tabular data (extracted-to-text via process-documents)
 )
+
+# --------------------------------------------------------------------------- #
+# Code-over-docs ranking (ADR-033 v1.1). Code is the source of truth for what
+# the system does (ADR-025), so the final selection multiplies code-map scores
+# by CODE_MAP_SCORE_BOOST before the two lanes compete for slots, and each lane
+# keeps a floor of LANE_FLOOR_FRACTION of the slots (when it has candidates) so
+# neither lane can be shut out entirely.
+# --------------------------------------------------------------------------- #
+DEFAULT_CODE_MAP_SCORE_BOOST = 1.5
+DEFAULT_LANE_FLOOR_FRACTION = 0.25
+
+
+def ranking_config_from_env() -> Tuple[float, float]:
+    """``(code_map_score_boost, lane_floor_fraction)`` from the environment.
+
+    ``CODE_MAP_SCORE_BOOST`` (>= 1.0) and ``RETRIEVAL_LANE_FLOOR`` (0.0-0.5)
+    come from tfvars. Unset or invalid values fall back to the defaults, and
+    out-of-range values are clamped, so a typo can never invert the rule
+    (boost < 1 would favour docs) or starve a lane.
+    """
+    def _read(name: str, default: float) -> float:
+        raw = os.environ.get(name, "")
+        try:
+            return float(raw) if raw else default
+        except ValueError:
+            logger.warning("[retrieval] invalid %s=%r; using %s", name, raw, default)
+            return default
+
+    boost = max(1.0, _read("CODE_MAP_SCORE_BOOST", DEFAULT_CODE_MAP_SCORE_BOOST))
+    floor = min(0.5, max(0.0, _read("RETRIEVAL_LANE_FLOOR", DEFAULT_LANE_FLOOR_FRACTION)))
+    return boost, floor
+
+
+def dedupe_by_content_hash(hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Drop repeat copies of the same chunk, keeping the first (best) one.
+
+    The same repo ingested into several workspaces (or under several SCM
+    remotes) produces identical chunks under different keys; each copy would
+    otherwise take its own result slot. Hits without a ``content_hash`` are
+    never treated as duplicates of each other.
+    """
+    seen: set = set()
+    unique: List[Dict[str, Any]] = []
+    for hit in hits:
+        digest = (hit.get("metadata") or {}).get("content_hash")
+        if digest:
+            if digest in seen:
+                continue
+            seen.add(digest)
+        unique.append(hit)
+    return unique
+
+
+def select_with_code_map_boost(
+    code_map_hits: List[Dict[str, Any]],
+    doc_hits: List[Dict[str, Any]],
+    top_k: int,
+    *,
+    boost: float = DEFAULT_CODE_MAP_SCORE_BOOST,
+    floor_fraction: float = DEFAULT_LANE_FLOOR_FRACTION,
+) -> List[Dict[str, Any]]:
+    """Merge the two lanes into ``top_k`` results with code-maps boosted.
+
+    Base score is the rerank ``relevanceScore`` when every hit has one, else
+    the cosine ``score`` for all hits (mixing the two scales would make the
+    comparison meaningless, e.g. when one lane's rerank call fell back).
+    Code-map hits score ``base * boost``. Each lane first gets its floor
+    (``ceil(top_k * floor_fraction)``, capped at its candidate count); the
+    remaining slots go to the highest boosted scores from either lane. The
+    result is sorted by boosted score (code-map first on a tie) and every hit
+    is stamped with ``boosted_score``, so "earlier = stronger" in the
+    synthesis context also means "code before docs".
+    """
+    if top_k <= 0:
+        return []
+    everything = list(code_map_hits) + list(doc_hits)
+    use_rerank = bool(everything) and all("rerank_score" in h for h in everything)
+
+    def _scored(hits: List[Dict[str, Any]], lane_boost: float) -> List[Dict[str, Any]]:
+        out = []
+        for hit in hits:
+            base = hit.get("rerank_score", 0) if use_rerank else hit.get("score", 0)
+            stamped = dict(hit)
+            stamped["boosted_score"] = round(float(base or 0) * lane_boost, 6)
+            out.append(stamped)
+        out.sort(key=lambda h: h["boosted_score"], reverse=True)
+        return out
+
+    code = _scored(code_map_hits, boost)
+    docs = _scored(doc_hits, 1.0)
+
+    floor_n = math.ceil(top_k * floor_fraction) if floor_fraction > 0 else 0
+    code_floor = min(floor_n, len(code))
+    doc_floor = min(floor_n, len(docs), max(0, top_k - code_floor))
+    chosen = code[:code_floor] + docs[:doc_floor]
+    rest = code[code_floor:] + docs[doc_floor:]
+    rest.sort(key=lambda h: (h["boosted_score"], h.get("lane") == "code_map"), reverse=True)
+    chosen += rest[: max(0, top_k - len(chosen))]
+    chosen.sort(key=lambda h: (h["boosted_score"], h.get("lane") == "code_map"), reverse=True)
+    return chosen
+
+
+def merge_dual_channel(
+    documents: List[Dict[str, Any]],
+    top_k: int,
+    *,
+    boost: Optional[float] = None,
+    floor_fraction: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """Boosted lane merge for an already-scored dual-channel pool.
+
+    Used directly when rerank is disabled (cosine scores) and by
+    ``rerank_dual_channel`` after per-lane rerank. ``boost`` /
+    ``floor_fraction`` default to ``ranking_config_from_env()``.
+    """
+    env_boost, env_floor = ranking_config_from_env()
+    return select_with_code_map_boost(
+        [d for d in documents if d.get("lane") == "code_map"],
+        [d for d in documents if d.get("lane") != "code_map"],
+        top_k,
+        boost=env_boost if boost is None else boost,
+        floor_fraction=env_floor if floor_fraction is None else floor_fraction,
+    )
+
 
 # Rough token estimate: ~4 chars/token for English prose + code. Good
 # enough for response-size budgeting; we are bounding output, not billing.
@@ -501,39 +630,14 @@ def search_kb_dual_channel(
         code_map_hits = code_map_future.result()
         doc_hits = doc_future.result()
 
-    combined = list(code_map_hits) + list(doc_hits)
+    raw_count = len(code_map_hits) + len(doc_hits)
+    combined = dedupe_by_content_hash(list(code_map_hits) + list(doc_hits))
     logger.info(
-        "[retrieval.dual_channel] code_map_lane=%d docs_lane=%d combined=%d",
-        len(code_map_hits), len(doc_hits), len(combined),
+        "[retrieval.dual_channel] code_map_lane=%d docs_lane=%d combined=%d "
+        "duplicates_dropped=%d",
+        len(code_map_hits), len(doc_hits), len(combined), raw_count - len(combined),
     )
     return combined
-
-
-def split_rerank_budget(
-    top_k: int, code_map_count: int, doc_count: int,
-) -> Tuple[int, int]:
-    """Adaptive per-lane rerank top_n split.
-
-    Start from an even 50/50 (odd budget goes to docs -- the larger pool in any
-    non-thin-ingest workspace), then cap each lane at its actual candidate count
-    and redistribute unused slots to the other lane so the final context is not
-    left with empty slots when one lane is thin. Returns
-    ``(code_map_top_n, doc_top_n)``; both non-negative; their sum is
-    ``min(top_k, code_map_count + doc_count)``.
-    """
-    target_code = max(1, top_k // 2)
-    target_docs = max(1, top_k - target_code)
-    code_map_top_n = min(target_code, code_map_count)
-    doc_top_n = min(target_docs, doc_count)
-    leftover = top_k - code_map_top_n - doc_top_n
-    if leftover > 0:
-        extra_docs = min(leftover, doc_count - doc_top_n)
-        doc_top_n += extra_docs
-        leftover -= extra_docs
-        if leftover > 0:
-            extra_code = min(leftover, code_map_count - code_map_top_n)
-            code_map_top_n += extra_code
-    return code_map_top_n, doc_top_n
 
 
 def rerank_dual_channel(
@@ -549,15 +653,19 @@ def rerank_dual_channel(
     workspace_id: str = "",
     source_ip: str = "",
     user_agent: str = "",
+    boost: Optional[float] = None,
+    floor_fraction: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
-    """Per-lane rerank for a dual-channel pool (ADR-033).
+    """Per-lane rerank for a dual-channel pool (ADR-033), then the boosted
+    code-over-docs merge (ADR-033 v1.1, ``select_with_code_map_boost``).
 
-    Splits ``documents`` by their ``lane`` stamp and reranks each lane against
-    its own adaptive budget (``split_rerank_budget``), then concatenates. This
-    protects the code-map lane's slots from doc-lane prose that out-scores it on
-    a combined-pool rerank (the magic_link starvation). When either lane is
-    empty there is no fairness issue, so it falls back to a single combined-pool
-    rerank at ``top_k``.
+    Splits ``documents`` by their ``lane`` stamp, reranks each lane against
+    the query, then merges them with ``merge_dual_channel``: code-map scores
+    are multiplied by the boost and each lane keeps a floor of slots, so code
+    outranks docs without either lane being shut out (the magic_link
+    starvation a combined-pool rerank caused). When either lane is empty there
+    is nothing to balance, so it falls back to a single combined-pool rerank
+    at ``top_k``.
 
     ``rerank_model_id`` may be a bare foundation-model id or a full ARN -- the
     caller resolves its own ADR-016 workload profile ARN and passes it in, so
@@ -588,19 +696,34 @@ def rerank_dual_channel(
     if not code_map_hits or not doc_hits:
         return rerank(documents=documents, top_n=top_k, **rerank_kwargs)
 
-    code_map_top_n, doc_top_n = split_rerank_budget(
-        top_k, len(code_map_hits), len(doc_hits),
-    )
+    # Rerank each lane against the same query (so the scores are on one
+    # scale), keeping up to top_k per lane so the boosted merge, not a fixed
+    # split, decides how many slots each lane wins.
     reranked_code_maps = rerank(
-        documents=code_map_hits, top_n=code_map_top_n, **rerank_kwargs,
+        documents=code_map_hits, top_n=min(top_k, len(code_map_hits)), **rerank_kwargs,
     )
     reranked_docs = rerank(
-        documents=doc_hits, top_n=doc_top_n, **rerank_kwargs,
+        documents=doc_hits, top_n=min(top_k, len(doc_hits)), **rerank_kwargs,
     )
-    combined = list(reranked_code_maps) + list(reranked_docs)
-    logger.info(
-        "[retrieval.dual_channel] per-lane rerank code_maps=%d/%d docs=%d/%d final=%d",
-        len(reranked_code_maps), len(code_map_hits),
-        len(reranked_docs), len(doc_hits), len(combined),
+    for hit in reranked_code_maps:
+        hit.setdefault("lane", "code_map")
+    for hit in reranked_docs:
+        hit.setdefault("lane", "docs")
+    combined = merge_dual_channel(
+        list(reranked_code_maps) + list(reranked_docs), top_k,
+        boost=boost, floor_fraction=floor_fraction,
     )
+    log_lane_mix("retrieval.dual_channel", combined, len(code_map_hits), len(doc_hits))
     return combined
+
+
+def log_lane_mix(
+    tag: str, selected: List[Dict[str, Any]], code_candidates: int, doc_candidates: int,
+) -> None:
+    """One log line showing how many slots each lane won after the boost."""
+    code_won = sum(1 for d in selected if d.get("lane") == "code_map")
+    logger.info(
+        "[%s] boosted merge code_maps=%d/%d docs=%d/%d final=%d",
+        tag, code_won, code_candidates, len(selected) - code_won, doc_candidates,
+        len(selected),
+    )

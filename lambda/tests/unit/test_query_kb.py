@@ -311,7 +311,7 @@ class TestHandler:
         assert response["statusCode"] == 200
         # Verify query_s3_vectors was called with default topK=5
         call_args = mock_query.call_args
-        assert call_args[0][1] == 5  # topK parameter
+        assert call_args[0][1] == 10  # 2x top_k: no-rerank fetch gives each lane a full top_k
 
     @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
     @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
@@ -547,7 +547,40 @@ class TestHandlerWithReranking:
 
         assert response["statusCode"] == 200
         call_args = mock_query.call_args
-        assert call_args[0][1] == 5
+        assert call_args[0][1] == 10  # 2x top_k: each lane gets a full top_k for the boosted merge
+
+    @patch('query_kb_handler.RERANK_ENABLED', False)
+    @patch('query_kb_handler.VECTOR_BUCKET', 'test-bucket')
+    @patch('query_kb_handler.VECTOR_INDEX', 'test-index')
+    @patch('query_kb_handler.ASK_CLAUDE_LAMBDA_ARN', 'arn:aws:lambda:us-east-1:123:function:ask-claude')
+    @patch('query_kb_handler.query_s3_vectors')
+    @patch('query_kb_handler.generate_embedding')
+    @patch('query_kb_handler.invoke_lambda')
+    def test_rerank_disabled_boosts_code_maps_over_docs(self, mock_invoke, mock_embedding, mock_query):
+        """No rerank: the boosted merge still ranks a close code-map above a doc
+        and trims the 2x fetch back to top_k (ADR-033 v1.1)."""
+        event = {"query": "test", "topK": 2}
+        mock_embedding.return_value = [0.1] * 1024
+        mock_query.return_value = [
+            {"score": 0.50, "text": "code", "type": "handler-group-summary", "repo": "r",
+             "file_path": "", "lane": "code_map", "key": "code"},
+            {"score": 0.60, "text": "doc a", "type": "markdown", "repo": "r",
+             "file_path": "a.md", "lane": "docs", "key": "doc-a"},
+            {"score": 0.55, "text": "doc b", "type": "markdown", "repo": "r",
+             "file_path": "b.md", "lane": "docs", "key": "doc-b"},
+        ]
+        mock_invoke.return_value = {
+            "statusCode": 200,
+            "body": json.dumps({"answer": "test", "sources": []}),
+        }
+
+        with patch.dict(os.environ, {"CODE_MAP_SCORE_BOOST": "1.5", "RETRIEVAL_LANE_FLOOR": "0.25"}):
+            response = handler(event, None)
+
+        assert response["statusCode"] == 200
+        context = mock_invoke.call_args[0][1]["context"]
+        # code 0.50 * 1.5 = 0.75 beats doc a (0.60); doc b is trimmed (top_k=2).
+        assert [d["text"] for d in context] == ["code", "doc a"]
 
 
 class TestLoadConfig:

@@ -59,10 +59,10 @@ The fix is at the retrieval layer, not the ranker.
 Every chat synthesis turn runs **two parallel vector retrievals**:
 
 - **Code-maps lane.** Filters `type` metadata to the code-map
-  taxonomy (`CODE_MAP_TYPES`: 19 type values listed in
-  `lambda/chat/handler.py`). Independent top-K budget.
+  taxonomy (`CODE_MAP_TYPES`: 18 type values listed in
+  `lambda/shared/retrieval.py`). Independent top-K budget.
 - **Docs lane.** Filters `type` to the doc taxonomy (`DOC_TYPES`:
-  7 type values). Independent top-K budget.
+  12 type values, including `docs-summary`). Independent top-K budget.
 
 Both lanes always fire, regardless of question intent. The two
 result sets combine into the rerank candidate pool. Each lane has
@@ -87,6 +87,45 @@ Two structured invariants:
    it, the synthesis must either qualify ("doc-derived; not code-map
    verified") or drop the attribution. Captured in the
    `STRUCTURAL_ATTRIBUTION_RULES` prompt block (`lambda/shared/prompts.py`).
+
+### Code outranks docs in the final selection (v1.1)
+
+Giving each lane a fixed half of the slots keeps code-maps in context,
+but it does not rank them above docs. Code is the source of truth for
+what the system does (ADR-025), so the ranking says so too:
+
+1. **Each lane is scored against the question on one scale.** With
+   rerank on, both lanes are reranked by the same model against the
+   same query, keeping up to top-K each. With rerank off (or when one
+   lane's rerank call falls back), every hit is scored by cosine
+   similarity instead; the two scales are never mixed.
+2. **Code-map scores are multiplied by a boost** (`code_map_score_boost`,
+   default 1.5, must be >= 1.0) before the lanes compete for slots.
+   A code-map wins any slot where its score is at least two thirds of
+   the doc's. A much more relevant doc still wins.
+3. **Each lane keeps a floor** (`retrieval_lane_floor`, default 0.25,
+   range 0-0.5) of the slots when it has candidates, so the boost
+   cannot shut docs out and a strong doc field cannot shut code out.
+   The remaining slots go to the highest boosted scores from either
+   lane.
+4. **The context is ordered by boosted score** (code-map first on a
+   tie), so "earlier documents are stronger matches" in the synthesis
+   prompt also means code before docs.
+5. **A summary of documentation is documentation.** `docs-summary`
+   ranks in the docs lane and never receives the boost; it carries the
+   docs' claims, not the code's.
+6. **Identical chunks count once.** The same repo ingested into several
+   workspaces (or under several SCM remotes) produces identical chunks
+   under different keys; duplicates by `content_hash` are dropped
+   before ranking so copies do not consume slots.
+
+The boost and floor are tfvars, the same on every retrieval surface
+(chat, query-kb, MCP server) and on the secondary region.
+
+The boost ranks what retrieval returned; it does not add exact values.
+Code-maps omit literals by design (ADR-027), so a question that needs
+an exact value (an error code, a response field) still depends on
+`read_source` (ADR-030), which the chat surface does not have yet.
 
 ## Consequences
 
@@ -147,10 +186,18 @@ against.
   second brittle classifier on top; (c) the dual-channel
   architecture is intent-agnostic and subsumes the use case
   without requiring intent labels.
-- **Rerank-side weighting (rejected).** Boost code-map results in
-  the rerank pass. Rejected because rerank operates on candidates
-  the retrieval pulled. If retrieval starves code-maps, rerank
-  has nothing to boost. The fix has to be upstream of rerank.
+- **Rerank-side weighting INSTEAD of lanes (rejected).** Boost
+  code-map results in the rerank pass as the only mechanism.
+  Rejected because rerank operates on candidates the retrieval
+  pulled. If retrieval starves code-maps, rerank has nothing to
+  boost. The fix has to be upstream of rerank. v1.1 adds a boost ON
+  TOP of the lanes: the lanes guarantee candidates, the boost ranks
+  them.
+- **Weighted fixed split (considered for v1.1).** Give code a fixed
+  larger share of slots (say 65%) instead of a score boost. Simpler,
+  but it ignores relevance: a weak code-map would keep a slot over a
+  highly relevant doc. The boost plus per-lane floor keeps the
+  guarantee and still lets relevance decide.
 - **Pagination cursors / "fetch more code-maps" tool (rejected).**
   Give the LLM a tool to fetch additional code-maps when it sees a
   structural question. Rejected because (a) chat synthesis does
@@ -180,9 +227,21 @@ chat synthesis prompt (`lambda/shared/prompts.py`) carries
 structural-attribution invariant. Per-lane CloudWatch telemetry
 makes recall regressions visible without re-instrumenting.
 
-The taxonomy constants in `lambda/chat/handler.py` are the single
+The taxonomy constants in `lambda/shared/retrieval.py` are the single
 source of truth for which `type` values belong to which lane.
 Adding a new structural summary type (a future Java handler-group
 summary, say) requires editing only the `CODE_MAP_TYPES` tuple;
 the dual-channel mechanism picks it up automatically on the next
 deploy.
+
+The lane taxonomies, the boosted merge (`select_with_code_map_boost`,
+`merge_dual_channel`) and the duplicate filter (`dedupe_by_content_hash`)
+live in `lambda/shared/retrieval.py`, shared by chat, query-kb and the
+MCP server.
+
+## Version History
+
+- v1.0: two lanes with independent budgets; per-lane rerank.
+- v1.1 (2026-11-22): code-map score boost and per-lane floor in the
+  final selection; context ordered by boosted score; `docs-summary`
+  moved to the docs lane; duplicate chunks dropped by `content_hash`.

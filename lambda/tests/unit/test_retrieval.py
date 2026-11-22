@@ -443,21 +443,114 @@ def test_search_kb_dual_channel_empty_embedding_returns_empty():
     client.query_vectors.assert_not_called()
 
 
-def test_split_rerank_budget_even():
-    assert retrieval.split_rerank_budget(10, 5, 5) == (5, 5)
+def _hit(lane, score, key, content_hash=None, rerank_score=None):
+    h = {"lane": lane, "score": score, "key": key, "metadata": {}}
+    if content_hash:
+        h["metadata"]["content_hash"] = content_hash
+    if rerank_score is not None:
+        h["rerank_score"] = rerank_score
+    return h
 
 
-def test_split_rerank_budget_thin_code_lane_redistributes_to_docs():
-    # 2 code-map candidates, 8 doc candidates, budget 10:
-    # code keeps its 2, the 3 unused code slots flow to docs -> 8.
-    assert retrieval.split_rerank_budget(10, 2, 8) == (2, 8)
+def test_docs_summary_ranks_in_docs_lane():
+    assert "docs-summary" in retrieval.DOC_TYPES
+    assert "docs-summary" not in retrieval.CODE_MAP_TYPES
 
 
-def test_split_rerank_budget_sum_capped_by_candidate_count():
-    # Only 5 candidates total for a budget of 10 -> sum is 5, no padding.
-    cm, doc = retrieval.split_rerank_budget(10, 2, 3)
-    assert (cm, doc) == (2, 3)
-    assert cm + doc == 5
+def test_boost_lets_code_win_a_close_call():
+    # Doc 0.60 vs code 0.50: unboosted the doc wins; 1.5x makes code 0.75.
+    code = [_hit("code_map", 0.50, "c1")]
+    docs = [_hit("docs", 0.60, "d1")]
+    out = retrieval.select_with_code_map_boost(code, docs, 1, boost=1.5, floor_fraction=0)
+    assert [h["key"] for h in out] == ["c1"]
+    out = retrieval.select_with_code_map_boost(code, docs, 1, boost=1.0, floor_fraction=0)
+    assert [h["key"] for h in out] == ["d1"]
+
+
+def test_boost_does_not_beat_a_much_stronger_doc():
+    code = [_hit("code_map", 0.20, "c1")]
+    docs = [_hit("docs", 0.90, "d1")]
+    out = retrieval.select_with_code_map_boost(code, docs, 1, boost=1.5, floor_fraction=0)
+    assert [h["key"] for h in out] == ["d1"]
+
+
+def test_code_takes_more_than_half_the_slots_when_it_scores_well():
+    code = [_hit("code_map", 0.5, f"c{i}") for i in range(8)]
+    docs = [_hit("docs", 0.6, f"d{i}") for i in range(8)]
+    out = retrieval.select_with_code_map_boost(code, docs, 8, boost=1.5, floor_fraction=0.25)
+    lanes = [h["lane"] for h in out]
+    # Docs keep their floor of ceil(8 * 0.25) = 2; code wins the other 6.
+    assert lanes.count("docs") == 2 and lanes.count("code_map") == 6
+
+
+def test_floor_keeps_the_weaker_lane_in_context():
+    code = [_hit("code_map", 0.1, f"c{i}") for i in range(8)]
+    docs = [_hit("docs", 0.9, f"d{i}") for i in range(8)]
+    out = retrieval.select_with_code_map_boost(code, docs, 8, boost=1.5, floor_fraction=0.25)
+    assert [h["lane"] for h in out].count("code_map") == 2
+
+
+def test_floor_capped_by_candidates_and_slots_refilled():
+    code = [_hit("code_map", 0.1, "c1")]
+    docs = [_hit("docs", 0.9, f"d{i}") for i in range(10)]
+    out = retrieval.select_with_code_map_boost(code, docs, 8, boost=1.5, floor_fraction=0.25)
+    assert len(out) == 8
+    assert [h["lane"] for h in out].count("code_map") == 1
+
+
+def test_result_sorted_by_boosted_score_with_code_first_on_tie():
+    code = [_hit("code_map", 0.4, "c1")]
+    docs = [_hit("docs", 0.6, "d1"), _hit("docs", 0.9, "d2")]
+    out = retrieval.select_with_code_map_boost(code, docs, 3, boost=1.5, floor_fraction=0)
+    assert [h["key"] for h in out] == ["d2", "c1", "d1"]  # 0.9, 0.6 (code), 0.6
+    assert out[1]["boosted_score"] == 0.6
+
+
+def test_uses_rerank_scores_only_when_every_hit_has_one():
+    code = [_hit("code_map", 0.9, "c1", rerank_score=0.1)]
+    docs = [_hit("docs", 0.1, "d1", rerank_score=0.5)]
+    out = retrieval.select_with_code_map_boost(code, docs, 1, boost=1.5, floor_fraction=0)
+    assert out[0]["key"] == "d1"  # rerank: 0.15 vs 0.5
+    del docs[0]["rerank_score"]
+    out = retrieval.select_with_code_map_boost(code, docs, 1, boost=1.5, floor_fraction=0)
+    assert out[0]["key"] == "c1"  # mixed scales -> cosine for all: 1.35 vs 0.1
+
+
+def test_select_empty_inputs():
+    assert retrieval.select_with_code_map_boost([], [], 5) == []
+    assert retrieval.select_with_code_map_boost([_hit("code_map", 1, "c")], [], 0) == []
+
+
+def test_merge_dual_channel_reads_env(monkeypatch):
+    monkeypatch.setenv("CODE_MAP_SCORE_BOOST", "1.0")
+    monkeypatch.setenv("RETRIEVAL_LANE_FLOOR", "0")
+    pool = [_hit("code_map", 0.5, "c1"), _hit("docs", 0.6, "d1")]
+    assert [h["key"] for h in retrieval.merge_dual_channel(pool, 1)] == ["d1"]
+    monkeypatch.setenv("CODE_MAP_SCORE_BOOST", "2")
+    assert [h["key"] for h in retrieval.merge_dual_channel(pool, 1)] == ["c1"]
+
+
+def test_ranking_config_defaults_and_clamps(monkeypatch):
+    monkeypatch.delenv("CODE_MAP_SCORE_BOOST", raising=False)
+    monkeypatch.delenv("RETRIEVAL_LANE_FLOOR", raising=False)
+    assert retrieval.ranking_config_from_env() == (1.5, 0.25)
+    monkeypatch.setenv("CODE_MAP_SCORE_BOOST", "0.5")   # would favour docs
+    monkeypatch.setenv("RETRIEVAL_LANE_FLOOR", "0.9")   # would starve a lane
+    assert retrieval.ranking_config_from_env() == (1.0, 0.5)
+    monkeypatch.setenv("CODE_MAP_SCORE_BOOST", "abc")
+    monkeypatch.setenv("RETRIEVAL_LANE_FLOOR", "-1")
+    assert retrieval.ranking_config_from_env() == (1.5, 0.0)
+
+
+def test_dedupe_by_content_hash_keeps_first_copy():
+    hits = [
+        _hit("code_map", 0.9, "ws1#github#repo#g", content_hash="h1"),
+        _hit("code_map", 0.9, "ws2#gitlab#repo#g", content_hash="h1"),
+        _hit("docs", 0.5, "no-hash-a"),
+        _hit("docs", 0.5, "no-hash-b"),
+    ]
+    out = retrieval.dedupe_by_content_hash(hits)
+    assert [h["key"] for h in out] == ["ws1#github#repo#g", "no-hash-a", "no-hash-b"]
 
 
 def test_rerank_dual_channel_per_lane_when_both_present(monkeypatch):
@@ -479,10 +572,11 @@ def test_rerank_dual_channel_per_lane_when_both_present(monkeypatch):
         documents=docs,
         top_k=6,
     )
-    # Two per-lane rerank calls: code_map top_n=3, docs top_n=3 (split 6 across 3/4).
+    # Two per-lane rerank calls, each keeping up to top_k so the boosted
+    # merge (not a fixed split) decides the mix.
     assert len(recorded) == 2
     assert (3, 3, "code_map") in recorded
-    assert (4, 3, "docs") in recorded
+    assert (4, 4, "docs") in recorded
     assert len(out) == 6
 
 

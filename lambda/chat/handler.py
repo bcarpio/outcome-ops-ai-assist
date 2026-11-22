@@ -1124,7 +1124,7 @@ def search_kb_dual_channel(
 
 
 # Adaptive per-lane rerank budget split -- single source of truth in shared.
-split_rerank_budget = retrieval.split_rerank_budget
+merge_dual_channel = retrieval.merge_dual_channel
 
 
 def rerank_results(
@@ -1829,7 +1829,9 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
     if mcp_server_ids and not workspace_ids:
         search_results = []
     else:
-        fetch_k = min(request.top_k * 4, RERANK_MAX_FETCH) if RERANK_ENABLED else request.top_k
+        # Without rerank, fetch 2x so each lane has a full top_k of candidates
+        # and the boosted merge (not the 50/50 fetch) decides the mix.
+        fetch_k = min(request.top_k * 4, RERANK_MAX_FETCH) if RERANK_ENABLED else request.top_k * 2
         # ADR-033 dual-channel retrieval: code-maps lane + docs lane fire
         # in parallel, each with half the candidate budget. Both lanes
         # always run regardless of question intent so the synthesis
@@ -1873,15 +1875,13 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
                     user_agent=user_agent,
                 )
             else:
-                # Adaptive per-lane split. See ``split_rerank_budget``
-                # for the rationale + regression trace.
-                code_map_top_n, doc_top_n = split_rerank_budget(
-                    request.top_k, len(code_map_hits), len(doc_hits),
-                )
+                # Rerank each lane against the same query (one score
+                # scale), then the boosted code-over-docs merge decides
+                # how many slots each lane wins (ADR-033 v1.1).
                 reranked_code_maps = rerank_results(
                     search_query,
                     code_map_hits,
-                    top_n=code_map_top_n,
+                    top_n=min(request.top_k, len(code_map_hits)),
                     user_email=user_id or "",
                     workspace_id=primary_workspace_id or "",
                     source_ip=source_ip,
@@ -1890,16 +1890,23 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
                 reranked_docs = rerank_results(
                     search_query,
                     doc_hits,
-                    top_n=doc_top_n,
+                    top_n=min(request.top_k, len(doc_hits)),
                     user_email=user_id or "",
                     workspace_id=primary_workspace_id or "",
                     source_ip=source_ip,
                     user_agent=user_agent,
                 )
-                search_results = list(reranked_code_maps) + list(reranked_docs)
+                for hit in reranked_code_maps:
+                    hit.setdefault("lane", "code_map")
+                for hit in reranked_docs:
+                    hit.setdefault("lane", "docs")
+                search_results = merge_dual_channel(
+                    list(reranked_code_maps) + list(reranked_docs), request.top_k,
+                )
+                code_won = sum(1 for r in search_results if r.get("lane") == "code_map")
                 print(
-                    f"[RERANK] per-lane: code_maps={len(reranked_code_maps)}/{len(code_map_hits)} "
-                    f"docs={len(reranked_docs)}/{len(doc_hits)} "
+                    f"[RERANK] boosted merge: code_maps={code_won}/{len(code_map_hits)} "
+                    f"docs={len(search_results) - code_won}/{len(doc_hits)} "
                     f"final={len(search_results)}"
                 )
             # Log score distribution for threshold tuning (print for LWA/CloudWatch visibility)
@@ -1914,6 +1921,10 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
                 search_results = [r for r in search_results if r.get("rerank_score", 0) >= RERANK_MIN_SCORE]
                 print(f"[RERANK] Min score filter ({RERANK_MIN_SCORE}): {before_count} -> {len(search_results)} docs")
             print(f"[RERANK] Final: {len(search_results)} docs (requested {request.top_k})")
+        elif len(search_results) > 1:
+            # No rerank: the same boosted merge on cosine scores, so code
+            # still outranks docs (ADR-033 v1.1).
+            search_results = merge_dual_channel(search_results, request.top_k)
 
     # Format context
     context = format_context(search_results)
