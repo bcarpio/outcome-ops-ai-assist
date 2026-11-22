@@ -24,6 +24,7 @@ import logging
 import os
 import sys
 import time
+import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional, Set
@@ -1210,6 +1211,28 @@ def parse_changed_files(
     }
 
 
+def _check_job_dedup_id(
+    repository: str, pr_number: int, head_sha: str, check_type: str
+) -> str:
+    """SQS FIFO MessageDeduplicationId for one check job.
+
+    Same (repo, pr, head_sha, check_type) -> same id, so CI re-runs of
+    one commit coalesce inside the 5-minute dedup window. A different
+    head commit must get a new id: keying on the PR alone silently
+    dropped the checks for any commit pushed within 5 minutes of the
+    previous run. With no head SHA, fall back to a unique id (risk a
+    duplicate run, never a dropped one).
+    """
+    if not head_sha:
+        logger.warning(
+            "[analyze-pr] no head SHA for %s #%s %s; dedup id is unique per call",
+            repository, pr_number, check_type,
+        )
+        return uuid.uuid4().hex
+    dedup_input = f"{repository}|{pr_number}|{head_sha}|{check_type}"
+    return hashlib.sha256(dedup_input.encode("utf-8")).hexdigest()
+
+
 def queue_check_jobs(
     repository: str,
     pr_number: int,
@@ -1221,6 +1244,7 @@ def queue_check_jobs(
     ado_org: Optional[str] = None,
     ado_project: Optional[str] = None,
     ado_repo: Optional[str] = None,
+    head_sha: str = "",
 ) -> int:
     """
     Queue check jobs to SQS FIFO queue for async processing.
@@ -1234,6 +1258,9 @@ def queue_check_jobs(
         provider: ``"github"`` (default) or ``"azure_devops"``.
         connection_id: ADO connection ID; required for ADO.
         ado_org / ado_project / ado_repo: ADO context; required for ADO.
+        head_sha: PR head commit. Keys the SQS dedup id so a new commit
+            always queues fresh jobs; without it (empty) every call gets a
+            unique id and nothing is coalesced.
 
     Returns:
         Number of jobs queued
@@ -1281,15 +1308,9 @@ def queue_check_jobs(
 
         # Message group ensures ordered processing per PR
         message_group_id = f"pr-{repository.replace('/', '-')}-{pr_number}"
-        # MessageDeduplicationId is a stable content
-        # hash — same (repo, pr, head_sha, check_type) tuple always maps to
-        # the same dedup ID, so GitHub Actions re-runs of the same commit
-        # naturally coalesce within the SQS 5-min dedup window. Prior
-        # timestamp-based ID produced a new dedup ID per re-run, so a user
-        # clicking "re-run failed checks" queued duplicate jobs.
-        head_sha = getattr(job, "head_sha", "") or getattr(job, "commit_sha", "")
-        dedup_input = f"{repository}|{pr_number}|{head_sha}|{check_type}"
-        message_deduplication_id = hashlib.sha256(dedup_input.encode("utf-8")).hexdigest()
+        message_deduplication_id = _check_job_dedup_id(
+            repository, pr_number, head_sha, check_type
+        )
 
         try:
             sqs_client.send_message(
@@ -1454,7 +1475,11 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         )
 
         # Queue check jobs to SQS
-        jobs_queued = queue_check_jobs(request.repository, request.pr_number, checks_to_run, changed_files)
+        gh_head_sha = (pr.head if isinstance(pr.head, dict) else {}).get("sha", "")
+        jobs_queued = queue_check_jobs(
+            request.repository, request.pr_number, checks_to_run, changed_files,
+            head_sha=gh_head_sha,
+        )
 
         response = AnalyzePrResponse(
             message=f"Analysis started for PR #{request.pr_number}",
@@ -1740,6 +1765,7 @@ def _handle_azure_devops(
         ado_org=ado_org,
         ado_project=ado_project,
         ado_repo=ado_repo,
+        head_sha=pr_meta.head_sha,
     )
 
     logger.info(
@@ -1923,6 +1949,7 @@ def _handle_gitlab(
         changed_files,
         provider="gitlab",
         connection_id=connection_id,
+        head_sha=pr_meta.head_sha,
     )
 
     logger.info(

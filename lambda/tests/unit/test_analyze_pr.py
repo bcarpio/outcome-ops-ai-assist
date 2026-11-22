@@ -1180,6 +1180,39 @@ class TestQueueCheckJobs:
 
     @patch('analyze_pr_handler.ssm_client')
     @patch('analyze_pr_handler.sqs_client')
+    def test_dedup_id_keyed_on_head_sha(self, mock_sqs, mock_ssm):
+        """A new head commit gets new dedup ids; the same commit reuses them."""
+        mock_ssm.get_parameter.return_value = {
+            "Parameter": {"Value": "https://sqs.us-east-1.amazonaws.com/123/q.fifo"}
+        }
+        checks = [CheckType.LICENSE_COMPLIANCE.value]
+
+        def ids(sha):
+            mock_sqs.send_message.reset_mock()
+            queue_check_jobs("owner/repo", 47, checks, ["a.py"], head_sha=sha)
+            return [c.kwargs["MessageDeduplicationId"]
+                    for c in mock_sqs.send_message.call_args_list]
+
+        first = ids("sha-one")
+        assert first == ids("sha-one")
+        assert first != ids("sha-two")
+        assert first == [handler_module._check_job_dedup_id(
+            "owner/repo", 47, "sha-one", CheckType.LICENSE_COMPLIANCE.value)]
+
+    def test_dedup_id_distinguishes_check_type_and_pr(self):
+        dedup = handler_module._check_job_dedup_id
+        base = dedup("owner/repo", 1, "sha", "ADR_COMPLIANCE")
+        assert base != dedup("owner/repo", 1, "sha", "LICENSE_COMPLIANCE")
+        assert base != dedup("owner/repo", 2, "sha", "ADR_COMPLIANCE")
+
+    def test_dedup_id_without_head_sha_is_unique_per_call(self):
+        """No SHA must never collapse two runs into one (a dropped check)."""
+        dedup = handler_module._check_job_dedup_id
+        assert dedup("owner/repo", 1, "", "ADR_COMPLIANCE") != dedup(
+            "owner/repo", 1, "", "ADR_COMPLIANCE")
+
+    @patch('analyze_pr_handler.ssm_client')
+    @patch('analyze_pr_handler.sqs_client')
     def test_queue_check_jobs_sqs_error(self, mock_sqs, mock_ssm):
         """Test job queueing with SQS error."""
         # Arrange
@@ -1314,6 +1347,8 @@ class TestHandler:
         assert d["checks_queued_count"] == len(d["checks_run"])
         assert d["no_checks_needed"] is False
         assert d["duration_ms"] >= 0
+        # The PR head SHA keys the SQS dedup id (a new commit re-runs checks).
+        assert mock_queue_jobs.call_args.kwargs["head_sha"] == "a1b2c3"
 
     @patch('analyze_pr_handler.post_pr_comment')
     @patch('analyze_pr_handler.fetch_pr_files')
@@ -1739,6 +1774,7 @@ class TestHandleAzureDevOpsEndToEnd:
         assert kwargs["provider"] == "azure_devops"
         assert kwargs["connection_id"] == "conn-xyz"
         assert kwargs["ado_org"] == "example-org"
+        assert kwargs["head_sha"] == "head-sha"
 
     @patch('analyze_pr_handler.queue_check_jobs', return_value=0)
     @patch('analyze_pr_handler._upsert_ado_comment')
