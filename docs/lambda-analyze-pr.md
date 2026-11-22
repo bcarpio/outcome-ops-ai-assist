@@ -103,7 +103,7 @@ Check jobs are sent to SQS FIFO queue for async processing:
 
 **FIFO Attributes:**
 - **MessageGroupId**: `pr-{owner}-{repo}-{pr_number}` (ensures ordered processing per PR)
-- **MessageDeduplicationId**: `{MessageGroupId}-{check_type}-{timestamp_ms}` (prevents duplicate jobs)
+- **MessageDeduplicationId**: SHA-256 of `{repository}|{pr_number}|{head_sha}|{check_type}`. CI re-runs of the same commit coalesce inside the 5-minute FIFO dedup window; a new commit always queues fresh jobs. With no head SHA the id is a random UUID (a possible duplicate run, never a dropped one).
 
 Queue URL retrieved from SSM: `/{environment}/{app_name}/sqs/pr-checks-queue-url`
 
