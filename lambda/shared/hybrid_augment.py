@@ -400,8 +400,14 @@ def augment_with_symbol_graph(
     # RAG-only. Probe the question text for identifier-shaped tokens and, if
     # one resolves in the graph, adopt it and fire. DDB-only (no extra
     # Bedrock call), so the router's throttle-degrade quota-safety holds.
+    #
+    # It also runs for FIRING intents (structural / hybrid / unknown) when
+    # the router extracted no symbol: "unknown" + no symbol otherwise
+    # returned early with no_symbol, so a question naming
+    # verify_magic_token got no graph facts and no source lines. ADR-059
+    # says the backstop fires regardless of the intent verdict.
     effective_symbol = decision.symbol_candidate
-    if not effective_symbol and not fires_by_intent:
+    if not effective_symbol:
         bs_symbol = _deterministic_backstop_symbol(
             question, workspace_ids, symbol_graph_table
         )

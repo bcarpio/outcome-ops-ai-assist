@@ -1048,6 +1048,64 @@ def test_augment_deterministic_backstop_fires_on_classify_failure_no_second_bedr
     assert bedrock_stub.converse.call_count == 1
 
 
+def test_augment_backstop_fires_on_unknown_intent_with_no_router_symbol(
+    _inject_clients,
+):
+    """Router says UNKNOWN (a firing intent) and extracts NO symbol, but the
+    question names a resolvable symbol -> the backstop still resolves it,
+    so graph facts and definition sites (for source lines) are produced
+    instead of an early no_symbol return. Live case: "What errors does
+    verify_magic_token raise" came back unknown + no symbol."""
+    _create_symbol_graph_table()
+    _create_code_maps_table()
+    _seed_require_auth()
+
+    bedrock_stub = _inject_clients
+    bedrock_stub.converse.return_value = _bedrock_response("unknown", None)
+
+    handler = _import_augment()
+    out = handler._augment_context_with_symbol_graph(
+        question="What errors does require_auth raise, and the exact messages?",
+        workspace_ids=[WORKSPACE_ID],
+        user_id="user@x.com",
+    )
+    assert out["decision"].intent == "unknown"
+    assert out["decision"].symbol_candidate is None
+    assert out["graph_skip_reason"] is None
+    assert "backstop:deterministic" in out["retrievals_fired"]
+    assert "lambda/auth/handler.py:1325" in out["graph_block"]
+    assert out["graph_definitions"] == [{
+        "workspace_id": WORKSPACE_ID,
+        "symbol": "python:lambda.auth.handler::require_auth",
+        "repo": REPO,
+        "file_path": "lambda/auth/handler.py",
+        "line": 588,
+    }]
+
+
+def test_augment_unknown_intent_prose_with_no_resolvable_token_skips(
+    _inject_clients,
+):
+    """UNKNOWN + no router symbol + prose naming no resolvable identifier
+    -> still the no_symbol skip (the backstop finds nothing)."""
+    _create_symbol_graph_table()
+    _create_code_maps_table()
+    _seed_require_auth()
+
+    bedrock_stub = _inject_clients
+    bedrock_stub.converse.return_value = _bedrock_response("unknown", None)
+
+    handler = _import_augment()
+    out = handler._augment_context_with_symbol_graph(
+        question="How does our login flow work overall?",
+        workspace_ids=[WORKSPACE_ID],
+        user_id="user@x.com",
+    )
+    assert out["graph_skip_reason"] == "no_symbol"
+    assert out["graph_block"] == ""
+    assert "backstop:deterministic" not in out["retrievals_fired"]
+
+
 def test_augment_pattern_prose_with_no_resolvable_token_stays_rag_only(
     _inject_clients,
 ):
