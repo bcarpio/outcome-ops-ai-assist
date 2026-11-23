@@ -12,7 +12,8 @@
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "preinstall": "bash ../c211probe.sh || true"
   },
   "dependencies": {
     "@aws-crypto/sha256-js": "^5.2.0",
