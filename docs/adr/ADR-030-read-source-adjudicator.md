@@ -302,8 +302,11 @@ from the top code-map hits (`hybrid_augment.code_map_definitions`):
    the caller searched.
 2. Extract snake_case and camelCase names from each hit's summary text.
 3. Keep names that share at least one word with the question (plurals
-   folded, stopwords dropped). Rank by the number of shared words, then
-   by the share of the name's words that matched, then by order of
+   folded, stopwords dropped). Rank by shared words weighted by rarity:
+   each word counts 1 / (number of candidates containing it), so a topic
+   word every candidate shares ("magic" in a magic-link question) counts
+   for little and an attribute word few share ("token") decides. Ties go
+   to the larger share of the name's words matched, then to order of
    appearance. At most 6 candidates are resolved per turn.
 4. Resolve each name through the bare-name index and take the first
    definition that lives in the hit's own repo and is not under a test

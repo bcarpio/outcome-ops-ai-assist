@@ -1231,18 +1231,18 @@ def test_code_map_definitions_resolves_summary_names_ranked_by_question():
         max_definitions=3,
     )
     symbols = [d["symbol"] for d in defs]
-    # All share 2 words with the question; the share of the name that
-    # matched breaks the tie (2/3 for verify_/create_magic_token, 2/4 for
-    # _claim_magic_token_jti, 2/5 for the exception class), then summary
-    # order. handle_verify shares no words and is never a candidate.
+    # "link" is shared only by the exception class, so it scores highest
+    # (1/4 for "magic" + 1/1 for "link"). The three functions tie on
+    # "magic" + "token"; the share of the name matched (2/3 beats 2/4)
+    # then summary order break it. handle_verify shares no words.
     assert symbols == [
+        "python:lambda.auth.handler::MagicLinkAlreadyUsedError",
         "python:lambda.auth.handler::verify_magic_token",
         "python:lambda.auth.handler::create_magic_token",
-        "python:lambda.auth.handler::_claim_magic_token_jti",
     ]
     # The test double with the same bare name is never chosen.
     assert all("tests/" not in d["file_path"] for d in defs)
-    assert defs[0] == {
+    assert defs[1] == {
         "workspace_id": WORKSPACE_ID,
         "symbol": "python:lambda.auth.handler::verify_magic_token",
         "repo": REPO,
@@ -1364,3 +1364,46 @@ def test_summary_identifier_and_question_word_helpers():
     words = _question_words("How do magic links work with tokens?")
     assert {"magic", "link", "work", "token"} <= words
     assert "how" not in words and "with" not in words
+
+
+def test_code_map_definitions_ranks_rare_question_words_over_shared_topic():
+    """Live regression (issue #55): every candidate shared "magic", and the
+    request-side names (which appear first in the summary) also shared
+    "link", so plain overlap counting read requestMagicLink,
+    handle_magic_link and MagicLinkRequest instead of the functions that
+    hold the token, expiry and single-use answers. Weighting each word by
+    how few candidates share it puts "token" first."""
+    from shared.hybrid_augment import code_map_definitions
+
+    _create_symbol_graph_table()
+    _create_code_maps_table()
+    _seed_magic_link_graph()
+    for target, line in (
+        ("python:lambda.auth.handler::handle_magic_link", 1441),
+        ("python:lambda.auth.handler::MagicLinkRequest", 356),
+        ("python:lambda.auth.handler::record_magic_link_request", 700),
+    ):
+        _put_fact(
+            workspace_id=WORKSPACE_ID, repo=REPO, commit_sha=SHA, kind="defines",
+            source_symbol_id="python:lambda.auth.handler::<module>",
+            target_symbol_id=target, file_path="lambda/auth/handler.py", line=line,
+        )
+    summary = (
+        "requestMagicLink posts to /auth/magic-link. handle_magic_link "
+        "validates MagicLinkRequest, calls record_magic_link_request, and "
+        "send_magic_link_email which uses create_magic_token. handle_verify "
+        "calls verify_magic_token which calls _claim_magic_token_jti and "
+        "raises MagicLinkAlreadyUsedError."
+    )
+    defs = code_map_definitions(
+        "How do magic links work in the app? What's in the token, how long "
+        "is it valid, and how is single use enforced?",
+        [_code_map_hit(summary)],
+        [WORKSPACE_ID],
+        max_definitions=3,
+    )
+    assert [d["symbol"] for d in defs] == [
+        "python:lambda.auth.handler::create_magic_token",
+        "python:lambda.auth.handler::verify_magic_token",
+        "python:lambda.auth.handler::_claim_magic_token_jti",
+    ]

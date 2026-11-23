@@ -794,11 +794,9 @@ def _code_map_definitions(
         return []
     allowed = set(workspace_ids)
 
-    # 1. Candidate names from the top code-map hits, scored by how many of
-    #    their words appear in the question, then by the share of the name
-    #    that matched (create_magic_token 2/3 beats MagicLinkAlreadyUsedError
-    #    2/5). Earlier hits win remaining ties.
-    scored: List[Tuple[int, float, int, str, str, str]] = []
+    # 1. Candidate names from the top code-map hits that share at least one
+    #    word with the question.
+    matched: List[Tuple[int, str, str, str, set, int]] = []
     seen = set()
     order = 0
     hits = [h for h in search_results if _is_code_map_hit(h)][:_CODE_MAP_HIT_LIMIT]
@@ -815,19 +813,37 @@ def _code_map_definitions(
                 continue
             seen.add(key)
             parts = {_stem(p) for p in _identifier_parts(name)}
-            overlap = len(parts & q_words)
-            if overlap:
-                scored.append((-overlap, -overlap / len(parts), order, ws, repo, name))
+            shared = parts & q_words
+            if shared:
+                matched.append((order, ws, repo, name, shared, len(parts)))
                 order += 1
-    scored.sort()
+
+    # 2. Rank. A question word that every candidate shares ("magic" in a
+    #    magic-link question) says nothing about which function holds the
+    #    answer; a word only a few share ("token") does. Weight each matched
+    #    word by 1 / (number of candidates containing it), then prefer the
+    #    name with the larger share of its words matched, then earlier
+    #    appearance.
+    doc_freq: Dict[str, int] = {}
+    for _o, _ws, _repo, _name, shared, _n in matched:
+        for w in shared:
+            doc_freq[w] = doc_freq.get(w, 0) + 1
+    scored = sorted(
+        (
+            -sum(1.0 / doc_freq[w] for w in shared),
+            -len(shared) / n_parts,
+            o, ws, repo, name,
+        )
+        for o, ws, repo, name, shared, n_parts in matched
+    )
     candidates = scored[:_CODE_MAP_CANDIDATE_CAP]
 
     from shared.symbol_graph_reader import definitions  # type: ignore
 
-    # 2. Resolve each name to a non-test definition in the hit's repo.
+    # 3. Resolve each name to a non-test definition in the hit's repo.
     out: List[Dict[str, Any]] = []
     resolved_names: List[str] = []
-    for _neg, _ratio, _ord, ws, repo, name in candidates:
+    for _score, _ratio, _ord, ws, repo, name in candidates:
         if len(out) >= max_definitions:
             break
         resolution = _fuzzy_resolve_symbol(ws, name, symbol_graph_table)
