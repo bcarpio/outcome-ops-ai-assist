@@ -2796,3 +2796,51 @@ class TestSourceLinesBlock:
         sent = json.dumps(mock_bedrock_client.converse_stream.call_args[1])
         assert "SOURCE LINES" in sent
         assert "TOKEN_ALREADY_USED" in sent
+
+
+class TestCodeMapSourceFallback:
+    """Issue #55: when the graph lane found no definitions (the question
+    names no symbol), chat reads the functions the top code-map hits
+    describe; when it did find some, the fallback is not consulted."""
+
+    @staticmethod
+    def _run(mock_table, sample_embedding, graph_definitions):
+        TestHandleChatStream._setup_mocks(None, mock_table, sample_embedding)
+        augment = {
+            "decision": None, "graph_block": "", "retrievals_fired": [],
+            "graph_sha": None, "graph_staleness_seconds": None,
+            "graph_result_count": None, "graph_definitions": graph_definitions,
+        }
+        with patch.object(handler_module, "_augment_context_with_symbol_graph",
+                          return_value=augment), \
+             patch.object(handler_module, "code_map_definitions",
+                          return_value=[_SOURCE_DEF]) as cmd, \
+             patch.object(handler_module.source_reader, "read_definitions",
+                          return_value=[_SOURCE_WINDOW]) as rd:
+            event = {"body": json.dumps({
+                "message": "How do magic links work?",
+                "workspace_id": "ws_test",
+                "user": {"email": "user@example.com"},
+            })}
+            list(handle_chat_stream(event))
+        return cmd, rd
+
+    def test_fallback_used_when_graph_found_no_definitions(self, mock_table, sample_embedding):
+        cmd, rd = self._run(mock_table, sample_embedding, [])
+        cmd.assert_called_once()
+        assert cmd.call_args.args[0] == "How do magic links work?"
+        assert cmd.call_args.kwargs["max_definitions"] == 3
+        assert rd.call_args.args[0] == [_SOURCE_DEF]
+        sent = json.dumps(mock_bedrock_client.converse_stream.call_args[1])
+        assert "SOURCE LINES" in sent
+
+    def test_fallback_skipped_when_graph_has_definitions(self, mock_table, sample_embedding):
+        cmd, rd = self._run(mock_table, sample_embedding, [_SOURCE_DEF])
+        cmd.assert_not_called()
+        rd.assert_called_once()
+
+    def test_fallback_skipped_by_kill_switch(self, mock_table, sample_embedding, monkeypatch):
+        monkeypatch.setenv("CHAT_SOURCE_LINES_ENABLED", "false")
+        cmd, rd = self._run(mock_table, sample_embedding, [])
+        cmd.assert_not_called()
+        rd.assert_not_called()

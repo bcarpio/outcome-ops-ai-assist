@@ -29,7 +29,7 @@ from shared.context_builder import (
 
 logger = logging.getLogger(__name__)
 
-__all__ = ("augment_with_symbol_graph",)
+__all__ = ("augment_with_symbol_graph", "code_map_definitions")
 
 
 def _graph_retrieval_enabled() -> bool:
@@ -647,4 +647,218 @@ def augment_with_symbol_graph(
             target_symbol_id=user_symbol
         )
 
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Code-map hits -> definition sites (ADR-030 v1.3). When the question names no
+# symbol, the graph lane has nothing to anchor on and chat would answer exact
+# values from documentation alone. The top code-map hits, though, name the
+# functions that implement the behavior being asked about. Pull those names
+# out of the summary text, keep the ones that share words with the question,
+# and resolve them to definition sites in the hit's own workspace and repo so
+# chat can attach their real source lines. DynamoDB only, no model call.
+# ---------------------------------------------------------------------------
+
+_CODE_MAP_HIT_LIMIT = 3
+"""How many of the top code-map hits to mine for symbol names."""
+
+_CODE_MAP_CANDIDATE_CAP = 6
+"""Max candidate names resolved per turn; bounds the DynamoDB queries."""
+
+_CANONICALS_PER_CANDIDATE = 3
+"""Max canonical ids checked for one bare name (overloads across modules)."""
+
+_QUESTION_STOPWORDS = frozenset(
+    "the and for are what how does do did is was were with from this that "
+    "into when where which who why can could should would will about there "
+    "their them they its our your you get set use used using app".split()
+)
+
+_TEST_PATH_RE = re.compile(r"(^|/)(tests?|__tests__|spec)(/|$)|(^|/)test_[^/]*$|_test\.[a-z]+$|\.(test|spec)\.[a-z]+$")
+
+
+def _identifier_parts(name: str) -> List[str]:
+    """Split ``create_magic_token`` / ``createMagicToken`` into lowercase words."""
+    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", name)
+    return [p.lower() for p in re.split(r"[_\s]+", spaced) if p]
+
+
+def _stem(word: str) -> str:
+    """Crude plural fold so 'links' matches 'link' and 'tokens' matches 'token'."""
+    return word[:-1] if len(word) > 3 and word.endswith("s") else word
+
+
+def _question_words(question: str) -> set:
+    words = set()
+    for tok in re.findall(r"[A-Za-z][A-Za-z0-9]*", question or ""):
+        for part in _identifier_parts(tok):
+            if len(part) >= 3 and part not in _QUESTION_STOPWORDS:
+                words.add(_stem(part))
+    return words
+
+
+def _summary_identifiers(text: str) -> List[str]:
+    """Every snake_case / camelCase name in a code-map summary, in order.
+
+    Unlike the question backstop this is uncapped and skips dotted module
+    paths: code-map prose names functions by their bare name, and a dotted
+    path would not resolve through the bare-name index anyway.
+    """
+    seen: Dict[str, None] = {}
+    for tok in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", text or ""):
+        tok = tok.strip("_") if tok.startswith("__") and tok.endswith("__") else tok
+        if tok and "." not in tok and tok not in seen and _looks_like_identifier(tok):
+            seen[tok] = None
+    return list(seen)
+
+
+def _is_code_map_hit(hit: Dict[str, Any]) -> bool:
+    if hit.get("lane") == "code_map":
+        return True
+    if hit.get("lane") == "docs":
+        return False
+    try:
+        from shared.retrieval import CODE_MAP_TYPES  # type: ignore
+    except Exception:  # pragma: no cover - import failure
+        return False
+    return (hit.get("type") or "") in CODE_MAP_TYPES
+
+
+def _bare_repo(repo: str) -> str:
+    return (repo or "").rstrip("/").rsplit("/", 1)[-1]
+
+
+def code_map_definitions(
+    question: str,
+    search_results: List[Dict[str, Any]],
+    workspace_ids: Optional[List[str]],
+    *,
+    max_definitions: int = 3,
+    symbol_graph_table_name: Optional[str] = None,
+    code_maps_table_name: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Definition sites for the functions the top code-map hits describe.
+
+    Returns dicts shaped like ``graph_definitions`` (``workspace_id``,
+    ``symbol``, ``repo``, ``file_path``, ``line``) so they feed straight into
+    ``shared.source_reader.read_definitions``. Never raises; an empty list
+    means nothing resolvable was found.
+
+    Scope: a hit is only mined when its workspace is one the caller searched,
+    and a name only counts when it resolves to a non-test definition in the
+    hit's own repo, so a summary that mentions another repo's helper cannot
+    pull that repo's source in.
+    """
+    try:
+        return _code_map_definitions(
+            question,
+            search_results,
+            workspace_ids,
+            max_definitions=max_definitions,
+            symbol_graph_table_name=symbol_graph_table_name,
+            code_maps_table_name=code_maps_table_name,
+        )
+    except Exception:  # noqa: BLE001 - fail-soft, chat must still answer
+        logger.exception("[hybrid.code_map_defs] failed; no source lines")
+        return []
+
+
+def _code_map_definitions(
+    question: str,
+    search_results: List[Dict[str, Any]],
+    workspace_ids: Optional[List[str]],
+    *,
+    max_definitions: int,
+    symbol_graph_table_name: Optional[str],
+    code_maps_table_name: Optional[str],
+) -> List[Dict[str, Any]]:
+    if max_definitions < 1 or not search_results or not workspace_ids:
+        return []
+    if not _graph_retrieval_enabled():
+        return []
+    symbol_graph_table = (
+        symbol_graph_table_name
+        if symbol_graph_table_name is not None
+        else os.environ.get("SYMBOL_GRAPH_TABLE", "")
+    ) or None
+    code_maps_table = (
+        code_maps_table_name
+        if code_maps_table_name is not None
+        else os.environ.get("CODE_MAPS_TABLE", "")
+    ) or None
+    if not symbol_graph_table:
+        return []
+    q_words = _question_words(question)
+    if not q_words:
+        return []
+    allowed = set(workspace_ids)
+
+    # 1. Candidate names from the top code-map hits, scored by how many of
+    #    their words appear in the question, then by the share of the name
+    #    that matched (create_magic_token 2/3 beats MagicLinkAlreadyUsedError
+    #    2/5). Earlier hits win remaining ties.
+    scored: List[Tuple[int, float, int, str, str, str]] = []
+    seen = set()
+    order = 0
+    hits = [h for h in search_results if _is_code_map_hit(h)][:_CODE_MAP_HIT_LIMIT]
+    for hit in hits:
+        meta = hit.get("metadata") or {}
+        ws = hit.get("workspace_id") or meta.get("workspace_id") or ""
+        repo = _bare_repo(meta.get("repo") or hit.get("repo") or "")
+        if ws not in allowed or not repo:
+            continue
+        text = hit.get("content") or hit.get("text") or meta.get("content") or ""
+        for name in _summary_identifiers(text):
+            key = (ws, repo, name)
+            if key in seen:
+                continue
+            seen.add(key)
+            parts = {_stem(p) for p in _identifier_parts(name)}
+            overlap = len(parts & q_words)
+            if overlap:
+                scored.append((-overlap, -overlap / len(parts), order, ws, repo, name))
+                order += 1
+    scored.sort()
+    candidates = scored[:_CODE_MAP_CANDIDATE_CAP]
+
+    from shared.symbol_graph_reader import definitions  # type: ignore
+
+    # 2. Resolve each name to a non-test definition in the hit's repo.
+    out: List[Dict[str, Any]] = []
+    resolved_names: List[str] = []
+    for _neg, _ratio, _ord, ws, repo, name in candidates:
+        if len(out) >= max_definitions:
+            break
+        resolution = _fuzzy_resolve_symbol(ws, name, symbol_graph_table)
+        for canonical in list(resolution.canonicals)[:_CANONICALS_PER_CANDIDATE]:
+            sites = definitions(
+                ws,
+                canonical,
+                symbol_graph_table_name=symbol_graph_table,
+                code_maps_table_name=code_maps_table,
+            ).sites
+            site = next(
+                (
+                    s for s in sites
+                    if _bare_repo(getattr(s, "repo", "")) == repo
+                    and not _TEST_PATH_RE.search(getattr(s, "file_path", "") or "")
+                ),
+                None,
+            )
+            if site is None:
+                continue
+            out.append({
+                "workspace_id": ws,
+                "symbol": canonical,
+                "repo": getattr(site, "repo", ""),
+                "file_path": getattr(site, "file_path", ""),
+                "line": getattr(site, "line", None),
+            })
+            resolved_names.append(name)
+            break
+    print(
+        f"[SOURCE] code-map fallback: hits={len(hits)} "
+        f"candidates={[c[5] for c in candidates]} resolved={resolved_names}"
+    )
     return out

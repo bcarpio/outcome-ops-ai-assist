@@ -1168,3 +1168,199 @@ def test_extract_candidate_identifiers_empty_and_prose_only():
 
     assert _extract_candidate_identifiers("") == []
     assert _extract_candidate_identifiers("what are our coding standards") == []
+
+
+# --- code-map hits -> definition sites (ADR-030 v1.3, issue #55) ---
+
+
+def _seed_magic_link_graph():
+    """Three functions and an exception class in the auth handler, a test
+    double with the same bare name, and a same-named helper in another repo."""
+    defs = [
+        ("python:lambda.auth.handler::create_magic_token", "lambda/auth/handler.py", 637),
+        ("python:lambda.auth.handler::verify_magic_token", "lambda/auth/handler.py", 654),
+        ("python:lambda.auth.handler::_claim_magic_token_jti", "lambda/auth/handler.py", 610),
+        ("python:lambda.auth.handler::MagicLinkAlreadyUsedError", "lambda/auth/handler.py", 606),
+        ("python:lambda.auth.handler::handle_verify", "lambda/auth/handler.py", 1527),
+    ]
+    for target, path, line in defs:
+        _put_fact(
+            workspace_id=WORKSPACE_ID, repo=REPO, commit_sha=SHA, kind="defines",
+            source_symbol_id="python:lambda.auth.handler::<module>",
+            target_symbol_id=target, file_path=path, line=line,
+        )
+    # Test double: same bare name, test path. Must never be chosen.
+    _put_fact(
+        workspace_id=WORKSPACE_ID, repo=REPO, commit_sha=SHA, kind="defines",
+        source_symbol_id="python:lambda.auth.tests.unit.test_handler::<module>",
+        target_symbol_id="python:lambda.auth.tests.unit.test_handler::verify_magic_token",
+        file_path="lambda/auth/tests/unit/test_handler.py", line=40,
+    )
+
+
+def _code_map_hit(text, *, ws=WORKSPACE_ID, repo=REPO, lane="code_map",
+                  hit_type="handler-group-summary"):
+    return {
+        "lane": lane,
+        "type": hit_type,
+        "workspace_id": ws,
+        "repo": repo,
+        "content": text,
+        "metadata": {"repo": repo, "workspace_id": ws, "content": text},
+    }
+
+
+_AUTH_SUMMARY = (
+    "handle_verify parses VerifyRequest and calls verify_magic_token, which "
+    "raises MagicLinkAlreadyUsedError when _claim_magic_token_jti fails. "
+    "create_magic_token mints the JWT."
+)
+
+
+def test_code_map_definitions_resolves_summary_names_ranked_by_question():
+    from shared.hybrid_augment import code_map_definitions
+
+    _create_symbol_graph_table()
+    _create_code_maps_table()
+    _seed_magic_link_graph()
+
+    defs = code_map_definitions(
+        "How do magic links work? What is in the token?",
+        [_code_map_hit(_AUTH_SUMMARY)],
+        [WORKSPACE_ID],
+        max_definitions=3,
+    )
+    symbols = [d["symbol"] for d in defs]
+    # All share 2 words with the question; the share of the name that
+    # matched breaks the tie (2/3 for verify_/create_magic_token, 2/4 for
+    # _claim_magic_token_jti, 2/5 for the exception class), then summary
+    # order. handle_verify shares no words and is never a candidate.
+    assert symbols == [
+        "python:lambda.auth.handler::verify_magic_token",
+        "python:lambda.auth.handler::create_magic_token",
+        "python:lambda.auth.handler::_claim_magic_token_jti",
+    ]
+    # The test double with the same bare name is never chosen.
+    assert all("tests/" not in d["file_path"] for d in defs)
+    assert defs[0] == {
+        "workspace_id": WORKSPACE_ID,
+        "symbol": "python:lambda.auth.handler::verify_magic_token",
+        "repo": REPO,
+        "file_path": "lambda/auth/handler.py",
+        "line": 654,
+    }
+
+
+def test_code_map_definitions_honours_max_definitions():
+    from shared.hybrid_augment import code_map_definitions
+
+    _create_symbol_graph_table()
+    _create_code_maps_table()
+    _seed_magic_link_graph()
+
+    defs = code_map_definitions(
+        "magic token", [_code_map_hit(_AUTH_SUMMARY)], [WORKSPACE_ID],
+        max_definitions=1,
+    )
+    assert len(defs) == 1
+
+
+def test_code_map_definitions_ignores_docs_out_of_scope_and_other_repos():
+    from shared.hybrid_augment import code_map_definitions
+
+    _create_symbol_graph_table()
+    _create_code_maps_table()
+    _seed_magic_link_graph()
+
+    q = "How do magic links work?"
+    # A docs-lane hit is not mined, even when it names the functions.
+    assert code_map_definitions(
+        q, [_code_map_hit(_AUTH_SUMMARY, lane="docs")], [WORKSPACE_ID],
+    ) == []
+    # A code-map hit from a workspace the caller did not search is skipped.
+    assert code_map_definitions(
+        q, [_code_map_hit(_AUTH_SUMMARY, ws="ws-other")], [WORKSPACE_ID],
+    ) == []
+    # A code-map hit from another repo cannot pull this repo's definitions.
+    assert code_map_definitions(
+        q, [_code_map_hit(_AUTH_SUMMARY, repo="owner/other-repo")], [WORKSPACE_ID],
+    ) == []
+
+
+def test_code_map_definitions_uses_type_when_lane_missing():
+    from shared.hybrid_augment import code_map_definitions
+
+    _create_symbol_graph_table()
+    _create_code_maps_table()
+    _seed_magic_link_graph()
+
+    hit = _code_map_hit(_AUTH_SUMMARY)
+    hit.pop("lane")
+    defs = code_map_definitions("magic token", [hit], [WORKSPACE_ID])
+    assert defs and defs[0]["file_path"] == "lambda/auth/handler.py"
+
+    doc = _code_map_hit(_AUTH_SUMMARY, hit_type="markdown")
+    doc.pop("lane")
+    assert code_map_definitions("magic token", [doc], [WORKSPACE_ID]) == []
+
+
+def test_code_map_definitions_needs_question_overlap():
+    from shared.hybrid_augment import code_map_definitions
+
+    _create_symbol_graph_table()
+    _create_code_maps_table()
+    _seed_magic_link_graph()
+
+    assert code_map_definitions(
+        "What is the billing retry policy?",
+        [_code_map_hit(_AUTH_SUMMARY)],
+        [WORKSPACE_ID],
+    ) == []
+    # Only stopwords: nothing to match on.
+    assert code_map_definitions(
+        "How does it work?", [_code_map_hit(_AUTH_SUMMARY)], [WORKSPACE_ID],
+    ) == []
+
+
+def test_code_map_definitions_degrades_to_empty(monkeypatch):
+    from shared import hybrid_augment
+    from shared import symbol_graph_reader
+
+    hit = _code_map_hit(_AUTH_SUMMARY)
+    # Kill switch off.
+    monkeypatch.setenv("GRAPH_RETRIEVAL_ENABLED", "false")
+    assert hybrid_augment.code_map_definitions("magic token", [hit], [WORKSPACE_ID]) == []
+    monkeypatch.setenv("GRAPH_RETRIEVAL_ENABLED", "true")
+    # No table configured.
+    monkeypatch.setenv("SYMBOL_GRAPH_TABLE", "")
+    assert hybrid_augment.code_map_definitions("magic token", [hit], [WORKSPACE_ID]) == []
+    monkeypatch.setenv("SYMBOL_GRAPH_TABLE", SYMBOL_GRAPH_TABLE)
+    # Empty inputs.
+    assert hybrid_augment.code_map_definitions("magic token", [], [WORKSPACE_ID]) == []
+    assert hybrid_augment.code_map_definitions("magic token", [hit], []) == []
+    assert hybrid_augment.code_map_definitions(
+        "magic token", [hit], [WORKSPACE_ID], max_definitions=0,
+    ) == []
+    # A reader failure never raises out of the chat turn.
+    _create_symbol_graph_table()
+    _create_code_maps_table()
+    _seed_magic_link_graph()
+
+    def _boom(*a, **k):
+        raise RuntimeError("ddb down")
+
+    monkeypatch.setattr(symbol_graph_reader, "definitions", _boom)
+    assert hybrid_augment.code_map_definitions("magic token", [hit], [WORKSPACE_ID]) == []
+
+
+def test_summary_identifier_and_question_word_helpers():
+    from shared.hybrid_augment import _question_words, _summary_identifiers
+
+    names = _summary_identifiers(
+        "handle_verify calls verify_magic_token; __init__, VerifyRequest, "
+        "lambda.auth.handler and plain prose words"
+    )
+    assert names == ["handle_verify", "verify_magic_token", "VerifyRequest"]
+    words = _question_words("How do magic links work with tokens?")
+    assert {"magic", "link", "work", "token"} <= words
+    assert "how" not in words and "with" not in words

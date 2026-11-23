@@ -275,6 +275,63 @@ retrieval contest more often, which raises the cost of that gap.
   per graph-firing turn, plus one token mint per host. No change for
   turns where the graph does not fire.
 
+## v1.3: Source lines when the question names no symbol
+
+### Context
+
+v1.2 reads source only when hybrid retrieval resolves a symbol the
+question names. A question that names behavior instead of a function
+("how do magic links work, what is in the token, how long is it
+valid") resolves nothing, so no code was read. Code is indexed only as
+code-maps, and code-maps omit literal values (ADR-027), so the only
+retrieved text stating those values was documentation. A stale doc
+then supplied the literals. The prompt rule made the model label them
+doc-sourced, but it could not settle a disagreement between two docs,
+because the code that settles it was never in the context.
+
+The top code-map hits for such a question already name the functions
+that implement the behavior: the auth handler summary names
+`create_magic_token`, `verify_magic_token` and `_claim_magic_token_jti`.
+
+### Decision
+
+When the graph lane returns no definition sites, chat derives them
+from the top code-map hits (`hybrid_augment.code_map_definitions`):
+
+1. Take the top 3 code-map hits (by the merged ranking) whose workspace
+   the caller searched.
+2. Extract snake_case and camelCase names from each hit's summary text.
+3. Keep names that share at least one word with the question (plurals
+   folded, stopwords dropped). Rank by the number of shared words, then
+   by the share of the name's words that matched, then by order of
+   appearance. At most 6 candidates are resolved per turn.
+4. Resolve each name through the bare-name index and take the first
+   definition that lives in the hit's own repo and is not under a test
+   path.
+5. Feed the result to the same reader as v1.2, under the same
+   `chat_source_max_symbols` and `chat_source_lines_per_symbol` caps
+   and the same `chat_source_lines_enabled` kill switch.
+
+It is DynamoDB only (no model call) and fail-soft: any error yields no
+definitions, and the turn answers as before.
+
+### v1.3 Consequences
+
+- **"Code wins" no longer depends on the question naming a function.**
+  Behavior-shaped questions get the implementing functions' real lines
+  whenever a top code-map hit names them.
+- **Selection is lexical.** A function whose name shares no word with
+  the question is not chosen, even when it holds the answer. The cap of
+  3 definitions can also leave a relevant helper out. Both fail toward
+  the v1.2 behavior: the value is reported as needing a check in
+  source, not guessed.
+- **Code-map metadata does not record covered files or symbols.** Names
+  come from summary prose. Recording each code-map's file paths and top
+  defined symbols at generation time would make the mapping exact and
+  is deferred to the next code-map regeneration (ADR-027 v1.3).
+- **Cost.** At most 6 bare-name lookups plus one definitions lookup per
+  resolved canonical, only on turns where the graph lane found nothing.
+
 ## Version History
 
 - v1.0: MCP `read_source` tool, GitHub via the workspace's App installation.
@@ -282,3 +339,6 @@ retrieval contest more often, which raises the cost of that gap.
 - v1.2 (2026-11-22): Shared `source_reader` module; chat attaches source
   lines for graph-matched symbols server-side; the chat and RAG prompts
   name the `SOURCE LINES` block instead of a tool they do not have.
+- v1.3 (2026-11-23): When the question names no symbol, chat derives
+  definition sites from the top code-map hits and attaches their source
+  lines.
