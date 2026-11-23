@@ -51,10 +51,10 @@ your own coding agents all draw on the same layer.
 
 <p align="center">
   <a href="https://www.outcomeops.ai/videos/intelligence-layer.mp4">
-    <img src="docs/images/intelligence-layer-thumbnail.jpg" alt="What a Good Organizational Intelligence Layer Looks Like (5 Pillars)" width="80%">
+    <img src="docs/images/intelligence-layer-play.jpg" alt="What a Good Organizational Intelligence Layer Looks Like (5 Pillars)" width="80%">
   </a>
   <br>
-  <b>What a Good Organizational Intelligence Layer Looks Like (5 Pillars)</b>
+  <b>Watch: What a Good Organizational Intelligence Layer Looks Like (5 Pillars)</b>
 </p>
 
 ---
@@ -65,17 +65,17 @@ your own coding agents all draw on the same layer.
   <tr>
     <td width="50%" align="center">
       <a href="https://www.youtube.com/watch?v=WwUy339C_q0">
-        <img src="https://img.youtube.com/vi/WwUy339C_q0/maxresdefault.jpg" alt="OutcomeOps Demo: Organizational Intelligence Across Your Codebase" width="100%">
+        <img src="docs/images/demo-org-intelligence-play.jpg" alt="OutcomeOps Demo: Organizational Intelligence Across Your Codebase" width="100%">
       </a>
       <br>
-      <b>OutcomeOps Demo: Organizational Intelligence Across Your Codebase</b>
+      <b>Watch: Organizational Intelligence Across Your Codebase</b>
     </td>
     <td width="50%" align="center">
       <a href="https://www.youtube.com/watch?v=RpCEbzA0_Zs">
-        <img src="https://img.youtube.com/vi/RpCEbzA0_Zs/maxresdefault.jpg" alt="Audit. Cost. Control. Why InfoSec Picks OutcomeOps" width="100%">
+        <img src="docs/images/demo-infosec-play.jpg" alt="Audit. Cost. Control. Why InfoSec Picks OutcomeOps" width="100%">
       </a>
       <br>
-      <b>Audit. Cost. Control. Why InfoSec Picks OutcomeOps</b>
+      <b>Watch: Audit. Cost. Control. Why InfoSec Picks OutcomeOps</b>
     </td>
   </tr>
 </table>
