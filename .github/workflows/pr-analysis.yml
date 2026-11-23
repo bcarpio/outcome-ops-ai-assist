@@ -63,12 +63,16 @@ jobs:
           role-skip-session-tagging: true
 
       - name: Invoke analyze-pr Lambda
+        # Event values go through env, never inline into run: (see pr-commands.yml).
+        env:
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          FUNCTION_NAME="${{ env.ENVIRONMENT }}-outcome-ops-ai-assist-analyze-pr"
+          FUNCTION_NAME="${ENVIRONMENT}-outcome-ops-ai-assist-analyze-pr"
 
           PAYLOAD=$(jq -n \
-            --arg repo "${{ github.repository }}" \
-            --argjson pr_num "${{ github.event.pull_request.number }}" \
+            --arg repo "$REPO" \
+            --argjson pr_num "$PR_NUMBER" \
             '{
               repository: $repo,
               pr_number: $pr_num,

@@ -62,6 +62,23 @@ jobs:
           echo "Scanning $(git diff --cached --name-only | wc -l) files"
           talisman --githook pre-commit
 
+  workflow-security:
+    name: Lint GitHub Actions workflows (zizmor)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run zizmor
+        # Fails on template injection (a github.event.* value expanded into
+        # run: text), which let a PR comment run shell with AWS credentials
+        # on 2026-11-23. Relaxed rules and their reasons: .github/zizmor.yml.
+        run: pipx run zizmor==1.33.1 --offline --config .github/zizmor.yml .github/workflows/
+
   ui-tests:
     name: UI Tests
     runs-on: ubuntu-latest

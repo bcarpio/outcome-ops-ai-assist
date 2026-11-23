@@ -1,0 +1,18 @@
+# zizmor (GitHub Actions security linter) configuration, run by cicd.yml.
+# The gate exists to catch template injection: a github.event.* value expanded
+# into run: script text. Rules below are relaxed only where tracked work exists.
+rules:
+  # Actions are referenced by tag, not commit SHA. Tracked in issue #65.
+  unpinned-uses:
+    disable: true
+  # Workflow-level id-token: write and checkout credential persistence are
+  # tracked in issue #65.
+  excessive-permissions:
+    disable: true
+  artipacked:
+    disable: true
+  dangerous-triggers:
+    ignore:
+      # issue_comment is required for PR commands. The job is gated on
+      # author_association and passes every event value through env.
+      - pr-commands.yml:4

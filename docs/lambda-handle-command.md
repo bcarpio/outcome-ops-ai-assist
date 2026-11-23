@@ -162,90 +162,23 @@ Configure the trust policy for GitHub OIDC:
 
 ### Step 3: Add the Workflow File
 
-Create `.github/workflows/pr-commands.yml`:
+Copy [`.github/workflows/pr-commands.yml`](../.github/workflows/pr-commands.yml)
+from this repository into the repo you want to enable. Use that file rather than
+writing your own: it is the reviewed version, and two details in it are
+security controls, not style:
 
-```yaml
-name: PR Commands
+- **Event values go through `env:`.** The comment body, commenter, PR number and
+  head branch name are all attacker-controlled. GitHub expands `${{ }}`
+  expressions into the script text before the shell runs, so an expression
+  inside `run:` lets a comment such as `outcomeops:'; <commands>; echo '` run
+  shell with the job's AWS credentials. The workflow reads each value as a
+  quoted shell variable instead.
+- **Only collaborators can trigger it.** The job's `if:` requires
+  `author_association` to be OWNER, MEMBER or COLLABORATOR, so a comment from
+  anyone else is skipped before any credentials are issued.
 
-on:
-  issue_comment:
-    types: [created]
-
-permissions:
-  id-token: write      # Required for OIDC
-  contents: read       # Required to checkout code
-  pull-requests: read  # Required to read PR details
-
-env:
-  AWS_REGION: us-west-2
-  ENVIRONMENT: prd
-
-jobs:
-  handle-command:
-    name: Handle PR Command
-    runs-on: ubuntu-latest
-    environment: prd
-    # Only run on PR comments (not issue comments) that start with "outcomeops:"
-    if: |
-      github.event.issue.pull_request &&
-      startsWith(github.event.comment.body, 'outcomeops:')
-
-    steps:
-      - name: Get PR details
-        id: pr
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const pr = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.issue.number
-            });
-            core.setOutput('branch', pr.data.head.ref);
-
-      - name: Configure AWS credentials using OIDC
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-          role-session-name: GitHubActions-PR-Commands
-
-      - name: Invoke Handle Command Lambda
-        run: |
-          FUNCTION_NAME="${{ env.ENVIRONMENT }}-outcome-ops-ai-assist-handle-command"
-
-          # Build payload
-          PAYLOAD=$(cat <<EOF
-          {
-            "command": $(echo '${{ github.event.comment.body }}' | head -1 | jq -Rs .),
-            "pr_number": ${{ github.event.issue.number }},
-            "repo": "${{ github.repository }}",
-            "commenter": "${{ github.event.comment.user.login }}",
-            "branch": "${{ steps.pr.outputs.branch }}"
-          }
-          EOF
-          )
-
-          echo "Invoking Lambda: $FUNCTION_NAME"
-          echo "Payload: $PAYLOAD"
-
-          aws lambda invoke \
-            --function-name "$FUNCTION_NAME" \
-            --payload "$PAYLOAD" \
-            --cli-binary-format raw-in-base64-out \
-            /tmp/response.json
-
-          echo "Lambda response:"
-          cat /tmp/response.json
-
-          # Check for errors in response
-          if grep -q '"statusCode": 4' /tmp/response.json; then
-            echo "Command failed"
-            exit 1
-          fi
-
-          echo "Command processed successfully"
-```
+Give the workflow an invoke-only role (the `ci_oidc_role_enabled` option in
+[Getting Started](getting-started.md)), never a deploy or admin role.
 
 ### Workflow Details
 
@@ -254,6 +187,7 @@ jobs:
 **Condition:** Only runs when:
 1. The comment is on a PR (not an issue)
 2. The comment body starts with `outcomeops:`
+3. The commenter is an OWNER, MEMBER or COLLABORATOR of the repo
 
 **Steps:**
 1. Get PR branch name from GitHub API

@@ -309,8 +309,9 @@ only:
 
 ```hcl
 ci_oidc_role_enabled    = true
-ci_oidc_github_subjects = ["repo:<your-org>/<your-repo>:pull_request",
-                           "repo:<your-org>/<your-repo>:ref:refs/heads/main"]
+# The shipped workflows run in the `prd` GitHub Environment, so GitHub's OIDC
+# subject is environment-based, not pull_request or a branch ref.
+ci_oidc_github_subjects = ["repo:<your-org>/<your-repo>:environment:prd"]
 # ci_oidc_create_provider = false   # if the account already has the GitHub OIDC provider
 # ci_oidc_provider_arn    = "arn:aws:iam::<ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com"
 ```
@@ -324,6 +325,16 @@ After `terraform apply`, use the `ci_oidc_role_arn` output as the workflow's
 `analyze-pr` on `pull_request` (opened / synchronize / reopened). The sibling
 `.github/workflows/pr-commands.yml` (PR slash-commands -> `handle-command`) uses the
 same OIDC direct-invoke mechanism.
+
+> **Security: use the current workflow files.** Before 2026-11-23,
+> `pr-commands.yml` expanded the PR comment text directly into its shell script,
+> so anyone able to comment on a PR in a public repo could run commands with the
+> job's AWS credentials. If you copied it earlier, replace it with the current
+> version. That version passes every event value through `env:` and only runs for
+> commenters whose association is OWNER, MEMBER or COLLABORATOR. Give the
+> workflows an invoke-only role (option 2 above, or an equally narrow role of
+> your own), never a deploy or admin role. When you change these workflows, never
+> put `${{ github.event.* }}` inside a `run:` block.
 
 If your CI identity is a hub/spoke (`AWS_OIDC_ROLE_ARN` is a hub role that can
 only assume a workload-account role), also set a repo/org variable
