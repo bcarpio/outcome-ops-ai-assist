@@ -298,14 +298,17 @@ that implement the behavior: the auth handler summary names
 When the graph lane returns no definition sites, chat derives them
 from the top code-map hits (`hybrid_augment.code_map_definitions`):
 
-1. Take the top 3 code-map hits (by the merged ranking) whose workspace
-   the caller searched.
+1. Take the top 10 code-map hits (by the merged ranking) whose workspace
+   the caller searched. The summary naming the function that holds the
+   answer is often not in the top three.
 2. Extract snake_case and camelCase names from each hit's summary text.
 3. Keep names that share at least one word with the question (plurals
-   folded, stopwords dropped). Rank by shared words weighted by rarity:
-   each word counts 1 / (number of candidates containing it), so a topic
-   word every candidate shares ("magic" in a magic-link question) counts
-   for little and an attribute word few share ("token") decides. Ties go
+   folded, stopwords dropped). Rank first by how many question words
+   the name shares, so a name matching one incidental word ("app") never
+   beats one matching two. Break ties by rarity: each shared word counts
+   1 / (number of candidates containing it), so a topic word every
+   candidate shares ("magic" in a magic-link question) counts for little
+   and an attribute word few share ("token") decides. Remaining ties go
    to the larger share of the name's words matched, then to order of
    appearance. At most 6 candidates are resolved per turn.
 4. Resolve each name through the bare-name index and take the first

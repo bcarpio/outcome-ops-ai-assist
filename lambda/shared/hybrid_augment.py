@@ -660,8 +660,11 @@ def augment_with_symbol_graph(
 # chat can attach their real source lines. DynamoDB only, no model call.
 # ---------------------------------------------------------------------------
 
-_CODE_MAP_HIT_LIMIT = 3
-"""How many of the top code-map hits to mine for symbol names."""
+_CODE_MAP_HIT_LIMIT = 10
+"""How many of the top code-map hits to mine for symbol names. Wide on
+purpose: the summary that names the function holding the answer is often not
+in the top three, and ranking (shared-word count, then rarity) keeps the
+extra names from crowding it out."""
 
 _CODE_MAP_CANDIDATE_CAP = 6
 """Max candidate names resolved per turn; bounds the DynamoDB queries."""
@@ -818,18 +821,21 @@ def _code_map_definitions(
                 matched.append((order, ws, repo, name, shared, len(parts)))
                 order += 1
 
-    # 2. Rank. A question word that every candidate shares ("magic" in a
-    #    magic-link question) says nothing about which function holds the
-    #    answer; a word only a few share ("token") does. Weight each matched
-    #    word by 1 / (number of candidates containing it), then prefer the
-    #    name with the larger share of its words matched, then earlier
-    #    appearance.
+    # 2. Rank by the number of question words the name shares, so a name
+    #    that matches one incidental word ("app") never outranks one that
+    #    matches two. Among names sharing as many words, a word every
+    #    candidate shares ("magic" in a magic-link question) says nothing
+    #    about which function holds the answer; a word only a few share
+    #    ("token") does. So break that tie by the sum of 1 / (number of
+    #    candidates containing the word), then by the share of the name's
+    #    words matched, then by earlier appearance.
     doc_freq: Dict[str, int] = {}
     for _o, _ws, _repo, _name, shared, _n in matched:
         for w in shared:
             doc_freq[w] = doc_freq.get(w, 0) + 1
     scored = sorted(
         (
+            -len(shared),
             -sum(1.0 / doc_freq[w] for w in shared),
             -len(shared) / n_parts,
             o, ws, repo, name,
@@ -843,7 +849,7 @@ def _code_map_definitions(
     # 3. Resolve each name to a non-test definition in the hit's repo.
     out: List[Dict[str, Any]] = []
     resolved_names: List[str] = []
-    for _score, _ratio, _ord, ws, repo, name in candidates:
+    for _count, _score, _ratio, _ord, ws, repo, name in candidates:
         if len(out) >= max_definitions:
             break
         resolution = _fuzzy_resolve_symbol(ws, name, symbol_graph_table)
@@ -875,6 +881,6 @@ def _code_map_definitions(
             break
     print(
         f"[SOURCE] code-map fallback: hits={len(hits)} "
-        f"candidates={[c[5] for c in candidates]} resolved={resolved_names}"
+        f"candidates={[c[6] for c in candidates]} resolved={resolved_names}"
     )
     return out

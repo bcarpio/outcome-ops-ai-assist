@@ -1407,3 +1407,47 @@ def test_code_map_definitions_ranks_rare_question_words_over_shared_topic():
         "python:lambda.auth.handler::verify_magic_token",
         "python:lambda.auth.handler::_claim_magic_token_jti",
     ]
+
+
+def test_code_map_definitions_reads_past_the_top_three_hits():
+    """Live regression (issue #55, second run): the summary naming the token
+    functions was the fourth code-map hit, so mining only the top three
+    read request-side names again. The window now covers later hits, and
+    ranking by shared-word count first stops a name that matches one
+    incidental question word ("app") from winning on rarity alone."""
+    from shared.hybrid_augment import code_map_definitions
+
+    _create_symbol_graph_table()
+    _create_code_maps_table()
+    _seed_magic_link_graph()
+    for target, line in (
+        ("python:lambda.auth.handler::handle_magic_link", 1441),
+        ("python:lambda.auth.handler::MagicLinkRequest", 356),
+        ("python:lambda.config::get_app_config", 12),
+    ):
+        _put_fact(
+            workspace_id=WORKSPACE_ID, repo=REPO, commit_sha=SHA, kind="defines",
+            source_symbol_id="python:lambda.auth.handler::<module>",
+            target_symbol_id=target, file_path="lambda/auth/handler.py", line=line,
+        )
+    hits = [
+        _code_map_hit("handle_magic_link validates MagicLinkRequest."),
+        _code_map_hit("requestMagicLink posts the email to /auth/magic-link."),
+        _code_map_hit("get_app_config loads settings from SSM."),
+        _code_map_hit(
+            "send_magic_link_email uses create_magic_token. verify_magic_token "
+            "calls _claim_magic_token_jti."
+        ),
+    ]
+    defs = code_map_definitions(
+        "How do magic links work in the app? What's in the token, how long "
+        "is it valid, and how is single use enforced?",
+        hits,
+        [WORKSPACE_ID],
+        max_definitions=3,
+    )
+    assert [d["symbol"] for d in defs] == [
+        "python:lambda.auth.handler::create_magic_token",
+        "python:lambda.auth.handler::verify_magic_token",
+        "python:lambda.auth.handler::_claim_magic_token_jti",
+    ]
