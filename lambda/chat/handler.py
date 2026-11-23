@@ -75,6 +75,7 @@ from shared.context_builder import (
     is_audit_shaped,
 )
 from shared.hybrid_augment import augment_with_symbol_graph
+from shared import source_reader
 
 # Configure logging
 logger = logging.getLogger()
@@ -814,6 +815,36 @@ def _augment_context_with_symbol_graph(
         source_ip=source_ip,
         user_agent=user_agent,
     )
+
+
+def _source_lines_block(definitions: List[Dict[str, Any]]) -> str:
+    """Read the real lines of graph-matched definitions for the context.
+
+    Fail-soft: any error degrades to no block (the answer still ships, and
+    the synthesis prompt tells the model to say "(see source)" for exact
+    values it cannot quote). Gated by ``CHAT_SOURCE_LINES_ENABLED``.
+    """
+    if not definitions:
+        return ""
+    cfg = source_reader.source_lines_config_from_env()
+    if not cfg["enabled"]:
+        return ""
+    try:
+        windows = source_reader.read_definitions(
+            definitions,
+            max_definitions=cfg["max_definitions"],
+            max_lines=cfg["max_lines"],
+        )
+    except Exception as exc:  # noqa: BLE001 - never fail the chat turn
+        print(f"[SOURCE] read failed: {exc}")
+        return ""
+    read_ok = sum(1 for w in windows if "error" not in w)
+    print(
+        f"[SOURCE] attached source lines: read={read_ok}/{len(windows)} "
+        f"candidates={len(definitions)} "
+        f"errors={[w['error'] for w in windows if 'error' in w]}"
+    )
+    return source_reader.build_source_lines_block(windows)
 
 
 # ============================================================================
@@ -1945,6 +1976,13 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
     graph_block = graph_augment.get("graph_block", "")
     if graph_block:
         context = f"{context}\n\n---\n\n{graph_block}"
+
+    # Real source lines for the graph-matched symbol(s): code-maps omit
+    # literal values (ADR-027), so exact error codes, messages and field
+    # names come from the code itself (ADR-030 v1.2).
+    source_block = _source_lines_block(graph_augment.get("graph_definitions") or [])
+    if source_block:
+        context = f"{context}\n\n---\n\n{source_block}"
 
     # Audit-shaped HYBRID questions get a stable coverage checklist so
     # the finding set is reproducible run-to-run (ADR-026). The router

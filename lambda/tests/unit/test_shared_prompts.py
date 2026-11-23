@@ -215,9 +215,10 @@ class TestBuildRagSystemPrompt:
         prompt = build_rag_system_prompt()
         assert "When you state a SPECIFIC VALUE" in prompt
 
-    def test_includes_read_source_verification_rules(self):
+    def test_includes_source_lines_grounding_rules(self):
         prompt = build_rag_system_prompt()
-        assert "When you are about to state a SPECIFIC code value" in prompt
+        assert "Exact code values" in prompt
+        assert "SOURCE LINES" in prompt
 
     def test_includes_line_citation_grounding_rules(self):
         """ADR-031 line-citation discipline is on the RAG path."""
@@ -253,7 +254,7 @@ class TestBuildRagSystemPrompt:
         chat = build_chat_system_prompt()
         for sentinel in (
             "When you state a SPECIFIC VALUE",
-            "When you are about to state a SPECIFIC code value",
+            "Exact code values (an error code or message",
             "When you are about to cite a code location",
             "When you call any list-returning tool",
             "When code and documentation genuinely disagree",
@@ -678,48 +679,56 @@ class TestCodeMapLiteralDiscipline:
         assert "refines" in d
 
 
-class TestReadSourceVerificationRules:
-    """plan-read-source-adjudicator -- the system prompt must
-    tell the LLM to verify exact code values against source via the
-    read_source MCP tool, not only when docs and code-map disagree."""
+class TestSourceLinesGroundingRules:
+    """ADR-030 v1.2 -- exact values come from attached SOURCE LINES, never
+    from a summary, and neither chat nor the RAG path is told to call a
+    tool it does not have."""
 
-    def test_constant_exists_and_names_the_tool(self):
-        from shared.prompts import READ_SOURCE_VERIFICATION_RULES
+    def test_constant_names_the_block_not_a_tool(self):
+        from shared.prompts import SOURCE_LINES_GROUNDING_RULES
 
-        assert "read_source" in READ_SOURCE_VERIFICATION_RULES
+        assert "SOURCE LINES" in SOURCE_LINES_GROUNDING_RULES
+        assert "read_source" not in SOURCE_LINES_GROUNDING_RULES
+        assert "MCP tool" not in SOURCE_LINES_GROUNDING_RULES
 
-    def test_constant_triggers_on_every_value_claim_not_just_drift(self):
-        """Without this clause, a fabricated value with no contradicting
-        doc would never trip the verification gate and would ship
-        silently (the USED_TOKEN# class). Must be explicit."""
-        from shared.prompts import READ_SOURCE_VERIFICATION_RULES
+    def test_constant_says_source_wins_over_summaries_and_docs(self):
+        from shared.prompts import SOURCE_LINES_GROUNDING_RULES
 
-        assert "every specific value claim" in READ_SOURCE_VERIFICATION_RULES.lower() \
-            or "not only when documentation" in READ_SOURCE_VERIFICATION_RULES
+        assert "win over code-map summaries and documentation" in SOURCE_LINES_GROUNDING_RULES
 
-    def test_constant_promotes_at_graph_sha_for_sha_skew(self):
-        from shared.prompts import READ_SOURCE_VERIFICATION_RULES
+    def test_constant_forbids_filling_in_omitted_values(self):
+        """The magic-link failure: a summary paraphrase turned into a
+        specific error code. Without a source line, the model must say the
+        value is unverified, not guess (the USED_TOKEN# class)."""
+        from shared.prompts import SOURCE_LINES_GROUNDING_RULES
 
-        assert "at_graph_sha" in READ_SOURCE_VERIFICATION_RULES
-        assert "SHA-skew" in READ_SOURCE_VERIFICATION_RULES or "graph SHA" in READ_SOURCE_VERIFICATION_RULES
+        assert "Never fill in an exact value a summary leaves out" in SOURCE_LINES_GROUNDING_RULES
+        assert "Do not guess" in SOURCE_LINES_GROUNDING_RULES
 
-    def test_chat_prompt_includes_read_source_block(self):
-        """build_chat_system_prompt must compose in the verification
-        rules so the chat synthesis path actually receives them."""
-        from shared.prompts import build_chat_system_prompt, READ_SOURCE_VERIFICATION_RULES
+    def test_constant_covers_unreadable_source(self):
+        from shared.prompts import SOURCE_LINES_GROUNDING_RULES
 
-        prompt = build_chat_system_prompt()
-        assert READ_SOURCE_VERIFICATION_RULES in prompt
+        assert "could not be read" in SOURCE_LINES_GROUNDING_RULES
+
+    def test_chat_prompt_includes_block(self):
+        from shared.prompts import build_chat_system_prompt, SOURCE_LINES_GROUNDING_RULES
+
+        assert SOURCE_LINES_GROUNDING_RULES in build_chat_system_prompt()
+
+    def test_neither_prompt_tells_the_model_to_call_read_source(self):
+        from shared.prompts import build_chat_system_prompt, build_rag_system_prompt
+
+        for prompt in (build_chat_system_prompt(), build_rag_system_prompt()):
+            assert "`read_source` MCP tool" not in prompt
 
     def test_chat_prompt_block_appears_after_value_grounding(self):
-        """Reading order matters: VALUE_GROUNDING_RULES tells the model
-        what an unsafe value claim looks like; READ_SOURCE then tells
-        it how to resolve safely. Block ordering must follow that arc."""
-        from shared.prompts import build_chat_system_prompt, VALUE_GROUNDING_RULES, READ_SOURCE_VERIFICATION_RULES
+        """Reading order: VALUE_GROUNDING says what an unsafe value claim
+        looks like; SOURCE_LINES then says where the safe value comes from."""
+        from shared.prompts import build_chat_system_prompt, VALUE_GROUNDING_RULES, SOURCE_LINES_GROUNDING_RULES
 
         prompt = build_chat_system_prompt()
         i_vg = prompt.find(VALUE_GROUNDING_RULES)
-        i_rs = prompt.find(READ_SOURCE_VERIFICATION_RULES)
+        i_rs = prompt.find(SOURCE_LINES_GROUNDING_RULES)
         assert i_vg != -1 and i_rs != -1
         assert i_vg < i_rs
 
@@ -794,20 +803,20 @@ class TestLineCitationGroundingRules:
         prompt = build_chat_system_prompt()
         assert LINE_CITATION_GROUNDING_RULES in prompt
 
-    def test_line_citation_block_appears_after_read_source(self):
+    def test_line_citation_block_appears_after_source_lines(self):
         """Reading order: VALUE_GROUNDING tells the model what an
-        unsafe value claim looks like; READ_SOURCE tells it how to
-        verify the value; LINE_CITATION tells it how to ground the
+        unsafe value claim looks like; SOURCE_LINES tells it where the
+        value comes from; LINE_CITATION tells it how to ground the
         enclosing symbol. The progression Value -> Read -> Locate is
         intentional."""
         from shared.prompts import (
             build_chat_system_prompt,
-            READ_SOURCE_VERIFICATION_RULES,
+            SOURCE_LINES_GROUNDING_RULES,
             LINE_CITATION_GROUNDING_RULES,
         )
 
         prompt = build_chat_system_prompt()
-        i_rs = prompt.find(READ_SOURCE_VERIFICATION_RULES)
+        i_rs = prompt.find(SOURCE_LINES_GROUNDING_RULES)
         i_lc = prompt.find(LINE_CITATION_GROUNDING_RULES)
         assert i_rs != -1 and i_lc != -1
         assert i_rs < i_lc

@@ -114,11 +114,23 @@ module "chat_streaming_lambda_secondary" {
       RAG_MAX_DOC_CHARS                  = tostring(var.rag_max_doc_chars)
       WORKSPACES_TABLE                   = module.workspaces_table_secondary[0].dynamodb_table_id
       OAUTH_KMS_KEY_ARN                  = aws_kms_replica_key.oauth_tokens_secondary[0].arn
-      SYMBOL_GRAPH_TABLE                 = module.symbol_graph_table_secondary[0].dynamodb_table_id
-      CODE_MAPS_TABLE                    = module.code_maps_table_secondary[0].dynamodb_table_id
-      GRAPH_RETRIEVAL_ENABLED            = "true"
-      REQUESTS_CA_BUNDLE                 = "/opt/ca-bundle.pem"
-      SSL_CERT_FILE                      = "/opt/ca-bundle.pem"
+      # ADR-030 v1.2 source lines: parity with primary (lambda-chat.tf).
+      CHAT_SOURCE_LINES_ENABLED            = tostring(var.chat_source_lines_enabled)
+      CHAT_SOURCE_LINES_PER_SYMBOL         = tostring(var.chat_source_lines_per_symbol)
+      CHAT_SOURCE_MAX_SYMBOLS              = tostring(var.chat_source_max_symbols)
+      GITHUB_BASE_URL                      = var.github_base_url
+      AZURE_DEVOPS_TENANT_ID               = var.azure_devops_tenant_id
+      AZURE_DEVOPS_CLIENT_ID               = var.azure_devops_client_id
+      AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM = var.azure_devops_client_secret_ssm_param
+      GITLAB_BASE_URL                      = var.gitlab_base_url
+      GITLAB_CLIENT_ID                     = var.gitlab_client_id
+      GITLAB_CLIENT_SECRET_SSM_PARAM       = local.gitlab_secret_ssm_path
+      GITLAB_INSTANCES                     = local.gitlab_instances_env
+      SYMBOL_GRAPH_TABLE                   = module.symbol_graph_table_secondary[0].dynamodb_table_id
+      CODE_MAPS_TABLE                      = module.code_maps_table_secondary[0].dynamodb_table_id
+      GRAPH_RETRIEVAL_ENABLED              = "true"
+      REQUESTS_CA_BUNDLE                   = "/opt/ca-bundle.pem"
+      SSL_CERT_FILE                        = "/opt/ca-bundle.pem"
     },
     local.ha_writer_env_secondary,
     # AppConfig role-read env so region_guard.guard_active() on the chat
@@ -186,10 +198,29 @@ module "chat_streaming_lambda_secondary" {
         "${module.workspaces_table_secondary[0].dynamodb_table_arn}/index/*",
       ]
     }
+    # Parity with primary: Encrypt for code-host token refresh (ADR-030
+    # v1.2); both regional ARNs so tokens refreshed in either region stay
+    # usable after failover / failback.
     oauth_kms_decrypt = {
       effect    = "Allow"
-      actions   = ["kms:Decrypt"]
-      resources = [aws_kms_replica_key.oauth_tokens_secondary[0].arn]
+      actions   = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey*"]
+      resources = local.oauth_kms_token_key_arns
+    }
+    workspaces_token_write = {
+      effect    = "Allow"
+      actions   = ["dynamodb:PutItem", "dynamodb:UpdateItem"]
+      resources = [module.workspaces_table_secondary[0].dynamodb_table_arn]
+    }
+    code_host_secrets_read = {
+      effect  = "Allow"
+      actions = ["ssm:GetParameter"]
+      resources = concat(
+        [for path in distinct(concat([local.gitlab_secret_ssm_path], [for i in var.gitlab_instances : i.client_secret_ssm_param])) :
+        "arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter${path}" if path != ""],
+        var.azure_devops_client_secret_ssm_param != "" ? [
+          "arn:aws:ssm:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:parameter${var.azure_devops_client_secret_ssm_param}"
+        ] : [],
+      )
     }
     bedrock_rerank = {
       effect    = "Allow"

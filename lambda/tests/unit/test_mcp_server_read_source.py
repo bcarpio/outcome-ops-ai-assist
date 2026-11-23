@@ -70,6 +70,8 @@ def _load_mcp_module():
 
 mcp_module = _load_mcp_module()
 
+from shared import source_reader  # noqa: E402  (the reader the tool delegates to)
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -90,6 +92,9 @@ def _env(monkeypatch):
     monkeypatch.setenv("AWS_REGION", "us-west-2")
     monkeypatch.setenv("ENVIRONMENT", "test")
     monkeypatch.setenv("APP_NAME", "outcome-ops-ai-assist")
+    # shared.source_reader reads the table name per call; other test
+    # modules set DYNAMODB_TABLE at import, so pin it for these tests.
+    monkeypatch.setenv("DYNAMODB_TABLE", WORKSPACES_TABLE)
     yield
 
 
@@ -99,7 +104,9 @@ def _reset_mcp_caches():
     mcp_module._s3vectors_client = None
     mcp_module._bedrock_client = None
     mcp_module._ssm_client = None
-    mcp_module._github_app_config_cache = None
+    source_reader._dynamodb = None
+    source_reader._github_app_config_cache = None
+    source_reader._ado_client_secret_cache = None
     yield
 
 
@@ -437,17 +444,17 @@ def _seed_defines(resource, workspace_id, repo, symbol, file_path, line, graph_s
 class TestBareNameAndRelocate:
 
     def test_bare_name_extracts_python_tail(self):
-        assert mcp_module._read_source_bare_name(
+        assert source_reader.bare_name(
             "python:lambda.auth.handler::require_auth"
         ) == "require_auth"
 
     def test_bare_name_extracts_namespaced_tail(self):
-        assert mcp_module._read_source_bare_name(
+        assert source_reader.bare_name(
             "python:m::Service::run"
         ) == "run"
 
     def test_bare_name_empty_input(self):
-        assert mcp_module._read_source_bare_name("") == ""
+        assert source_reader.bare_name("") == ""
 
     def test_relocate_finds_first_match(self):
         window = [
@@ -455,7 +462,7 @@ class TestBareNameAndRelocate:
             {"line": 11, "text": "def greet(name):"},
             {"line": 12, "text": "    return name"},
         ]
-        assert mcp_module._read_source_relocate(window, "greet") == 11
+        assert source_reader.relocate(window, "greet") == 11
 
     def test_relocate_word_boundary_rejects_substring(self):
         window = [
@@ -463,11 +470,11 @@ class TestBareNameAndRelocate:
             {"line": 2, "text": "    pass"},
         ]
         # `require_auth` must NOT match `my_require_auth` thanks to \b.
-        assert mcp_module._read_source_relocate(window, "require_auth") is None
+        assert source_reader.relocate(window, "require_auth") is None
 
     def test_relocate_returns_none_when_absent(self):
         window = [{"line": 1, "text": "nothing here"}]
-        assert mcp_module._read_source_relocate(window, "greet") is None
+        assert source_reader.relocate(window, "greet") is None
 
 
 class TestAtGraphShaResolution:
@@ -976,7 +983,7 @@ class TestReadSourceResolvePlatform:
     ):
         # workspaces_table fixture already seeded GITHUB_INSTALLATION# on
         # WORKSPACE_ID; the resolver must find it.
-        info = mcp_module._read_source_resolve_platform(WORKSPACE_ID)
+        info = source_reader.resolve_platform(WORKSPACE_ID)
         assert info == {
             "platform": "github",
             "installation_id": INSTALLATION_ID,
@@ -986,7 +993,7 @@ class TestReadSourceResolvePlatform:
         self, workspaces_table,
     ):
         _seed_azdo_repo_row(workspaces_table, ADO_WORKSPACE_ID)
-        info = mcp_module._read_source_resolve_platform(
+        info = source_reader.resolve_platform(
             ADO_WORKSPACE_ID, repo_hint=ADO_TRIPLET,
         )
         assert info == {
@@ -1001,7 +1008,7 @@ class TestReadSourceResolvePlatform:
         self, workspaces_table,
     ):
         _seed_azdo_repo_row(workspaces_table, ADO_WORKSPACE_ID)
-        info = mcp_module._read_source_resolve_platform(ADO_WORKSPACE_ID)
+        info = source_reader.resolve_platform(ADO_WORKSPACE_ID)
         assert info["platform"] == "azure_devops"
         assert info["connection_id"] == ADO_CONNECTION_ID
 
@@ -1011,11 +1018,11 @@ class TestReadSourceResolvePlatform:
         cross-check the repo shape and route accordingly."""
         # WORKSPACE_ID already has GITHUB_INSTALLATION# from fixture.
         _seed_azdo_repo_row(workspaces_table, WORKSPACE_ID)
-        info = mcp_module._read_source_resolve_platform(WORKSPACE_ID)
+        info = source_reader.resolve_platform(WORKSPACE_ID)
         assert info["platform"] == "github"
 
     def test_none_when_neither_row_present(self, workspaces_table):
-        assert mcp_module._read_source_resolve_platform(
+        assert source_reader.resolve_platform(
             "ws-empty-neither-connection",
         ) is None
 
@@ -1024,15 +1031,15 @@ class TestReadSourceResolvePlatform:
         stub_table.query.side_effect = _client_error("InternalServerError")
         stub_ddb = MagicMock()
         stub_ddb.Table.return_value = stub_table
-        with patch.object(mcp_module, "_get_dynamodb", return_value=stub_ddb):
-            assert mcp_module._read_source_resolve_platform(WORKSPACE_ID) is None
+        with patch.object(source_reader, "_get_dynamodb", return_value=stub_ddb):
+            assert source_reader.resolve_platform(WORKSPACE_ID) is None
 
     def test_direct_key_miss_falls_through_to_query(self, workspaces_table):
         """A wrong-triplet hint shouldn't hide an existing ADO row --
         the fallback query still finds it. Guards against a router-caller
         bug where the LLM sent the wrong triplet shape."""
         _seed_azdo_repo_row(workspaces_table, ADO_WORKSPACE_ID)
-        info = mcp_module._read_source_resolve_platform(
+        info = source_reader.resolve_platform(
             ADO_WORKSPACE_ID, repo_hint="wrong-org/wrong-project/wrong-repo",
         )
         assert info["platform"] == "azure_devops"
@@ -1042,20 +1049,20 @@ class TestReadSourceResolveFullAdoTriplet:
     """bare-name -> full triplet resolver for at_graph_sha path."""
 
     def test_passthrough_when_already_triplet(self, workspaces_table):
-        result = mcp_module._read_source_resolve_full_ado_triplet(
+        result = source_reader.resolve_full_ado_triplet(
             WORKSPACE_ID, ADO_TRIPLET,
         )
         assert result == ADO_TRIPLET
 
     def test_resolves_bare_repo_to_triplet(self, workspaces_table):
         _seed_azdo_repo_row(workspaces_table, WORKSPACE_ID)
-        result = mcp_module._read_source_resolve_full_ado_triplet(
+        result = source_reader.resolve_full_ado_triplet(
             WORKSPACE_ID, ADO_REPO_BARE,
         )
         assert result == ADO_TRIPLET
 
     def test_returns_none_when_bare_missing(self, workspaces_table):
-        result = mcp_module._read_source_resolve_full_ado_triplet(
+        result = source_reader.resolve_full_ado_triplet(
             WORKSPACE_ID, "does-not-exist",
         )
         assert result is None
@@ -1072,13 +1079,13 @@ class TestReadSourceResolveFullAdoTriplet:
             workspaces_table, WORKSPACE_ID, org="org-b", project="proj",
             repo=ADO_REPO_BARE, connection_id="conn-other",
         )
-        result = mcp_module._read_source_resolve_full_ado_triplet(
+        result = source_reader.resolve_full_ado_triplet(
             WORKSPACE_ID, ADO_REPO_BARE,
         )
         assert result is None
 
     def test_returns_none_on_empty_input(self, workspaces_table):
-        assert mcp_module._read_source_resolve_full_ado_triplet(
+        assert source_reader.resolve_full_ado_triplet(
             WORKSPACE_ID, "",
         ) is None
 
@@ -1089,28 +1096,28 @@ class TestReadSourceAdoAccessToken:
 
     def test_missing_connection_id_raises(self, monkeypatch):
         with pytest.raises(ValueError):
-            mcp_module._read_source_ado_access_token("")
+            source_reader.ado_access_token("")
 
     def test_missing_env_vars_raises_runtime(self, monkeypatch):
         monkeypatch.delenv("AZURE_DEVOPS_TENANT_ID", raising=False)
         monkeypatch.delenv("AZURE_DEVOPS_CLIENT_ID", raising=False)
-        mcp_module._ado_client_secret_cache = None
+        source_reader._ado_client_secret_cache = None
         with pytest.raises(RuntimeError, match="AZURE_DEVOPS"):
-            mcp_module._read_source_ado_access_token(ADO_CONNECTION_ID)
+            source_reader.ado_access_token(ADO_CONNECTION_ID)
 
     def test_missing_ssm_param_raises_runtime(self, monkeypatch):
         monkeypatch.setenv("AZURE_DEVOPS_TENANT_ID", "tenant-abc")
         monkeypatch.setenv("AZURE_DEVOPS_CLIENT_ID", "client-abc")
         monkeypatch.delenv("AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM", raising=False)
-        mcp_module._ado_client_secret_cache = None
+        source_reader._ado_client_secret_cache = None
         with pytest.raises(RuntimeError, match="SSM_PARAM"):
-            mcp_module._read_source_ado_access_token(ADO_CONNECTION_ID)
+            source_reader.ado_access_token(ADO_CONNECTION_ID)
 
     def test_returns_token_from_shared_oauth_helper(self, monkeypatch):
         monkeypatch.setenv("AZURE_DEVOPS_TENANT_ID", "tenant-abc")
         monkeypatch.setenv("AZURE_DEVOPS_CLIENT_ID", "client-abc")
         monkeypatch.setenv("AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM", "/prd/ado/secret")
-        mcp_module._ado_client_secret_cache = None
+        source_reader._ado_client_secret_cache = None
 
         fake_ssm = MagicMock()
         fake_ssm.get_parameter.return_value = {
@@ -1129,7 +1136,7 @@ class TestReadSourceAdoAccessToken:
         with patch("boto3.client", return_value=fake_ssm), \
              patch.object(shared.entra_id_oauth, "refresh_access_token",
                           side_effect=_fake_refresh):
-            token = mcp_module._read_source_ado_access_token(ADO_CONNECTION_ID)
+            token = source_reader.ado_access_token(ADO_CONNECTION_ID)
 
         assert token == "azdo-access-token-value"
         assert captured["connection_id"] == ADO_CONNECTION_ID
@@ -1145,7 +1152,7 @@ class TestReadSourceAdoAccessToken:
         monkeypatch.setenv("AZURE_DEVOPS_TENANT_ID", "tenant-abc")
         monkeypatch.setenv("AZURE_DEVOPS_CLIENT_ID", "client-abc")
         monkeypatch.setenv("AZURE_DEVOPS_CLIENT_SECRET_SSM_PARAM", "/prd/ado/secret")
-        mcp_module._ado_client_secret_cache = None
+        source_reader._ado_client_secret_cache = None
 
         fake_ssm = MagicMock()
         fake_ssm.get_parameter.return_value = {
@@ -1156,7 +1163,7 @@ class TestReadSourceAdoAccessToken:
              patch.object(shared.entra_id_oauth, "refresh_access_token",
                           return_value=None):
             with pytest.raises(RuntimeError, match="reauth"):
-                mcp_module._read_source_ado_access_token(ADO_CONNECTION_ID)
+                source_reader.ado_access_token(ADO_CONNECTION_ID)
 
 
 def _client_error(code):
@@ -1187,7 +1194,7 @@ class TestReadSourceFetchFileAdo:
     def test_url_contains_required_params(self):
         fake, calls = self._stub_urlopen(b"line-a\nline-b\n")
         with patch("urllib.request.urlopen", side_effect=fake):
-            mcp_module._read_source_fetch_file_ado(
+            source_reader.fetch_file_ado(
                 ADO_ORG, ADO_PROJECT, ADO_REPO_BARE,
                 "src/Foo.cs", "azdo-token", ref=None,
             )
@@ -1207,7 +1214,7 @@ class TestReadSourceFetchFileAdo:
         fake, calls = self._stub_urlopen(b"x\n")
         sha = "deadbeef" * 5
         with patch("urllib.request.urlopen", side_effect=fake):
-            mcp_module._read_source_fetch_file_ado(
+            source_reader.fetch_file_ado(
                 ADO_ORG, ADO_PROJECT, ADO_REPO_BARE,
                 "src/Foo.cs", "azdo-token", ref=sha,
             )
@@ -1218,7 +1225,7 @@ class TestReadSourceFetchFileAdo:
     def test_no_ref_omits_version_descriptor(self):
         fake, calls = self._stub_urlopen(b"x\n")
         with patch("urllib.request.urlopen", side_effect=fake):
-            mcp_module._read_source_fetch_file_ado(
+            source_reader.fetch_file_ado(
                 ADO_ORG, ADO_PROJECT, ADO_REPO_BARE,
                 "src/Foo.cs", "azdo-token", ref=None,
             )
@@ -1230,18 +1237,18 @@ class TestReadSourceFetchFileAdo:
         payload = b"one\ntwo\nthree\n"
         fake, _ = self._stub_urlopen(payload)
         with patch("urllib.request.urlopen", side_effect=fake):
-            got = mcp_module._read_source_fetch_file_ado(
+            got = source_reader.fetch_file_ado(
                 ADO_ORG, ADO_PROJECT, ADO_REPO_BARE,
                 "src/Foo.cs", "azdo-token",
             )
         assert got == payload
 
     def test_over_cap_raises_valueerror(self):
-        oversize = b"x" * (mcp_module._READ_SOURCE_MAX_FILE_BYTES + 100)
+        oversize = b"x" * (source_reader.MAX_FILE_BYTES + 100)
         fake, _ = self._stub_urlopen(oversize)
         with patch("urllib.request.urlopen", side_effect=fake):
             with pytest.raises(ValueError, match="read-source cap"):
-                mcp_module._read_source_fetch_file_ado(
+                source_reader.fetch_file_ado(
                     ADO_ORG, ADO_PROJECT, ADO_REPO_BARE,
                     "src/Big.cs", "azdo-token",
                 )
@@ -1255,7 +1262,7 @@ class TestReadSourceFetchFileAdo:
         fake, _ = self._stub_urlopen(envelope)
         with patch("urllib.request.urlopen", side_effect=fake):
             with pytest.raises(ValueError, match="JSON envelope"):
-                mcp_module._read_source_fetch_file_ado(
+                source_reader.fetch_file_ado(
                     ADO_ORG, ADO_PROJECT, ADO_REPO_BARE,
                     "src/Foo.cs", "azdo-token",
                 )
@@ -1272,7 +1279,7 @@ class TestReadSourceFetchFileAdo:
             return resp
 
         with patch("urllib.request.urlopen", side_effect=_fake):
-            mcp_module._read_source_fetch_file_ado(
+            source_reader.fetch_file_ado(
                 ADO_ORG, ADO_PROJECT, ADO_REPO_BARE,
                 "src/Foo.cs", "the-token",
             )
@@ -1289,19 +1296,19 @@ class TestReadSourceRouter:
     """
 
     def test_platform_from_repo_owner_name_is_github(self):
-        assert mcp_module._read_source_platform_from_repo("owner/name") == "github"
+        assert source_reader.platform_from_repo("owner/name") == "github"
 
     def test_platform_from_repo_triplet_is_ado(self):
         assert (
-            mcp_module._read_source_platform_from_repo("org/project/repo")
+            source_reader.platform_from_repo("org/project/repo")
             == "azure_devops"
         )
 
     def test_platform_from_repo_rejects_wrong_shape(self):
-        assert mcp_module._read_source_platform_from_repo("noslash") is None
-        assert mcp_module._read_source_platform_from_repo("a/b/c/d") is None
-        assert mcp_module._read_source_platform_from_repo("") is None
-        assert mcp_module._read_source_platform_from_repo("a//b") is None
+        assert source_reader.platform_from_repo("noslash") is None
+        assert source_reader.platform_from_repo("a/b/c/d") is None
+        assert source_reader.platform_from_repo("") is None
+        assert source_reader.platform_from_repo("a//b") is None
 
     def test_github_workspace_owner_name_repo_dispatches_to_github(
         self, workspaces_table,
@@ -1337,7 +1344,7 @@ class TestReadSourceRouter:
             return resp
 
         with patch("urllib.request.urlopen", side_effect=_fake_urlopen), \
-             patch.object(mcp_module, "_read_source_ado_access_token",
+             patch.object(source_reader, "ado_access_token",
                           return_value="azdo-token"), \
              _patch_user_workspaces([ADO_WORKSPACE_ID]):
             result = mcp_module.handle_read_source(
@@ -1441,7 +1448,7 @@ class TestReadSourceRouter:
             return resp
 
         with patch("urllib.request.urlopen", side_effect=_fake_urlopen), \
-             patch.object(mcp_module, "_read_source_ado_access_token",
+             patch.object(source_reader, "ado_access_token",
                           return_value="azdo-token"), \
              _patch_user_workspaces([ADO_WORKSPACE_ID]):
             result = mcp_module.handle_read_source(
@@ -1476,7 +1483,7 @@ class TestReadSourceRouter:
 
 GITLAB_WORKSPACE_ID = "ws-rs-gitlab-test"
 GITLAB_CONNECTION_ID = "conn-gitlab-abc123"
-# 2-slash slug (group/subgroup/project). _read_source_platform_from_repo
+# 2-slash slug (group/subgroup/project). source_reader.platform_from_repo
 # would call this 'azure_devops' -- the whole point of Decision 6 is that
 # the DDB lookup overrides that shape inference.
 GITLAB_SLUG_NESTED = "acme/backend/api"
@@ -1509,7 +1516,7 @@ class TestReadSourceResolvePlatformGitLab:
 
     def test_gitlab_direct_key_when_repo_hint_is_slug(self, workspaces_table):
         _seed_gitlab_repo_row(workspaces_table, GITLAB_WORKSPACE_ID)
-        info = mcp_module._read_source_resolve_platform(
+        info = source_reader.resolve_platform(
             GITLAB_WORKSPACE_ID, repo_hint=GITLAB_SLUG_NESTED,
         )
         assert info == {
@@ -1520,7 +1527,7 @@ class TestReadSourceResolvePlatformGitLab:
 
     def test_gitlab_query_fallback_when_no_repo_hint(self, workspaces_table):
         _seed_gitlab_repo_row(workspaces_table, GITLAB_WORKSPACE_ID)
-        info = mcp_module._read_source_resolve_platform(GITLAB_WORKSPACE_ID)
+        info = source_reader.resolve_platform(GITLAB_WORKSPACE_ID)
         assert info["platform"] == "gitlab"
         assert info["connection_id"] == GITLAB_CONNECTION_ID
         assert info["slug"] == GITLAB_SLUG_NESTED
@@ -1536,13 +1543,13 @@ class TestReadSourceResolvePlatformGitLab:
         enrolled-repo lookup, not slash count."""
         # Sanity: the bare shape inference disagrees with the truth.
         assert (
-            mcp_module._read_source_platform_from_repo(GITLAB_SLUG_NESTED)
+            source_reader.platform_from_repo(GITLAB_SLUG_NESTED)
             == "azure_devops"
         )
         _seed_gitlab_repo_row(
             workspaces_table, GITLAB_WORKSPACE_ID, slug=GITLAB_SLUG_NESTED,
         )
-        info = mcp_module._read_source_resolve_platform(
+        info = source_reader.resolve_platform(
             GITLAB_WORKSPACE_ID, repo_hint=GITLAB_SLUG_NESTED,
         )
         assert info["platform"] == "gitlab"
@@ -1553,7 +1560,7 @@ class TestReadSourceResolvePlatformGitLab:
         a GitHub install and a GitLab repo resolves to GitHub."""
         # WORKSPACE_ID already has GITHUB_INSTALLATION# from the fixture.
         _seed_gitlab_repo_row(workspaces_table, WORKSPACE_ID)
-        info = mcp_module._read_source_resolve_platform(WORKSPACE_ID)
+        info = source_reader.resolve_platform(WORKSPACE_ID)
         assert info["platform"] == "github"
 
     def test_provider_hint_pins_to_gitlab_over_github(self, workspaces_table):
@@ -1561,14 +1568,14 @@ class TestReadSourceResolvePlatformGitLab:
         short-circuit and resolves the GitLab row directly."""
         # WORKSPACE_ID has a GitHub install; seed a GitLab row too.
         _seed_gitlab_repo_row(workspaces_table, WORKSPACE_ID)
-        info = mcp_module._read_source_resolve_platform(
+        info = source_reader.resolve_platform(
             WORKSPACE_ID, repo_hint=GITLAB_SLUG_NESTED, provider="gitlab",
         )
         assert info["platform"] == "gitlab"
         assert info["connection_id"] == GITLAB_CONNECTION_ID
 
     def test_provider_hint_gitlab_returns_none_when_no_row(self, workspaces_table):
-        info = mcp_module._read_source_resolve_platform(
+        info = source_reader.resolve_platform(
             "ws-no-gitlab", provider="gitlab",
         )
         assert info is None
@@ -1577,13 +1584,13 @@ class TestReadSourceResolvePlatformGitLab:
         """A wrong-slug hint shouldn't hide an existing GitLab row -- the
         fallback query still finds it."""
         _seed_gitlab_repo_row(workspaces_table, GITLAB_WORKSPACE_ID)
-        info = mcp_module._read_source_resolve_platform(
+        info = source_reader.resolve_platform(
             GITLAB_WORKSPACE_ID, repo_hint="wrong/group/project",
         )
         assert info["platform"] == "gitlab"
 
     def test_none_when_no_gitlab_row(self, workspaces_table):
-        assert mcp_module._read_source_resolve_platform(
+        assert source_reader.resolve_platform(
             "ws-empty-no-gitlab",
         ) is None
 
@@ -1592,7 +1599,7 @@ class TestReadSourceResolveFullGitLabSlug:
     """Decision 6: bare project-name -> full nested slug for at_graph_sha."""
 
     def test_passthrough_when_already_has_slash(self, workspaces_table):
-        assert mcp_module._read_source_resolve_full_gitlab_slug(
+        assert source_reader.resolve_full_gitlab_slug(
             GITLAB_WORKSPACE_ID, GITLAB_SLUG_DEEP,
         ) == GITLAB_SLUG_DEEP
 
@@ -1602,13 +1609,13 @@ class TestReadSourceResolveFullGitLabSlug:
         )
         # graph stores the bare project tail 'api'; must recover the full
         # variable-depth slug.
-        result = mcp_module._read_source_resolve_full_gitlab_slug(
+        result = source_reader.resolve_full_gitlab_slug(
             GITLAB_WORKSPACE_ID, "api",
         )
         assert result == GITLAB_SLUG_DEEP
 
     def test_returns_none_when_bare_missing(self, workspaces_table):
-        assert mcp_module._read_source_resolve_full_gitlab_slug(
+        assert source_reader.resolve_full_gitlab_slug(
             GITLAB_WORKSPACE_ID, "does-not-exist",
         ) is None
 
@@ -1622,12 +1629,12 @@ class TestReadSourceResolveFullGitLabSlug:
             workspaces_table, GITLAB_WORKSPACE_ID, slug="acme/team-b/api",
             connection_id="conn-other",
         )
-        assert mcp_module._read_source_resolve_full_gitlab_slug(
+        assert source_reader.resolve_full_gitlab_slug(
             GITLAB_WORKSPACE_ID, "api",
         ) is None
 
     def test_returns_none_on_empty_input(self, workspaces_table):
-        assert mcp_module._read_source_resolve_full_gitlab_slug(
+        assert source_reader.resolve_full_gitlab_slug(
             GITLAB_WORKSPACE_ID, "",
         ) is None
 
@@ -1638,7 +1645,7 @@ class TestReadSourceGitLabAccessToken:
 
     def test_missing_connection_id_raises(self):
         with pytest.raises(ValueError):
-            mcp_module._read_source_gitlab_access_token("")
+            source_reader.gitlab_access_token("")
 
     def test_returns_token_from_shared_oauth_helper(self, monkeypatch):
         monkeypatch.setenv("OAUTH_KMS_KEY_ARN", "arn:aws:kms:us-west-2:1:key/abc")
@@ -1658,7 +1665,7 @@ class TestReadSourceGitLabAccessToken:
                           side_effect=_fake_get_valid), \
              patch.object(gitlab_oauth, "instance_for_connection",
                           return_value=_inst):
-            token, base_url = mcp_module._read_source_gitlab_access_token(
+            token, base_url = source_reader.gitlab_access_token(
                 GITLAB_CONNECTION_ID,
             )
         assert token == "gitlab-access-token-value"
@@ -1675,7 +1682,7 @@ class TestReadSourceGitLabAccessToken:
              patch.object(gitlab_oauth, "instance_for_connection",
                           return_value=_inst):
             with pytest.raises(RuntimeError, match="reauth"):
-                mcp_module._read_source_gitlab_access_token(GITLAB_CONNECTION_ID)
+                source_reader.gitlab_access_token(GITLAB_CONNECTION_ID)
 
 
 class TestReadSourceFetchFileGitLab:
@@ -1688,7 +1695,7 @@ class TestReadSourceFetchFileGitLab:
         with patch.object(gitlab_api, "get_default_branch") as mock_branch, \
              patch.object(gitlab_api, "get_file_content",
                           return_value=b"a\nb\nc\n") as mock_get:
-            raw = mcp_module._read_source_fetch_file_gitlab(
+            raw = source_reader.fetch_file_gitlab(
                 GITLAB_SLUG_DEEP, "src/main.py", "gl-token", ref=sha,
             )
         assert raw == b"a\nb\nc\n"
@@ -1703,7 +1710,7 @@ class TestReadSourceFetchFileGitLab:
                           return_value="main") as mock_branch, \
              patch.object(gitlab_api, "get_file_content",
                           return_value=b"x\n") as mock_get:
-            mcp_module._read_source_fetch_file_gitlab(
+            source_reader.fetch_file_gitlab(
                 GITLAB_SLUG_NESTED, "src/main.py", "gl-token", ref=None,
             )
         mock_branch.assert_called_once_with(
@@ -1713,10 +1720,10 @@ class TestReadSourceFetchFileGitLab:
 
     def test_over_cap_raises_valueerror(self):
         import shared.gitlab_api as gitlab_api  # noqa: WPS433
-        oversize = b"x" * (mcp_module._READ_SOURCE_MAX_FILE_BYTES + 100)
+        oversize = b"x" * (source_reader.MAX_FILE_BYTES + 100)
         with patch.object(gitlab_api, "get_file_content", return_value=oversize):
             with pytest.raises(ValueError, match="read-source cap"):
-                mcp_module._read_source_fetch_file_gitlab(
+                source_reader.fetch_file_gitlab(
                     GITLAB_SLUG_DEEP, "src/Big.py", "gl-token", ref="main",
                 )
 
@@ -1733,7 +1740,7 @@ class TestReadSourceRouterGitLab:
                          return_value=default_branch),
             patch.object(gitlab_api, "get_file_content",
                          return_value=file_text.encode()),
-            patch.object(mcp_module, "_read_source_gitlab_access_token",
+            patch.object(source_reader, "gitlab_access_token",
                          return_value=("gl-token", "https://gitlab.com")),
         ]
 
@@ -1815,7 +1822,7 @@ class TestReadSourceRouterGitLab:
     ):
         """at_graph_sha on a GitLab workspace: the graph row carries the
         bare project tail; the resolver must recover the full nested slug
-        via _read_source_resolve_full_gitlab_slug and pin the read to the
+        via source_reader.resolve_full_gitlab_slug and pin the read to the
         graph_sha."""
         _seed_gitlab_repo_row(
             workspaces_table, GITLAB_WORKSPACE_ID, slug=GITLAB_SLUG_DEEP,
@@ -1838,7 +1845,7 @@ class TestReadSourceRouterGitLab:
         patches = [
             patch.object(gitlab_api, "get_file_content",
                          side_effect=_fake_get_file_content),
-            patch.object(mcp_module, "_read_source_gitlab_access_token",
+            patch.object(source_reader, "gitlab_access_token",
                          return_value=("gl-token", "https://gitlab.com")),
         ]
         _enter(patches)

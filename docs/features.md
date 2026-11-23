@@ -64,7 +64,7 @@ Keep entries terse — this is the index, not the spec.
   run it; the engineer surface no longer runs single-channel.
 - **RAG synthesis grounding parity** — `build_rag_system_prompt`
   (ask-claude server-side synthesis; query-kb invokes it) carries the same
-  eight grounding blocks as chat (value/read-source/line-citation/
+  eight grounding blocks as chat (value/source-lines/line-citation/
   list-completeness/code-over-docs/structural-attribution/SAST-scope/
   requirement-strength), closing a silent under-grounding on the RAG path.
 - **MCP tool-response grounding** — the MCP server has no synthesis-prompt
@@ -89,6 +89,14 @@ Keep entries terse — this is the index, not the spec.
   wants to make can be verified against source-of-truth git state
   (GitHub + Azure DevOps + GitLab supported). ADR-030 (v1.1 adds ADO
   dispatch; GitLab via ADR-050).
+- **Source lines in chat** — when a question's symbol resolves in the
+  graph, chat reads the real lines of its definition at the graph's
+  commit and adds them to the context as a `SOURCE LINES` block, so exact
+  error codes, messages and field names come from code, not from a
+  summary. Shared reader `shared/source_reader.py` (also behind the MCP
+  `read_source` tool). Tfvars `chat_source_lines_enabled` (kill switch),
+  `chat_source_lines_per_symbol` (80), `chat_source_max_symbols` (3).
+  ADR-030 v1.2.
 - **Streaming chat UI** — `lambda/chat` over Lambda Web Adapter,
   NDJSON event stream, citation rendering, file attachments.
 - **Multi-workspace search** — chat can span workspaces the user has

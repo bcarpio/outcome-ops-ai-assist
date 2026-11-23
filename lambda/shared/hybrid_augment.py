@@ -305,6 +305,11 @@ def augment_with_symbol_graph(
         # let an operator tell a routing-design skip ("intent_pattern")
         # from a deploy bug ("no_table") without grep'ing CloudWatch.
         "graph_skip_reason": None,
+        # Definition sites of the resolved target symbol(s), one dict per
+        # (workspace, canonical) with repo / file_path / line. Consumers
+        # read the real source lines for these (ADR-030 v1.2). Empty when
+        # the graph did not fire or found no definition.
+        "graph_definitions": [],
     }
 
     if not _graph_retrieval_enabled():
@@ -395,8 +400,14 @@ def augment_with_symbol_graph(
     # RAG-only. Probe the question text for identifier-shaped tokens and, if
     # one resolves in the graph, adopt it and fire. DDB-only (no extra
     # Bedrock call), so the router's throttle-degrade quota-safety holds.
+    #
+    # It also runs for FIRING intents (structural / hybrid / unknown) when
+    # the router extracted no symbol: "unknown" + no symbol otherwise
+    # returned early with no_symbol, so a question naming
+    # verify_magic_token got no graph facts and no source lines. ADR-059
+    # says the backstop fires regardless of the intent verdict.
     effective_symbol = decision.symbol_candidate
-    if not effective_symbol and not fires_by_intent:
+    if not effective_symbol:
         bs_symbol = _deterministic_backstop_symbol(
             question, workspace_ids, symbol_graph_table
         )
@@ -538,6 +549,7 @@ def augment_with_symbol_graph(
         # interface-shaped names run both implementers + callers and keep
         # whichever surfaced more; else callers.
         def _run(relation_fn):
+            definition_sites.clear()
             per_canonical: List[Any] = []
             merged: List[Dict[str, Any]] = []
             worst = None
@@ -549,6 +561,14 @@ def augment_with_symbol_graph(
                     code_maps_table_name=code_maps_table,
                 )
                 def_site = cand_defs.sites[0] if cand_defs.sites else None
+                if def_site is not None:
+                    definition_sites.append({
+                        "workspace_id": ws,
+                        "symbol": target,
+                        "repo": getattr(def_site, "repo", ""),
+                        "file_path": getattr(def_site, "file_path", ""),
+                        "line": getattr(def_site, "line", None),
+                    })
                 result = _query(relation_fn, ws, target)
                 per_canonical.append((target, def_site, result))
                 merged.extend(_site_to_dict(s) for s in result.sites)
@@ -557,6 +577,7 @@ def augment_with_symbol_graph(
                     worst = s if worst is None else max(worst, s)
             return per_canonical, merged, worst
 
+        definition_sites: List[Dict[str, Any]] = []
         if is_subpath:
             relation = "importers"
             per_canonical, merged, worst = _run(importers)
@@ -602,6 +623,7 @@ def augment_with_symbol_graph(
         if "graph" not in out["retrievals_fired"]:
             out["retrievals_fired"].insert(0, "graph")
         out["graph_relation"] = relation
+        out["graph_definitions"] = list(definition_sites)
         out["graph_result_count"] = len(merged)
         out["graph_sites"] = merged
         out["graph_staleness_seconds"] = worst

@@ -2691,3 +2691,75 @@ class TestEdgeCases:
         assert kwargs["details"]["message_count"] == 2
         assert kwargs["details"]["oldest_message_at"] == "2026-04-01T10:00:00+00:00"
         assert kwargs["source_ip"] == "203.0.113.7"
+
+
+# ============================================================================
+# Source lines for graph-matched symbols (ADR-030 v1.2)
+# ============================================================================
+
+_SOURCE_DEF = {
+    "workspace_id": "ws_test",
+    "symbol": "python:lambda.auth.handler::verify_magic_token",
+    "repo": "outcome-ops-ai-assist",
+    "file_path": "lambda/auth/handler.py",
+    "line": 531,
+}
+_SOURCE_WINDOW = {
+    "symbol": _SOURCE_DEF["symbol"],
+    "repo": "owner/outcome-ops-ai-assist",
+    "file_path": "lambda/auth/handler.py",
+    "ref": "abcdef0123456789",
+    "lines": [{"line": 531, "text": "def verify_magic_token(token):"},
+              {"line": 532, "text": "    raise AuthError('TOKEN_ALREADY_USED')"}],
+    "truncated": False,
+}
+
+
+class TestSourceLinesBlock:
+    def test_no_definitions(self):
+        assert handler_module._source_lines_block([]) == ""
+
+    def test_kill_switch(self, monkeypatch):
+        monkeypatch.setenv("CHAT_SOURCE_LINES_ENABLED", "false")
+        with patch.object(handler_module.source_reader, "read_definitions") as rd:
+            assert handler_module._source_lines_block([_SOURCE_DEF]) == ""
+        rd.assert_not_called()
+
+    def test_read_failure_degrades_to_no_block(self):
+        with patch.object(handler_module.source_reader, "read_definitions",
+                          side_effect=RuntimeError("boom")):
+            assert handler_module._source_lines_block([_SOURCE_DEF]) == ""
+
+    def test_renders_block_and_passes_config(self, monkeypatch):
+        monkeypatch.setenv("CHAT_SOURCE_MAX_SYMBOLS", "2")
+        monkeypatch.setenv("CHAT_SOURCE_LINES_PER_SYMBOL", "40")
+        with patch.object(handler_module.source_reader, "read_definitions",
+                          return_value=[_SOURCE_WINDOW, {"symbol": "x", "error": "nope"}]) as rd:
+            block = handler_module._source_lines_block([_SOURCE_DEF])
+        rd.assert_called_once_with([_SOURCE_DEF], max_definitions=2, max_lines=40)
+        assert "TOKEN_ALREADY_USED" in block
+        assert "Source could not be read: nope" in block
+
+    def test_chat_stream_puts_source_lines_in_model_context(self, mock_table, sample_embedding):
+        TestHandleChatStream._setup_mocks(None, mock_table, sample_embedding)
+        augment = {
+            "decision": None, "graph_block": "", "retrievals_fired": [],
+            "graph_sha": None, "graph_staleness_seconds": None,
+            "graph_result_count": None, "graph_definitions": [_SOURCE_DEF],
+        }
+        original = handler_module._augment_context_with_symbol_graph
+        handler_module._augment_context_with_symbol_graph = MagicMock(return_value=augment)
+        try:
+            with patch.object(handler_module.source_reader, "read_definitions",
+                              return_value=[_SOURCE_WINDOW]):
+                event = {"body": json.dumps({
+                    "message": "What errors does verify_magic_token return?",
+                    "workspace_id": "ws_test",
+                    "user": {"email": "user@example.com"},
+                })}
+                list(handle_chat_stream(event))
+        finally:
+            handler_module._augment_context_with_symbol_graph = original
+        sent = json.dumps(mock_bedrock_client.converse_stream.call_args[1])
+        assert "SOURCE LINES" in sent
+        assert "TOKEN_ALREADY_USED" in sent

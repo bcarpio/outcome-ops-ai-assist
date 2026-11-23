@@ -493,6 +493,32 @@ variable "retrieval_lane_floor" {
   }
 }
 
+variable "chat_source_lines_enabled" {
+  type        = bool
+  description = "Attach the real source lines of graph-matched symbols to the chat synthesis context, so exact values come from code rather than from code-map summaries (ADR-030 v1.2). Kill switch."
+  default     = true
+}
+
+variable "chat_source_lines_per_symbol" {
+  type        = number
+  description = "Maximum source lines attached per graph-matched symbol in chat (ADR-030 v1.2)."
+  default     = 80
+  validation {
+    condition     = var.chat_source_lines_per_symbol >= 10 && var.chat_source_lines_per_symbol <= 300
+    error_message = "chat_source_lines_per_symbol must be between 10 and 300."
+  }
+}
+
+variable "chat_source_max_symbols" {
+  type        = number
+  description = "Maximum graph-matched symbols whose source lines chat attaches per turn (ADR-030 v1.2)."
+  default     = 3
+  validation {
+    condition     = var.chat_source_max_symbols >= 1 && var.chat_source_max_symbols <= 10
+    error_message = "chat_source_max_symbols must be between 1 and 10."
+  }
+}
+
 # Bedrock model pricing (USD per million tokens)
 variable "bedrock_advanced_input_price" {
   type        = number
