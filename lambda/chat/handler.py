@@ -1169,19 +1169,19 @@ def rerank_results(
 ) -> List[Dict]:
     """Rerank documents via the shared Bedrock Rerank primitive.
 
-    Resolves chat's ADR-016 workload profile ARN (cost attribution) and passes
-    it plus the request attribution (so the audit row lands on the causing
-    workspace/user, not WS#SYSTEM) into shared.retrieval.rerank. Falls back to
-    the foundation-model ARN when no profile is configured.
+    Passes the request attribution (so the audit row lands on the causing
+    workspace/user, not WS#SYSTEM) into shared.retrieval.rerank.
+
+    The Bedrock Rerank API accepts only a FOUNDATION-MODEL ARN and rejects
+    application inference profile ARNs ("The provided model ARN for
+    reranking is invalid"), so unlike InvokeModel, rerank cannot use the
+    chat workload profile even when BEDROCK_CHAT_COHERE_RERANK_PROFILE_ARN
+    is set. Passing the profile ARN made every chat rerank fail and fall
+    back to cosine order. Same rule as query-kb and the MCP server.
     """
-    rerank_arn = model_client.resolve_profile_arn("chat", "cohere-rerank") or (
-        f"arn:aws:bedrock:"
-        f"{_get_bedrock_agent_runtime_client().meta.region_name}"
-        f"::foundation-model/{RERANK_MODEL_ID}"
-    )
     return retrieval.rerank(
         bedrock_agent_runtime_client=_get_bedrock_agent_runtime_client(),
-        rerank_model_id=rerank_arn,
+        rerank_model_id=RERANK_MODEL_ID,
         query=query,
         documents=documents,
         top_n=top_n,

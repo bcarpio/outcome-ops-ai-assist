@@ -1361,6 +1361,39 @@ class TestPerLaneRerank:
             )
 
 
+class TestRerankModelArn:
+    """Bedrock Rerank rejects application inference profile ARNs, so chat
+    must pass the foundation-model id even when the chat rerank profile
+    env var is set (issue #57: every chat rerank failed and fell back to
+    cosine order)."""
+
+    def test_rerank_ignores_profile_arn_and_uses_model_id(self, monkeypatch):
+        from unittest.mock import MagicMock, patch
+
+        monkeypatch.setenv(
+            "BEDROCK_CHAT_COHERE_RERANK_PROFILE_ARN",
+            "arn:aws:bedrock:us-west-2:123456789012:"
+            "application-inference-profile/abc123",
+        )
+        client = MagicMock()
+        client.meta.region_name = "us-west-2"
+        client.rerank.return_value = {
+            "results": [{"index": 0, "relevanceScore": 0.9}],
+        }
+        with patch.object(
+            handler_module, "_get_bedrock_agent_runtime_client",
+            return_value=client,
+        ):
+            handler_module.rerank_results("q", [{"text": "d", "score": 0.5}])
+
+        model_arn = client.rerank.call_args.kwargs["rerankingConfiguration"][
+            "bedrockRerankingConfiguration"
+        ]["modelConfiguration"]["modelArn"]
+        assert "::foundation-model/" in model_arn
+        assert model_arn.endswith(handler_module.RERANK_MODEL_ID)
+        assert "inference-profile" not in model_arn
+
+
 class TestFormatContext:
     """Test formatting search results as prompt context."""
 
