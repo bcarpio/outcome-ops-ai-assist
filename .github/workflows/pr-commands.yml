@@ -19,9 +19,13 @@ jobs:
     runs-on: ubuntu-latest
     environment: prd
     # Only run on PR comments (not issue comments) that start with "outcomeops:"
+    # and only for commenters with write-level association. This job mints prd
+    # AWS credentials, so a comment from an unaffiliated account must never
+    # reach it.
     if: |
       github.event.issue.pull_request &&
-      startsWith(github.event.comment.body, 'outcomeops:')
+      startsWith(github.event.comment.body, 'outcomeops:') &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
 
     env:
       # Spoke role ARN kept as a SECRET (masked in public logs); read via env
@@ -66,19 +70,30 @@ jobs:
           role-skip-session-tagging: true
 
       - name: Invoke Handle Command Lambda
+        # Every value that comes from the event or the PR (comment body,
+        # commenter, head branch name) is attacker-controlled. Pass it through
+        # env and read it as a quoted shell variable. Never interpolate
+        # github.event.* expressions or PR-derived step outputs into run: text:
+        # Actions substitutes them before bash parses the script, so a quote in
+        # the value becomes shell code.
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+          COMMENTER: ${{ github.event.comment.user.login }}
+          PR_BRANCH: ${{ steps.pr.outputs.branch }}
         run: |
-          FUNCTION_NAME="${{ env.ENVIRONMENT }}-outcome-ops-ai-assist-handle-command"
+          FUNCTION_NAME="${ENVIRONMENT}-outcome-ops-ai-assist-handle-command"
 
-          # Extract first line of comment and escape for JSON
-          COMMAND=$(echo '${{ github.event.comment.body }}' | head -1)
+          # First line of the comment; jq does the JSON escaping
+          COMMAND=$(printf '%s\n' "$COMMENT_BODY" | head -1)
 
-          # Build payload with proper JSON escaping
           PAYLOAD=$(jq -n \
             --arg cmd "$COMMAND" \
-            --argjson pr_num "${{ github.event.issue.number }}" \
-            --arg repo "${{ github.repository }}" \
-            --arg commenter "${{ github.event.comment.user.login }}" \
-            --arg branch "${{ steps.pr.outputs.branch }}" \
+            --argjson pr_num "$PR_NUMBER" \
+            --arg repo "$REPO" \
+            --arg commenter "$COMMENTER" \
+            --arg branch "$PR_BRANCH" \
             '{
               command: $cmd,
               pr_number: $pr_num,
