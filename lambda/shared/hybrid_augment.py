@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from shared.router import classify_intent
 from shared.context_builder import (
@@ -669,6 +669,17 @@ extra names from crowding it out."""
 _CODE_MAP_CANDIDATE_CAP = 6
 """Max candidate names resolved per turn; bounds the DynamoDB queries."""
 
+_RERANK_POOL = 20
+"""How many word-ranked candidates are sent to the reranker (one call)."""
+
+_RERANK_CONTEXT_CHARS = 600
+"""Max summary text, per candidate, that the reranker judges it by."""
+
+RerankFn = Callable[[str, List[Dict[str, Any]]], List[Dict[str, Any]]]
+"""(question, docs with a ``text`` key) -> the docs reordered, each carrying
+``rerank_score``. ``shared.retrieval.rerank`` has this shape once bound to a
+client and model; on failure it returns the docs unscored."""
+
 _CANONICALS_PER_CANDIDATE = 3
 """Max canonical ids checked for one bare name (overloads across modules)."""
 
@@ -740,6 +751,7 @@ def code_map_definitions(
     max_definitions: int = 3,
     symbol_graph_table_name: Optional[str] = None,
     code_maps_table_name: Optional[str] = None,
+    rerank_fn: Optional[RerankFn] = None,
 ) -> List[Dict[str, Any]]:
     """Definition sites for the functions the top code-map hits describe.
 
@@ -752,6 +764,10 @@ def code_map_definitions(
     and a name only counts when it resolves to a non-test definition in the
     hit's own repo, so a summary that mentions another repo's helper cannot
     pull that repo's source in.
+
+    ``rerank_fn``, when given, orders the candidates by how well the summary
+    text around each name answers the question. Without it, or if it fails,
+    the word ranking stands.
     """
     try:
         return _code_map_definitions(
@@ -761,10 +777,47 @@ def code_map_definitions(
             max_definitions=max_definitions,
             symbol_graph_table_name=symbol_graph_table_name,
             code_maps_table_name=code_maps_table_name,
+            rerank_fn=rerank_fn,
         )
     except Exception:  # noqa: BLE001 - fail-soft, chat must still answer
         logger.exception("[hybrid.code_map_defs] failed; no source lines")
         return []
+
+
+def _name_context(text: str, name: str) -> str:
+    """The summary sentences that mention ``name``, prefixed with it, capped
+    at ``_RERANK_CONTEXT_CHARS``: what the reranker judges the name by."""
+    pattern = re.compile(r"(?<![A-Za-z0-9_])" + re.escape(name) + r"(?![A-Za-z0-9_])")
+    picked: List[str] = []
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", text or ""):
+        if pattern.search(sentence):
+            picked.append(sentence.strip())
+    return f"{name}: {' '.join(picked)}"[:_RERANK_CONTEXT_CHARS]
+
+
+def _rerank_candidates(
+    question: str,
+    pool: List[Tuple[Any, ...]],
+    contexts: Dict[Tuple[str, str, str], str],
+    rerank_fn: RerankFn,
+) -> Optional[List[Tuple[Any, ...]]]:
+    """``pool`` reordered by the reranker, or None to keep the word order
+    (rerank raised, returned nothing, or fell back to unscored docs)."""
+    docs = [
+        {"text": contexts.get((c[-3], c[-2], c[-1]), c[-1]), "_idx": i}
+        for i, c in enumerate(pool)
+    ]
+    try:
+        ranked = rerank_fn(question, docs)
+    except Exception:  # noqa: BLE001 - fall back to the word ranking
+        logger.exception("[hybrid.code_map_defs] candidate rerank failed")
+        return None
+    if not ranked or any("rerank_score" not in d for d in ranked):
+        return None
+    order = [d["_idx"] for d in ranked if isinstance(d.get("_idx"), int)]
+    seen_idx = set(order)
+    order += [i for i in range(len(pool)) if i not in seen_idx]
+    return [pool[i] for i in order]
 
 
 def _code_map_definitions(
@@ -775,6 +828,7 @@ def _code_map_definitions(
     max_definitions: int,
     symbol_graph_table_name: Optional[str],
     code_maps_table_name: Optional[str],
+    rerank_fn: Optional[RerankFn] = None,
 ) -> List[Dict[str, Any]]:
     if max_definitions < 1 or not search_results or not workspace_ids:
         return []
@@ -800,6 +854,7 @@ def _code_map_definitions(
     # 1. Candidate names from the top code-map hits that share at least one
     #    word with the question.
     matched: List[Tuple[int, str, str, str, set, int]] = []
+    contexts: Dict[Tuple[str, str, str], str] = {}
     seen = set()
     order = 0
     hits = [h for h in search_results if _is_code_map_hit(h)][:_CODE_MAP_HIT_LIMIT]
@@ -819,6 +874,7 @@ def _code_map_definitions(
             shared = parts & q_words
             if shared:
                 matched.append((order, ws, repo, name, shared, len(parts)))
+                contexts[key] = _name_context(text, name)
                 order += 1
 
     # 2. Rank by the number of question words the name shares, so a name
@@ -842,11 +898,23 @@ def _code_map_definitions(
         )
         for o, ws, repo, name, shared, n_parts in matched
     )
+    # 3. Rerank. Word overlap cannot tell the topic of a question ("magic
+    #    link") from what is asked about it ("token", "how long"): in an
+    #    auth summary "token" can be commoner than "link". So when a
+    #    reranker is available, order the top of the word ranking by how
+    #    well the summary text around each name answers the question.
+    ranking = "words"
+    if rerank_fn is not None and len(scored) > 1:
+        pool = scored[:_RERANK_POOL]
+        reordered = _rerank_candidates(question, pool, contexts, rerank_fn)
+        if reordered is not None:
+            scored = reordered + scored[_RERANK_POOL:]
+            ranking = "rerank"
     candidates = scored[:_CODE_MAP_CANDIDATE_CAP]
 
     from shared.symbol_graph_reader import definitions  # type: ignore
 
-    # 3. Resolve each name to a non-test definition in the hit's repo.
+    # 4. Resolve each name to a non-test definition in the hit's repo.
     out: List[Dict[str, Any]] = []
     resolved_names: List[str] = []
     for _count, _score, _ratio, _ord, ws, repo, name in candidates:
@@ -880,7 +948,7 @@ def _code_map_definitions(
             resolved_names.append(name)
             break
     print(
-        f"[SOURCE] code-map fallback: hits={len(hits)} "
+        f"[SOURCE] code-map fallback: hits={len(hits)} ranking={ranking} "
         f"candidates={[c[6] for c in candidates]} resolved={resolved_names}"
     )
     return out

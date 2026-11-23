@@ -310,16 +310,25 @@ from the top code-map hits (`hybrid_augment.code_map_definitions`):
    candidate shares ("magic" in a magic-link question) counts for little
    and an attribute word few share ("token") decides. Remaining ties go
    to the larger share of the name's words matched, then to order of
-   appearance. At most 6 candidates are resolved per turn.
-4. Resolve each name through the bare-name index and take the first
+   appearance.
+4. When reranking is enabled, send the top 20 of that ranking to the
+   reranker chat already uses (Cohere Rerank, one call), each judged on
+   the summary sentences that mention it, and take its order. Word
+   statistics cannot tell the topic of a question ("magic link") from
+   what is asked about it ("token", "how long"): in a real auth summary
+   "token" is in more names than "link", so step 3 alone picked the
+   request-side functions. If the rerank fails, the step 3 order stands.
+   At most 6 candidates are resolved per turn.
+5. Resolve each name through the bare-name index and take the first
    definition that lives in the hit's own repo and is not under a test
    path.
-5. Feed the result to the same reader as v1.2, under the same
+6. Feed the result to the same reader as v1.2, under the same
    `chat_source_max_symbols` and `chat_source_lines_per_symbol` caps
    and the same `chat_source_lines_enabled` kill switch.
 
-It is DynamoDB only (no model call) and fail-soft: any error yields no
-definitions, and the turn answers as before.
+It makes DynamoDB reads and at most one rerank call (no LLM call), and
+it is fail-soft: a rerank error keeps the word ranking, and any other
+error yields no definitions, so the turn answers as before.
 
 ### v1.3 Consequences
 

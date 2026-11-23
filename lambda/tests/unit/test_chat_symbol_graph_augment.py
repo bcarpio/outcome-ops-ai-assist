@@ -1451,3 +1451,157 @@ def test_code_map_definitions_reads_past_the_top_three_hits():
         "python:lambda.auth.handler::verify_magic_token",
         "python:lambda.auth.handler::_claim_magic_token_jti",
     ]
+
+
+# Shaped like the real auth summary from the live #55 test: "token" is in
+# more candidate names than "link", so word statistics favor the
+# request-side magic-link names over the functions that hold the token,
+# expiry and single-use answers.
+_TOKEN_HEAVY_SUMMARY = (
+    "handle_magic_link validates MagicLinkRequest and calls "
+    "record_magic_link_request, then send_magic_link_email. "
+    "send_magic_link_email builds the link with create_magic_token, which "
+    "sets exp from MAGIC_LINK_EXPIRY and a random jti. "
+    "handle_verify calls verify_magic_token, which checks the signature and "
+    "purpose, then _claim_magic_token_jti makes the single-use claim. "
+    "create_access_token issues the session access_token. "
+    "create_unsubscribe_token and _decode_unsubscribe_token handle email "
+    "opt-out. refresh_token rotates sessions."
+)
+
+_TOKEN_QUESTION = (
+    "How do magic links work in the app? What's in the token, how long is "
+    "it valid, and how is single use enforced?"
+)
+
+
+def _seed_token_heavy_graph():
+    _seed_magic_link_graph()
+    for target, line in (
+        ("python:lambda.auth.handler::handle_magic_link", 1441),
+        ("python:lambda.auth.handler::MagicLinkRequest", 356),
+        ("python:lambda.auth.handler::record_magic_link_request", 700),
+        ("python:lambda.auth.handler::send_magic_link_email", 720),
+    ):
+        _put_fact(
+            workspace_id=WORKSPACE_ID, repo=REPO, commit_sha=SHA, kind="defines",
+            source_symbol_id="python:lambda.auth.handler::<module>",
+            target_symbol_id=target, file_path="lambda/auth/handler.py", line=line,
+        )
+
+
+def _attribute_reranker(calls):
+    """Stand-in for Cohere with fixed relevance per candidate name. Unit
+    tests check the plumbing (one call, judged on the right text, order
+    applied); how well Cohere judges real summaries is a live test."""
+    relevance = {
+        "create_magic_token": 0.9,
+        "verify_magic_token": 0.8,
+        "_claim_magic_token_jti": 0.7,
+    }
+
+    def _rerank(question, docs):
+        calls.append((question, docs))
+        scored = [
+            {**d, "rerank_score": relevance.get(d["text"].split(":", 1)[0], 0.1)}
+            for d in docs
+        ]
+        return sorted(scored, key=lambda d: -d["rerank_score"])
+    return _rerank
+
+
+def test_code_map_definitions_word_ranking_alone_misses_token_heavy_summary():
+    """Documents the limit the rerank step exists for (live #55, third run)."""
+    from shared.hybrid_augment import code_map_definitions
+
+    _create_symbol_graph_table()
+    _create_code_maps_table()
+    _seed_token_heavy_graph()
+    defs = code_map_definitions(
+        _TOKEN_QUESTION, [_code_map_hit(_TOKEN_HEAVY_SUMMARY)], [WORKSPACE_ID],
+        max_definitions=3,
+    )
+    assert "python:lambda.auth.handler::create_magic_token" not in [
+        d["symbol"] for d in defs
+    ]
+
+
+def test_code_map_definitions_rerank_picks_functions_that_answer():
+    from shared.hybrid_augment import code_map_definitions
+
+    _create_symbol_graph_table()
+    _create_code_maps_table()
+    _seed_token_heavy_graph()
+    calls = []
+    defs = code_map_definitions(
+        _TOKEN_QUESTION, [_code_map_hit(_TOKEN_HEAVY_SUMMARY)], [WORKSPACE_ID],
+        max_definitions=3, rerank_fn=_attribute_reranker(calls),
+    )
+    assert [d["symbol"] for d in defs] == [
+        "python:lambda.auth.handler::create_magic_token",
+        "python:lambda.auth.handler::verify_magic_token",
+        "python:lambda.auth.handler::_claim_magic_token_jti",
+    ]
+    # One rerank call, judged on the summary sentences around each name.
+    assert len(calls) == 1
+    texts = [d["text"] for d in calls[0][1]]
+    assert any(
+        t.startswith("create_magic_token: ") and "MAGIC_LINK_EXPIRY" in t
+        for t in texts
+    )
+
+
+@pytest.mark.parametrize("failure", ["raises", "unscored", "empty"])
+def test_code_map_definitions_rerank_failure_keeps_word_ranking(failure):
+    from shared.hybrid_augment import code_map_definitions
+
+    _create_symbol_graph_table()
+    _create_code_maps_table()
+    _seed_token_heavy_graph()
+
+    def _broken(question, docs):
+        if failure == "raises":
+            raise RuntimeError("bedrock down")
+        if failure == "unscored":
+            return docs  # shared.retrieval.rerank's fallback shape
+        return []
+
+    args = (_TOKEN_QUESTION, [_code_map_hit(_TOKEN_HEAVY_SUMMARY)], [WORKSPACE_ID])
+    with_broken = code_map_definitions(*args, max_definitions=3, rerank_fn=_broken)
+    words_only = code_map_definitions(*args, max_definitions=3)
+    assert with_broken == words_only
+    assert with_broken
+
+
+def test_code_map_definitions_rerank_partial_result_keeps_the_rest():
+    """A reranker that returns fewer docs than it was given still leaves
+    the unreturned candidates resolvable, after the returned ones."""
+    from shared.hybrid_augment import code_map_definitions
+
+    _create_symbol_graph_table()
+    _create_code_maps_table()
+    _seed_token_heavy_graph()
+
+    def _only_claim(question, docs):
+        hit = next(d for d in docs if d["text"].startswith("_claim_magic_token_jti:"))
+        return [{**hit, "rerank_score": 0.9}]
+
+    defs = code_map_definitions(
+        _TOKEN_QUESTION, [_code_map_hit(_TOKEN_HEAVY_SUMMARY)], [WORKSPACE_ID],
+        max_definitions=2, rerank_fn=_only_claim,
+    )
+    assert defs[0]["symbol"] == "python:lambda.auth.handler::_claim_magic_token_jti"
+    assert len(defs) == 2
+
+
+def test_name_context_collects_sentences_that_mention_the_name():
+    from shared.hybrid_augment import _name_context
+
+    text = (
+        "create_magic_token sets exp. Unrelated sentence.\n"
+        "verify_magic_token calls create_magic_token_v2. Again create_magic_token."
+    )
+    assert _name_context(text, "create_magic_token") == (
+        "create_magic_token: create_magic_token sets exp. Again create_magic_token."
+    )
+    assert len(_name_context("x " * 1000 + "create_magic_token.", "create_magic_token")) <= 600

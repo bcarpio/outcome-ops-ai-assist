@@ -2844,3 +2844,29 @@ class TestCodeMapSourceFallback:
         cmd, rd = self._run(mock_table, sample_embedding, [])
         cmd.assert_not_called()
         rd.assert_not_called()
+
+
+class TestCodeMapCandidateReranker:
+    """ADR-030 v1.3: the code-map source fallback reranks its candidate
+    names with the same Bedrock Rerank call chat already uses."""
+
+    def test_none_when_rerank_disabled(self, monkeypatch):
+        monkeypatch.setattr(handler_module, "RERANK_ENABLED", False)
+        assert handler_module._code_map_candidate_reranker("u", "ws", "ip", "ua") is None
+
+    def test_reranks_with_request_attribution(self, monkeypatch):
+        monkeypatch.setattr(handler_module, "RERANK_ENABLED", True)
+        docs = [{"text": "create_magic_token: sets exp"}]
+        with patch.object(handler_module, "rerank_results", return_value=docs) as rr:
+            fn = handler_module._code_map_candidate_reranker(
+                "user@example.com", "ws-1", "1.2.3.4", "agent",
+            )
+            assert fn("How long is the token valid?", docs) == docs
+        rr.assert_called_once_with(
+            "How long is the token valid?",
+            docs,
+            user_email="user@example.com",
+            workspace_id="ws-1",
+            source_ip="1.2.3.4",
+            user_agent="agent",
+        )

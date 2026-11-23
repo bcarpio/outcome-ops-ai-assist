@@ -1195,6 +1195,27 @@ def rerank_results(
 
 
 
+def _code_map_candidate_reranker(
+    user_email: str, workspace_id: str, source_ip: str, user_agent: str,
+):
+    """Rerank callable for the code-map source fallback (ADR-030 v1.3), or
+    None when reranking is off, so the fallback keeps its word ranking."""
+    if not RERANK_ENABLED:
+        return None
+
+    def _rerank(question: str, docs: List[Dict]) -> List[Dict]:
+        return rerank_results(
+            question,
+            docs,
+            user_email=user_email,
+            workspace_id=workspace_id,
+            source_ip=source_ip,
+            user_agent=user_agent,
+        )
+
+    return _rerank
+
+
 def format_context(results: List[Dict]) -> str:
     """Format search results as context for the prompt."""
     if not results:
@@ -1990,6 +2011,9 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
             search_results or [],
             workspace_ids,
             max_definitions=_source_cfg["max_definitions"],
+            rerank_fn=_code_map_candidate_reranker(
+                user_id or "", primary_workspace_id or "", source_ip, user_agent,
+            ),
         )
     source_block = _source_lines_block(source_definitions)
     if source_block:
