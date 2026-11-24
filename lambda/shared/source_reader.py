@@ -33,7 +33,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
 from botocore.exceptions import ClientError
@@ -1093,6 +1094,77 @@ def read_definitions(definitions: List[Dict[str, Any]], *,
         if len(out) >= max_definitions:
             break
     return out
+
+
+_MAX_HEAD_FILES = 8
+"""Max distinct files fetched for definition heads in one call."""
+
+
+def _read_file_text(definition: Dict[str, Any]) -> Optional[str]:
+    """The file holding ``definition`` at the symbol graph's commit, or
+    None when it cannot be read. Never raises."""
+    workspace_id = definition.get("workspace_id", "")
+    site_repo = definition.get("repo", "")
+    file_path = definition.get("file_path", "")
+    if not (workspace_id and site_repo and file_path):
+        return None
+    try:
+        platform_info = resolve_platform(workspace_id)
+        if platform_info is None:
+            return None
+        repo_full, error = full_repo_for_platform(
+            workspace_id, site_repo, platform_info["platform"],
+        )
+        if error:
+            return None
+        ref = graph_sha_for_repo(workspace_id, site_repo)
+        raw = fetch_raw(platform_info, repo_full, file_path, ref=ref)
+        return raw.decode("utf-8", errors="replace")
+    except Exception as exc:  # noqa: BLE001 - a head is optional
+        logger.warning("definition head read failed for %s:%s: %s", site_repo, file_path, exc)
+        return None
+
+
+def definition_heads(definitions: List[Dict[str, Any]], *,
+                     max_lines: int = 8,
+                     max_files: int = _MAX_HEAD_FILES) -> Dict[int, str]:
+    """The first ``max_lines`` lines of each definition (its signature and
+    docstring), joined into one line, keyed by index into ``definitions``.
+
+    Each distinct file is fetched once, in parallel, at most ``max_files``
+    of them (the rest get no head). A stale anchor is relocated to the
+    symbol's name within a few lines, as ``read_definition`` does. Index
+    missing from the result means no head. Never raises.
+    """
+    by_file: Dict[Tuple[str, str, str], List[int]] = {}
+    for i, d in enumerate(definitions or []):
+        key = (d.get("workspace_id", ""), d.get("repo", ""), d.get("file_path", ""))
+        by_file.setdefault(key, []).append(i)
+    files = list(by_file)[:max_files]
+    if not files:
+        return {}
+    with ThreadPoolExecutor(max_workers=min(len(files), 4)) as executor:
+        texts = list(executor.map(
+            lambda key: _read_file_text(definitions[by_file[key][0]]), files,
+        ))
+    heads: Dict[int, str] = {}
+    for key, text in zip(files, texts):
+        if text is None:
+            continue
+        lines = text.splitlines()
+        for i in by_file[key]:
+            d = definitions[i]
+            try:
+                line = int(d.get("line") or 0)
+            except (TypeError, ValueError):
+                continue
+            if line < 1:
+                continue
+            near = slice_window(text, line, _LEADING_LINES)["lines"]
+            anchor = relocate(near, bare_name(d.get("symbol", ""))) or line
+            head = [ln.strip() for ln in lines[anchor - 1:anchor - 1 + max_lines]]
+            heads[i] = " ".join(h for h in head if h)
+    return heads
 
 
 def build_source_lines_block(windows: List[Dict[str, Any]], *,

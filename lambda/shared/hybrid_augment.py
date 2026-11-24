@@ -17,7 +17,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from shared.router import classify_intent
@@ -658,7 +657,8 @@ def augment_with_symbol_graph(
 # functions that implement the behavior being asked about. Pull those names
 # out of the summary text, keep the ones that share words with the question,
 # and resolve them to definition sites in the hit's own workspace and repo so
-# chat can attach their real source lines. DynamoDB only, no model call.
+# chat can attach their real source lines. DynamoDB reads, plus (with a
+# reranker) definition heads from the repository and one rerank call.
 # ---------------------------------------------------------------------------
 
 _CODE_MAP_HIT_LIMIT = 10
@@ -668,23 +668,21 @@ in the top three, and ranking (shared-word count, then rarity) keeps the
 extra names from crowding it out."""
 
 _CODE_MAP_CANDIDATE_CAP = 6
-"""Max candidate names resolved per turn; bounds the DynamoDB queries."""
+"""Max candidate names resolved per turn without a reranker; bounds the
+DynamoDB queries."""
 
 _RERANK_POOL = 20
-"""How many word-ranked candidates are sent to the reranker (per clause)."""
+"""How many word-ranked candidates are resolved and sent to the reranker
+(one call). Resolved first, so a name that does not resolve (a variable
+like ``access_token``) never takes a read slot."""
 
-_RERANK_MAX_CLAUSES = 4
-"""Max question clauses reranked separately; bounds rerank calls per turn."""
+_SOURCE_HEAD_LINES = 8
+"""Lines of each candidate's definition (signature and docstring) added to
+what the reranker judges it by."""
 
-_CLAUSE_SPLIT_RE = re.compile(
-    r"[?;]+|,\s*(?:and\s+|or\s+)?(?=(?:how|what|why|when|where|which|who|whose|is|are|does|do|did|can|should)\b)"
-    r"|\s+(?:and|or)\s+(?=(?:how|what|why|when|where|which|who|whose)\b)",
-    re.IGNORECASE,
-)
-"""Where a multi-part question splits: sentence ends, semicolons, and a comma
-or "and" that starts a new question ("..., how long is it valid, and how is
-single use enforced"). A comma inside a list ("create, verify and claim")
-does not split, because no question word follows it."""
+_RERANK_TEXT_CHARS = 1200
+"""Max text per candidate sent to the reranker (summary sentences plus the
+definition head)."""
 
 _RERANK_CONTEXT_CHARS = 600
 """Max summary text, per candidate, that the reranker judges it by."""
@@ -834,58 +832,6 @@ def _rerank_candidates(
     return [pool[i] for i in order]
 
 
-def _question_clauses(question: str) -> List[str]:
-    """The separate asks in a multi-part question, each with at least one
-    content word, capped at ``_RERANK_MAX_CLAUSES``. A single ask comes back
-    as the whole question."""
-    parts = [p.strip(" ,.") for p in _CLAUSE_SPLIT_RE.split(question or "")]
-    clauses = [p for p in parts if p and _question_words(p)]
-    if len(clauses) < 2:
-        return [question]
-    return clauses[:_RERANK_MAX_CLAUSES]
-
-
-def _rerank_by_clause(
-    question: str,
-    pool: List[Tuple[Any, ...]],
-    contexts: Dict[Tuple[str, str, str], str],
-    rerank_fn: RerankFn,
-) -> Tuple[Optional[List[Tuple[Any, ...]]], int]:
-    """``pool`` ordered by the reranker, one rerank per question clause.
-
-    Scored against a whole multi-part question, the clause that names the
-    topic ("how do magic links work") dominates, and names about the other
-    asks ("what's in the token", "how is single use enforced") sink below
-    the read limit. So each clause ranks the pool on its own and the result
-    takes the best remaining name of each clause in turn. Each later clause
-    carries the first one in parentheses, since an ask like "what's in the
-    token" alone matches any token (live, it picked ``access_token`` over
-    ``create_magic_token``). A clause whose rerank fails is skipped;
-    returns (None, 0) if every one failed.
-    """
-    clauses = _question_clauses(question)
-    if len(clauses) == 1:
-        return _rerank_candidates(question, pool, contexts, rerank_fn), 1
-    queries = [clauses[0]] + [f"{c} ({clauses[0]})" for c in clauses[1:]]
-    with ThreadPoolExecutor(max_workers=len(queries)) as executor:
-        orders = list(executor.map(
-            lambda query: _rerank_candidates(query, pool, contexts, rerank_fn),
-            queries,
-        ))
-    orders = [o for o in orders if o is not None]
-    if not orders:
-        return None, 0
-    merged: List[Tuple[Any, ...]] = []
-    taken = set()
-    for rank in range(len(pool)):
-        for order in orders:
-            item = order[rank]
-            if item not in taken:
-                taken.add(item)
-                merged.append(item)
-    return merged, len(orders)
-
-
 def _code_map_definitions(
     question: str,
     search_results: List[Dict[str, Any]],
@@ -964,30 +910,10 @@ def _code_map_definitions(
         )
         for o, ws, repo, name, shared, n_parts in matched
     )
-    # 3. Rerank. Word overlap cannot tell the topic of a question ("magic
-    #    link") from what is asked about it ("token", "how long"): in an
-    #    auth summary "token" can be commoner than "link". So when a
-    #    reranker is available, order the top of the word ranking by how
-    #    well the summary text around each name answers the question, one
-    #    rerank per clause of a multi-part question.
-    ranking = "words"
-    clauses_ranked = 0
-    if rerank_fn is not None and len(scored) > 1:
-        pool = scored[:_RERANK_POOL]
-        reordered, clauses_ranked = _rerank_by_clause(question, pool, contexts, rerank_fn)
-        if reordered is not None:
-            scored = reordered + scored[_RERANK_POOL:]
-            ranking = "rerank"
-    candidates = scored[:_CODE_MAP_CANDIDATE_CAP]
-
     from shared.symbol_graph_reader import definitions  # type: ignore
 
-    # 4. Resolve each name to a non-test definition in the hit's repo.
-    out: List[Dict[str, Any]] = []
-    resolved_names: List[str] = []
-    for _count, _score, _ratio, _ord, ws, repo, name in candidates:
-        if len(out) >= max_definitions:
-            break
+    def _resolve(ws: str, repo: str, name: str) -> Optional[Dict[str, Any]]:
+        """The name's first non-test definition in the hit's repo, or None."""
         resolution = _fuzzy_resolve_symbol(ws, name, symbol_graph_table)
         for canonical in list(resolution.canonicals)[:_CANONICALS_PER_CANDIDATE]:
             sites = definitions(
@@ -1004,20 +930,82 @@ def _code_map_definitions(
                 ),
                 None,
             )
-            if site is None:
-                continue
-            out.append({
-                "workspace_id": ws,
-                "symbol": canonical,
-                "repo": getattr(site, "repo", ""),
-                "file_path": getattr(site, "file_path", ""),
-                "line": getattr(site, "line", None),
-            })
-            resolved_names.append(name)
-            break
+            if site is not None:
+                return {
+                    "workspace_id": ws,
+                    "symbol": canonical,
+                    "repo": getattr(site, "repo", ""),
+                    "file_path": getattr(site, "file_path", ""),
+                    "line": getattr(site, "line", None),
+                }
+        return None
+
+    # 3. Without a reranker, resolve names in word order until enough
+    #    definitions are found.
+    out: List[Dict[str, Any]] = []
+    resolved_names: List[str] = []
+    ranking = "words"
+    heads_found = 0
+    if rerank_fn is None or len(scored) < 2:
+        for *_rank, ws, repo, name in scored[:_CODE_MAP_CANDIDATE_CAP]:
+            if len(out) >= max_definitions:
+                break
+            site = _resolve(ws, repo, name)
+            if site is not None:
+                out.append(site)
+                resolved_names.append(name)
+    else:
+        # 4. With a reranker: resolve the top of the word ranking first,
+        #    then rerank the resolved names against the whole question,
+        #    each judged on the summary sentences that mention it plus the
+        #    head of its definition (signature and docstring). Word overlap
+        #    cannot tell the topic ("magic link") from what is asked about it
+        #    ("token", "how long"), and a summary often mentions the function
+        #    that holds the answer only in passing ("builds the token with
+        #    create_magic_token"); its docstring ("Create a magic link JWT
+        #    (1-hour expiry, single-use enforced via jti)") says what it does.
+        pool: List[Tuple[Any, ...]] = []
+        sites: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+        for candidate in scored[:_RERANK_POOL]:
+            ws, repo, name = candidate[-3], candidate[-2], candidate[-1]
+            site = _resolve(ws, repo, name)
+            if site is not None:
+                pool.append(candidate)
+                sites[(ws, repo, name)] = site
+        heads = _definition_heads([sites[(c[-3], c[-2], c[-1])] for c in pool])
+        heads_found = sum(1 for h in heads.values() if h)
+        rerank_texts = {
+            (c[-3], c[-2], c[-1]): (
+                contexts.get((c[-3], c[-2], c[-1]), c[-1])
+                + (f" | {heads[i]}" if heads.get(i) else "")
+            )[:_RERANK_TEXT_CHARS]
+            for i, c in enumerate(pool)
+        }
+        ordered = pool
+        if len(pool) > 1:
+            reordered = _rerank_candidates(question, pool, rerank_texts, rerank_fn)
+            if reordered is not None:
+                ordered = reordered
+                ranking = "rerank"
+        for c in ordered[:max_definitions]:
+            out.append(sites[(c[-3], c[-2], c[-1])])
+            resolved_names.append(c[-1])
     print(
         f"[SOURCE] code-map fallback: hits={len(hits)} ranking={ranking} "
-        f"clauses={clauses_ranked} "
-        f"candidates={[c[6] for c in candidates]} resolved={resolved_names}"
+        f"candidates={[c[-1] for c in scored[:_RERANK_POOL]]} "
+        f"heads={heads_found} resolved={resolved_names}"
     )
     return out
+
+
+def _definition_heads(sites: List[Dict[str, Any]]) -> Dict[int, str]:
+    """Signature-and-docstring text per site index; empty where the file
+    could not be read. Never raises: the rerank still runs on the summary
+    text alone."""
+    try:
+        from shared.source_reader import definition_heads  # type: ignore
+
+        return definition_heads(sites, max_lines=_SOURCE_HEAD_LINES)
+    except Exception:  # noqa: BLE001 - fail-soft, rerank on summaries alone
+        logger.exception("[hybrid.code_map_defs] definition heads failed")
+        return {}

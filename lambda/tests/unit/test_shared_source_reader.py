@@ -305,6 +305,82 @@ class TestConstantsUsed:
         assert len(found[0]["text"]) == source_reader._MAX_CONSTANT_CHARS
 
 
+class TestDefinitionHeads:
+    TEXT = "\n".join([
+        "import os",
+        "",
+        "def create_magic_token(email):",
+        '    """Create a magic link JWT (1-hour expiry)."""',
+        "    return 1",
+        "",
+        "def other():",
+        "    pass",
+    ]) + "\n"
+
+    def _patched(self, fetch):
+        return (
+            patch.object(source_reader, "resolve_platform", return_value=GITHUB_INFO),
+            patch.object(source_reader, "full_repo_for_platform", return_value=("o/r", None)),
+            patch.object(source_reader, "graph_sha_for_repo", return_value="sha1"),
+            patch.object(source_reader, "fetch_raw", side_effect=fetch),
+        )
+
+    def test_one_fetch_per_file_and_heads_by_index(self):
+        fetch_calls = []
+
+        def _fetch(info, repo, path, ref=None):
+            fetch_calls.append(path)
+            return self.TEXT.encode()
+
+        defs = [
+            _definition(symbol="python:m::create_magic_token", line=3),
+            _definition(symbol="python:m::other", line=7),
+            _definition(symbol="python:m::gone", line=0),
+        ]
+        p1, p2, p3, p4 = self._patched(_fetch)
+        with p1, p2, p3, p4:
+            heads = source_reader.definition_heads(defs, max_lines=2)
+        assert fetch_calls == ["m.py"]
+        assert heads == {
+            0: 'def create_magic_token(email): """Create a magic link JWT (1-hour expiry)."""',
+            1: "def other(): pass",
+        }
+
+    def test_stale_anchor_relocates_to_the_name(self):
+        p1, p2, p3, p4 = self._patched(lambda *a, **k: self.TEXT.encode())
+        with p1, p2, p3, p4:
+            heads = source_reader.definition_heads(
+                [_definition(symbol="python:m::create_magic_token", line=2)], max_lines=1,
+            )
+        assert heads == {0: "def create_magic_token(email):"}
+
+    def test_unreadable_files_get_no_head_and_file_cap(self):
+        def _fetch(info, repo, path, ref=None):
+            if path == "bad.py":
+                raise RuntimeError("404")
+            return self.TEXT.encode()
+
+        defs = [_definition(file_path="bad.py", line=3), _definition(file_path="m.py", line=3),
+                _definition(file_path="later.py", line=3)]
+        p1, p2, p3, p4 = self._patched(_fetch)
+        with p1, p2, p3, p4:
+            heads = source_reader.definition_heads(defs, max_lines=1, max_files=2)
+        assert heads == {1: "def create_magic_token(email):"}
+        assert source_reader.definition_heads([]) == {}
+
+    @pytest.mark.parametrize("platform, repo_error", [(None, None), (GITHUB_INFO, "no row")])
+    def test_platform_or_repo_failures_give_no_head(self, platform, repo_error):
+        with patch.object(source_reader, "resolve_platform", return_value=platform), \
+                patch.object(source_reader, "full_repo_for_platform", return_value=("o/r", repo_error)):
+            assert source_reader.definition_heads([_definition(line=3)]) == {}
+        assert source_reader._read_file_text({"repo": ""}) is None
+
+    def test_bad_line_values_are_skipped(self):
+        p1, p2, p3, p4 = self._patched(lambda *a, **k: self.TEXT.encode())
+        with p1, p2, p3, p4:
+            assert source_reader.definition_heads([_definition(line="x")]) == {}
+
+
 class TestReadDefinitions:
     def test_dedupes_and_caps(self):
         defs = [_definition(), _definition(), _definition(line=60), _definition(line=70)]

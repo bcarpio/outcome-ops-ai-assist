@@ -1526,14 +1526,15 @@ def test_code_map_definitions_word_ranking_alone_misses_token_heavy_summary():
     ]
 
 
-def test_code_map_definitions_rerank_picks_functions_that_answer():
-    from shared.hybrid_augment import code_map_definitions
+def test_code_map_definitions_rerank_picks_functions_that_answer(monkeypatch):
+    from shared import hybrid_augment
 
     _create_symbol_graph_table()
     _create_code_maps_table()
     _seed_token_heavy_graph()
+    monkeypatch.setattr(hybrid_augment, "_definition_heads", lambda sites: {})
     calls = []
-    defs = code_map_definitions(
+    defs = hybrid_augment.code_map_definitions(
         _TOKEN_QUESTION, [_code_map_hit(_TOKEN_HEAVY_SUMMARY)], [WORKSPACE_ID],
         max_definitions=3, rerank_fn=_attribute_reranker(calls),
     )
@@ -1542,22 +1543,78 @@ def test_code_map_definitions_rerank_picks_functions_that_answer():
         "python:lambda.auth.handler::verify_magic_token",
         "python:lambda.auth.handler::_claim_magic_token_jti",
     ]
-    # One rerank call per question clause, each judged on the summary
+    # One rerank call with the whole question, judged on the summary
     # sentences around each name.
-    # Later clauses carry the topic clause, so "what's in the token" is
-    # about the magic-link token, not any token.
-    topic = "How do magic links work in the app"
-    assert [q for q, _docs in calls] == [
-        topic,
-        f"What's in the token ({topic})",
-        f"how long is it valid ({topic})",
-        f"how is single use enforced ({topic})",
-    ]
+    assert [q for q, _docs in calls] == [_TOKEN_QUESTION]
     texts = [d["text"] for d in calls[0][1]]
     assert any(
         t.startswith("create_magic_token: ") and "MAGIC_LINK_EXPIRY" in t
         for t in texts
     )
+
+
+def test_code_map_definitions_reranks_only_names_that_resolve(monkeypatch):
+    """A name with no definition (a variable, a constant) is dropped before
+    the rerank, so it can never take a read slot."""
+    from shared import hybrid_augment
+
+    _create_symbol_graph_table()
+    _create_code_maps_table()
+    _seed_token_heavy_graph()
+    monkeypatch.setattr(hybrid_augment, "_definition_heads", lambda sites: {})
+    calls = []
+    hybrid_augment.code_map_definitions(
+        _TOKEN_QUESTION, [_code_map_hit(_TOKEN_HEAVY_SUMMARY)], [WORKSPACE_ID],
+        max_definitions=3, rerank_fn=_attribute_reranker(calls),
+    )
+    judged = {d["text"].split(":", 1)[0] for d in calls[0][1]}
+    assert "create_magic_token" in judged
+    assert "MAGIC_LINK_EXPIRY" not in judged  # seeded with no definition
+    assert "access_token" not in judged
+
+
+def test_code_map_definitions_definition_heads_reach_the_reranker(monkeypatch):
+    """Live #55: the summary mentions create_magic_token only in passing;
+    its docstring says what it does. The head is what ranks it first."""
+    from shared import hybrid_augment
+
+    _create_symbol_graph_table()
+    _create_code_maps_table()
+    _seed_token_heavy_graph()
+    seen_sites = []
+
+    def _heads(sites):
+        seen_sites.extend(sites)
+        return {
+            i: '"""Create a magic link JWT (1-hour expiry, single-use enforced via jti)."""'
+            for i, site in enumerate(sites)
+            if site["symbol"].endswith("::create_magic_token")
+        }
+
+    monkeypatch.setattr(hybrid_augment, "_definition_heads", _heads)
+
+    def _by_docstring(question, docs):
+        return sorted(
+            ({**d, "rerank_score": 0.9 if "1-hour expiry" in d["text"] else 0.1} for d in docs),
+            key=lambda d: -d["rerank_score"],
+        )
+
+    defs = hybrid_augment.code_map_definitions(
+        _TOKEN_QUESTION, [_code_map_hit(_TOKEN_HEAVY_SUMMARY)], [WORKSPACE_ID],
+        max_definitions=1, rerank_fn=_by_docstring,
+    )
+    assert defs[0]["symbol"] == "python:lambda.auth.handler::create_magic_token"
+    assert all(s["file_path"] == "lambda/auth/handler.py" for s in seen_sites)
+
+
+def test_definition_heads_failure_still_reranks(monkeypatch):
+    from shared import hybrid_augment, source_reader
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("github down")
+
+    monkeypatch.setattr(source_reader, "definition_heads", _boom)
+    assert hybrid_augment._definition_heads([{"symbol": "x"}]) == {}
 
 
 @pytest.mark.parametrize("failure", ["raises", "unscored", "empty"])
@@ -1601,114 +1658,6 @@ def test_code_map_definitions_rerank_partial_result_keeps_the_rest():
     )
     assert defs[0]["symbol"] == "python:lambda.auth.handler::_claim_magic_token_jti"
     assert len(defs) == 2
-
-
-def _clause_reranker(calls, fail_on=()):
-    """Stand-in for Cohere shaped like the live #55 fourth run: judged
-    against the topic clause ("how do magic links work"), the request-side
-    names win; the other clauses each favor the function that answers them.
-    A query naming several asks is scored like the topic clause, as Cohere
-    scored the whole question."""
-    by_ask = [
-        ("work", {"send_magic_link_email": 0.9, "MagicLinkRequest": 0.8,
-                  "handle_magic_link": 0.7}),
-        ("token", {"create_magic_token": 0.9}),
-        ("valid", {"create_magic_token": 0.9, "verify_magic_token": 0.8}),
-        ("single use", {"_claim_magic_token_jti": 0.9, "verify_magic_token": 0.8}),
-    ]
-
-    def _rerank(question, docs):
-        calls.append(question)
-        ask = question.split(" (", 1)[0]  # the clause, not its topic suffix
-        if any(word in ask for word in fail_on):
-            raise RuntimeError("throttled")
-        relevance = next(r for word, r in by_ask if word in ask)
-        scored = [
-            {**d, "rerank_score": relevance.get(d["text"].split(":", 1)[0], 0.1)}
-            for d in docs
-        ]
-        return sorted(scored, key=lambda d: -d["rerank_score"])
-    return _rerank
-
-
-def test_code_map_definitions_rerank_takes_the_best_name_per_clause():
-    """Live #55 fourth run: one rerank of the whole question read three
-    request-side names. Per clause, each ask gets its own best name."""
-    from shared.hybrid_augment import code_map_definitions
-
-    _create_symbol_graph_table()
-    _create_code_maps_table()
-    _seed_token_heavy_graph()
-    args = (_TOKEN_QUESTION, [_code_map_hit(_TOKEN_HEAVY_SUMMARY)], [WORKSPACE_ID])
-    defs = code_map_definitions(
-        *args, max_definitions=3, rerank_fn=_clause_reranker([]),
-    )
-    assert [d["symbol"] for d in defs] == [
-        "python:lambda.auth.handler::send_magic_link_email",
-        "python:lambda.auth.handler::create_magic_token",
-        "python:lambda.auth.handler::_claim_magic_token_jti",
-    ]
-
-
-def test_code_map_definitions_failed_clause_rerank_is_skipped():
-    from shared.hybrid_augment import code_map_definitions
-
-    _create_symbol_graph_table()
-    _create_code_maps_table()
-    _seed_token_heavy_graph()
-    calls = []
-    defs = code_map_definitions(
-        _TOKEN_QUESTION, [_code_map_hit(_TOKEN_HEAVY_SUMMARY)], [WORKSPACE_ID],
-        max_definitions=3, rerank_fn=_clause_reranker(calls, fail_on=("token",)),
-    )
-    assert len(calls) == 4
-    assert [d["symbol"] for d in defs] == [
-        "python:lambda.auth.handler::send_magic_link_email",
-        "python:lambda.auth.handler::create_magic_token",
-        "python:lambda.auth.handler::_claim_magic_token_jti",
-    ]
-
-
-def test_code_map_definitions_single_ask_reranks_once_with_the_question():
-    from shared.hybrid_augment import code_map_definitions
-
-    _create_symbol_graph_table()
-    _create_code_maps_table()
-    _seed_token_heavy_graph()
-    calls = []
-    defs = code_map_definitions(
-        "How is single use of magic links enforced?",
-        [_code_map_hit(_TOKEN_HEAVY_SUMMARY)], [WORKSPACE_ID],
-        max_definitions=1, rerank_fn=_clause_reranker(calls),
-    )
-    assert calls == ["How is single use of magic links enforced?"]
-    assert defs[0]["symbol"] == "python:lambda.auth.handler::_claim_magic_token_jti"
-
-
-@pytest.mark.parametrize(
-    "question, expected",
-    [
-        (
-            "How do magic links work? What's in the token, how long is it "
-            "valid, and how is single use enforced?",
-            ["How do magic links work", "What's in the token",
-             "how long is it valid", "how is single use enforced"],
-        ),
-        ("Where is the token minted and how is it verified",
-         ["Where is the token minted", "how is it verified"]),
-        # A comma or "and" inside a list is not a new ask.
-        ("What do create, verify and claim do?",
-         ["What do create, verify and claim do?"]),
-        # A fragment with no content word is not an ask.
-        ("Is it? How is the token verified?", ["Is it? How is the token verified?"]),
-        ("a? b? c? d? token one? token two? token three? token four? token five?",
-         ["token one", "token two", "token three", "token four"]),
-    ],
-)
-def test_question_clauses(question, expected):
-    from shared.hybrid_augment import _question_clauses
-
-    assert _question_clauses(question) == expected
 
 
 def test_name_context_collects_sentences_that_mention_the_name():

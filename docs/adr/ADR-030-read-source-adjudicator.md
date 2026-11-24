@@ -311,26 +311,29 @@ from the top code-map hits (`hybrid_augment.code_map_definitions`):
    and an attribute word few share ("token") decides. Remaining ties go
    to the larger share of the name's words matched, then to order of
    appearance.
-4. When reranking is enabled, send the top 20 of that ranking to the
-   reranker chat already uses (Cohere Rerank), each judged on the
-   summary sentences that mention it, and take its order. Word
-   statistics cannot tell the topic of a question ("magic link") from
-   what is asked about it ("token", "how long"): in a real auth summary
-   "token" is in more names than "link", so step 3 alone picked the
-   request-side functions. A multi-part question is split into its
-   asks (at sentence ends, semicolons, and a comma or "and" that starts
-   a new question), up to 4, and each ask is reranked separately, with
-   the first ask appended in parentheses to each later one so "what's
-   in the token" means the magic-link token, not any token (alone, it
-   picked `access_token`). The final order takes the best remaining
-   name of each ask in turn.
-   Reranked as a whole, the topic ask ("how do magic links work")
-   dominated and the functions answering the other asks fell below the
-   read limit. A failed ask is skipped; if every rerank fails, the
-   step 3 order stands. At most 6 candidates are resolved per turn.
-5. Resolve each name through the bare-name index and take the first
-   definition that lives in the hit's own repo and is not under a test
-   path.
+4. Without a reranker, resolve names in that order (at most 6) through
+   the bare-name index, taking the first definition that lives in the
+   hit's own repo and is not under a test path, until enough are found.
+5. With reranking enabled, resolve the top 20 of that ranking the same
+   way first, dropping names that do not resolve (a variable like
+   `access_token` must never take a read slot). Then rerank the resolved
+   names once against the whole question with the reranker chat already
+   uses (Cohere Rerank), each judged on the summary sentences that
+   mention it plus the first 8 lines of its definition: signature and
+   docstring, read from the repository once per file (at most 8 files,
+   in parallel). Take the top of that order. Word statistics cannot
+   tell the topic of a question ("magic link") from what is asked about
+   it ("token", "how long"), and a summary often names the function
+   holding the answer only in passing ("builds the token with
+   `create_magic_token`"); its docstring ("Create a magic link JWT
+   (1-hour expiry, single-use enforced via jti)") says what it does.
+   Replaying chat's retrieval for four multi-part questions against the
+   live index, asks answered by the functions read rose from 6 of 12
+   (words alone) and 8 of 12 (rerank on summary text, whole question or
+   one rerank per ask) to 9 of 12. Splitting the question into asks
+   added nothing once the definition head was in. If the heads cannot
+   be read, the rerank runs on summary text alone; if the rerank fails,
+   the step 3 order stands.
 6. Feed the result to the same reader as v1.2, under the same
    `chat_source_max_symbols` and `chat_source_lines_per_symbol` caps
    and the same `chat_source_lines_enabled` kill switch. Every window
@@ -342,7 +345,7 @@ from the top code-map hits (`hybrid_augment.code_map_definitions`):
    facts for module constants, and an imported constant is not
    followed.
 
-It makes DynamoDB reads and at most four concurrent rerank calls (no
+It makes DynamoDB reads, at most 8 file reads and one rerank call (no
 LLM call), and it is fail-soft: a rerank error keeps the word ranking,
 and any other error yields no definitions, so the turn answers as before.
 
@@ -360,8 +363,14 @@ and any other error yields no definitions, so the turn answers as before.
   come from summary prose. Recording each code-map's file paths and top
   defined symbols at generation time would make the mapping exact and
   is deferred to the next code-map regeneration (ADR-027 v1.3).
-- **Cost.** At most 6 bare-name lookups plus one definitions lookup per
-  resolved canonical, only on turns where the graph lane found nothing.
+- **Cost.** Only on turns where the graph lane found nothing. Without
+  a reranker: at most 6 bare-name lookups plus definitions lookups. With
+  one: up to 20 of each, at most 8 file reads and one rerank call, which
+  adds roughly a second or two before synthesis starts.
+- **Candidates still come from names that share a question word.** In
+  the replay, the 3 asks still missed needed a function sharing no word
+  with the question (`_process_record` for "how many times is a file
+  retried") or one no top hit names. Ranking cannot fix either.
 
 ## Version History
 
