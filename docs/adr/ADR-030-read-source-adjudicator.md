@@ -312,13 +312,19 @@ from the top code-map hits (`hybrid_augment.code_map_definitions`):
    to the larger share of the name's words matched, then to order of
    appearance.
 4. When reranking is enabled, send the top 20 of that ranking to the
-   reranker chat already uses (Cohere Rerank, one call), each judged on
-   the summary sentences that mention it, and take its order. Word
+   reranker chat already uses (Cohere Rerank), each judged on the
+   summary sentences that mention it, and take its order. Word
    statistics cannot tell the topic of a question ("magic link") from
    what is asked about it ("token", "how long"): in a real auth summary
    "token" is in more names than "link", so step 3 alone picked the
-   request-side functions. If the rerank fails, the step 3 order stands.
-   At most 6 candidates are resolved per turn.
+   request-side functions. A multi-part question is split into its
+   asks (at sentence ends, semicolons, and a comma or "and" that starts
+   a new question), up to 4, and each ask is reranked separately; the
+   final order takes the best remaining name of each ask in turn.
+   Reranked as a whole, the topic ask ("how do magic links work")
+   dominated and the functions answering the other asks fell below the
+   read limit. A failed ask is skipped; if every rerank fails, the
+   step 3 order stands. At most 6 candidates are resolved per turn.
 5. Resolve each name through the bare-name index and take the first
    definition that lives in the hit's own repo and is not under a test
    path.
@@ -326,9 +332,9 @@ from the top code-map hits (`hybrid_augment.code_map_definitions`):
    `chat_source_max_symbols` and `chat_source_lines_per_symbol` caps
    and the same `chat_source_lines_enabled` kill switch.
 
-It makes DynamoDB reads and at most one rerank call (no LLM call), and
-it is fail-soft: a rerank error keeps the word ranking, and any other
-error yields no definitions, so the turn answers as before.
+It makes DynamoDB reads and at most four concurrent rerank calls (no
+LLM call), and it is fail-soft: a rerank error keeps the word ranking,
+and any other error yields no definitions, so the turn answers as before.
 
 ### v1.3 Consequences
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from shared.router import classify_intent
@@ -670,7 +671,20 @@ _CODE_MAP_CANDIDATE_CAP = 6
 """Max candidate names resolved per turn; bounds the DynamoDB queries."""
 
 _RERANK_POOL = 20
-"""How many word-ranked candidates are sent to the reranker (one call)."""
+"""How many word-ranked candidates are sent to the reranker (per clause)."""
+
+_RERANK_MAX_CLAUSES = 4
+"""Max question clauses reranked separately; bounds rerank calls per turn."""
+
+_CLAUSE_SPLIT_RE = re.compile(
+    r"[?;]+|,\s*(?:and\s+|or\s+)?(?=(?:how|what|why|when|where|which|who|whose|is|are|does|do|did|can|should)\b)"
+    r"|\s+(?:and|or)\s+(?=(?:how|what|why|when|where|which|who|whose)\b)",
+    re.IGNORECASE,
+)
+"""Where a multi-part question splits: sentence ends, semicolons, and a comma
+or "and" that starts a new question ("..., how long is it valid, and how is
+single use enforced"). A comma inside a list ("create, verify and claim")
+does not split, because no question word follows it."""
 
 _RERANK_CONTEXT_CHARS = 600
 """Max summary text, per candidate, that the reranker judges it by."""
@@ -820,6 +834,54 @@ def _rerank_candidates(
     return [pool[i] for i in order]
 
 
+def _question_clauses(question: str) -> List[str]:
+    """The separate asks in a multi-part question, each with at least one
+    content word, capped at ``_RERANK_MAX_CLAUSES``. A single ask comes back
+    as the whole question."""
+    parts = [p.strip(" ,.") for p in _CLAUSE_SPLIT_RE.split(question or "")]
+    clauses = [p for p in parts if p and _question_words(p)]
+    if len(clauses) < 2:
+        return [question]
+    return clauses[:_RERANK_MAX_CLAUSES]
+
+
+def _rerank_by_clause(
+    question: str,
+    pool: List[Tuple[Any, ...]],
+    contexts: Dict[Tuple[str, str, str], str],
+    rerank_fn: RerankFn,
+) -> Tuple[Optional[List[Tuple[Any, ...]]], int]:
+    """``pool`` ordered by the reranker, one rerank per question clause.
+
+    Scored against a whole multi-part question, the clause that names the
+    topic ("how do magic links work") dominates, and names about the other
+    asks ("what's in the token", "how is single use enforced") sink below
+    the read limit. So each clause ranks the pool on its own and the result
+    takes the best remaining name of each clause in turn. A clause whose
+    rerank fails is skipped; returns (None, 0) if every one failed.
+    """
+    clauses = _question_clauses(question)
+    if len(clauses) == 1:
+        return _rerank_candidates(question, pool, contexts, rerank_fn), 1
+    with ThreadPoolExecutor(max_workers=len(clauses)) as executor:
+        orders = list(executor.map(
+            lambda clause: _rerank_candidates(clause, pool, contexts, rerank_fn),
+            clauses,
+        ))
+    orders = [o for o in orders if o is not None]
+    if not orders:
+        return None, 0
+    merged: List[Tuple[Any, ...]] = []
+    taken = set()
+    for rank in range(len(pool)):
+        for order in orders:
+            item = order[rank]
+            if item not in taken:
+                taken.add(item)
+                merged.append(item)
+    return merged, len(orders)
+
+
 def _code_map_definitions(
     question: str,
     search_results: List[Dict[str, Any]],
@@ -902,11 +964,13 @@ def _code_map_definitions(
     #    link") from what is asked about it ("token", "how long"): in an
     #    auth summary "token" can be commoner than "link". So when a
     #    reranker is available, order the top of the word ranking by how
-    #    well the summary text around each name answers the question.
+    #    well the summary text around each name answers the question, one
+    #    rerank per clause of a multi-part question.
     ranking = "words"
+    clauses_ranked = 0
     if rerank_fn is not None and len(scored) > 1:
         pool = scored[:_RERANK_POOL]
-        reordered = _rerank_candidates(question, pool, contexts, rerank_fn)
+        reordered, clauses_ranked = _rerank_by_clause(question, pool, contexts, rerank_fn)
         if reordered is not None:
             scored = reordered + scored[_RERANK_POOL:]
             ranking = "rerank"
@@ -949,6 +1013,7 @@ def _code_map_definitions(
             break
     print(
         f"[SOURCE] code-map fallback: hits={len(hits)} ranking={ranking} "
+        f"clauses={clauses_ranked} "
         f"candidates={[c[6] for c in candidates]} resolved={resolved_names}"
     )
     return out
