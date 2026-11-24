@@ -251,6 +251,60 @@ class TestReadDefinition:
         assert out["truncated"] is False
 
 
+    def test_constants_defined_elsewhere_in_the_file_come_along(self):
+        text = "\n".join(
+            ["import os", "MAGIC_LINK_EXPIRY = 3600  # 1 hour", "HS256 = 1"]
+            + ["x"] * 7
+            + ["def f():", "    exp = now + MAGIC_LINK_EXPIRY", "    alg = HS256"]
+        ) + "\n"
+        with patch.object(source_reader, "resolve_platform", return_value=GITHUB_INFO), \
+                patch.object(source_reader, "full_repo_for_platform", return_value=("o/r", None)), \
+                patch.object(source_reader, "graph_sha_for_repo", return_value=None), \
+                patch.object(source_reader, "fetch_raw", return_value=text.encode()):
+            out = source_reader.read_definition(_definition(line=11), max_lines=5)
+        assert out["constants"] == [
+            {"name": "MAGIC_LINK_EXPIRY", "line": 2, "text": "MAGIC_LINK_EXPIRY = 3600  # 1 hour"},
+        ]
+
+
+class TestConstantsUsed:
+    @staticmethod
+    def _lines(*texts, start=100):
+        return [{"line": start + i, "text": t} for i, t in enumerate(texts)]
+
+    @pytest.mark.parametrize("definition", [
+        "MAX_RETRIES = 3",
+        "MAX_RETRIES: int = 3",
+        "export const MAX_RETRIES = 3;",
+        "const MAX_RETRIES = 3",
+        "    private static final int MAX_RETRIES = 3;",
+        "MAX_RETRIES := 3",
+    ])
+    def test_finds_the_definition_across_languages(self, definition):
+        text = definition + "\n"
+        found = source_reader.constants_used(self._lines("retry(MAX_RETRIES)"), text)
+        assert [(c["name"], c["line"]) for c in found] == [("MAX_RETRIES", 1)]
+
+    def test_skips_uses_comparisons_and_names_already_shown(self):
+        text = "\n".join([
+            "if MAX_RETRIES == 3:",          # a comparison, not a definition
+            "        MAX_RETRIES = 9",        # too deeply nested to be top level
+            "SHOWN_ALREADY = 1",
+        ]) + "\n"
+        lines = self._lines("f(MAX_RETRIES, SHOWN_ALREADY)") + [{"line": 3, "text": "SHOWN_ALREADY = 1"}]
+        assert source_reader.constants_used(lines, text) == []
+
+    def test_no_constants_and_cap(self):
+        assert source_reader.constants_used(self._lines("return x"), "x = 1\n") == []
+        names = [f"C_{i}" for i in range(12)]
+        text = "\n".join(f"{n} = {i}" for i, n in enumerate(names)) + "\n"
+        found = source_reader.constants_used(self._lines(" ".join(names), start=500), text)
+        assert len(found) == source_reader._MAX_CONSTANTS
+        long_text = "LONG_ONE = '" + "x" * 1000 + "'\n"
+        found = source_reader.constants_used(self._lines("LONG_ONE"), long_text)
+        assert len(found[0]["text"]) == source_reader._MAX_CONSTANT_CHARS
+
+
 class TestReadDefinitions:
     def test_dedupes_and_caps(self):
         defs = [_definition(), _definition(), _definition(line=60), _definition(line=70)]
@@ -289,6 +343,13 @@ class TestBuildSourceLinesBlock:
         assert "### python:m::f -- o/r:m.py:7-8 @ 0123456789ab" in block
         assert "    8 |     raise E('x')" in block
         assert "continues" not in block
+
+    def test_renders_constants_after_the_window(self):
+        block = source_reader.build_source_lines_block([_window(constants=[
+            {"name": "MAGIC_LINK_EXPIRY", "line": 45, "text": "MAGIC_LINK_EXPIRY = 3600"},
+        ])])
+        assert "Constants it uses, defined elsewhere in m.py:" in block
+        assert "   45 | MAGIC_LINK_EXPIRY = 3600" in block
 
     def test_truncated_and_unpinned(self):
         block = source_reader.build_source_lines_block([_window(ref=None, truncated=True)])

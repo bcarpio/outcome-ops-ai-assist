@@ -857,16 +857,20 @@ def _rerank_by_clause(
     topic ("how do magic links work") dominates, and names about the other
     asks ("what's in the token", "how is single use enforced") sink below
     the read limit. So each clause ranks the pool on its own and the result
-    takes the best remaining name of each clause in turn. A clause whose
-    rerank fails is skipped; returns (None, 0) if every one failed.
+    takes the best remaining name of each clause in turn. Each later clause
+    carries the first one in parentheses, since an ask like "what's in the
+    token" alone matches any token (live, it picked ``access_token`` over
+    ``create_magic_token``). A clause whose rerank fails is skipped;
+    returns (None, 0) if every one failed.
     """
     clauses = _question_clauses(question)
     if len(clauses) == 1:
         return _rerank_candidates(question, pool, contexts, rerank_fn), 1
-    with ThreadPoolExecutor(max_workers=len(clauses)) as executor:
+    queries = [clauses[0]] + [f"{c} ({clauses[0]})" for c in clauses[1:]]
+    with ThreadPoolExecutor(max_workers=len(queries)) as executor:
         orders = list(executor.map(
-            lambda clause: _rerank_candidates(clause, pool, contexts, rerank_fn),
-            clauses,
+            lambda query: _rerank_candidates(query, pool, contexts, rerank_fn),
+            queries,
         ))
     orders = [o for o in orders if o is not None]
     if not orders:

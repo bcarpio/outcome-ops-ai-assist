@@ -1544,11 +1544,14 @@ def test_code_map_definitions_rerank_picks_functions_that_answer():
     ]
     # One rerank call per question clause, each judged on the summary
     # sentences around each name.
+    # Later clauses carry the topic clause, so "what's in the token" is
+    # about the magic-link token, not any token.
+    topic = "How do magic links work in the app"
     assert [q for q, _docs in calls] == [
-        "How do magic links work in the app",
-        "What's in the token",
-        "how long is it valid",
-        "how is single use enforced",
+        topic,
+        f"What's in the token ({topic})",
+        f"how long is it valid ({topic})",
+        f"how is single use enforced ({topic})",
     ]
     texts = [d["text"] for d in calls[0][1]]
     assert any(
@@ -1616,9 +1619,10 @@ def _clause_reranker(calls, fail_on=()):
 
     def _rerank(question, docs):
         calls.append(question)
-        if any(word in question for word in fail_on):
+        ask = question.split(" (", 1)[0]  # the clause, not its topic suffix
+        if any(word in ask for word in fail_on):
             raise RuntimeError("throttled")
-        relevance = next(r for word, r in by_ask if word in question)
+        relevance = next(r for word, r in by_ask if word in ask)
         scored = [
             {**d, "rerank_score": relevance.get(d["text"].split(":", 1)[0], 0.1)}
             for d in docs

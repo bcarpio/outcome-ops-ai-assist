@@ -319,8 +319,11 @@ from the top code-map hits (`hybrid_augment.code_map_definitions`):
    "token" is in more names than "link", so step 3 alone picked the
    request-side functions. A multi-part question is split into its
    asks (at sentence ends, semicolons, and a comma or "and" that starts
-   a new question), up to 4, and each ask is reranked separately; the
-   final order takes the best remaining name of each ask in turn.
+   a new question), up to 4, and each ask is reranked separately, with
+   the first ask appended in parentheses to each later one so "what's
+   in the token" means the magic-link token, not any token (alone, it
+   picked `access_token`). The final order takes the best remaining
+   name of each ask in turn.
    Reranked as a whole, the topic ask ("how do magic links work")
    dominated and the functions answering the other asks fell below the
    read limit. A failed ask is skipped; if every rerank fails, the
@@ -330,7 +333,14 @@ from the top code-map hits (`hybrid_augment.code_map_definitions`):
    path.
 6. Feed the result to the same reader as v1.2, under the same
    `chat_source_max_symbols` and `chat_source_lines_per_symbol` caps
-   and the same `chat_source_lines_enabled` kill switch.
+   and the same `chat_source_lines_enabled` kill switch. Every window
+   (this path and the v1.2 graph path, which share the reader) also
+   carries the definition lines of the ALL_CAPS constants it uses that
+   are defined elsewhere in the same file (up to 8), so a value set at
+   module top (`MAGIC_LINK_EXPIRY = 3600` at line 45, used at line 644)
+   is quoted rather than named. Same file only: the symbol graph has no
+   facts for module constants, and an imported constant is not
+   followed.
 
 It makes DynamoDB reads and at most four concurrent rerank calls (no
 LLM call), and it is fail-soft: a rerank error keeps the word ranking,
