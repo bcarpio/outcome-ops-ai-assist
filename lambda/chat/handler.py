@@ -74,7 +74,7 @@ from shared.context_builder import (
     build_audit_coverage_checklist_block,
     is_audit_shaped,
 )
-from shared.hybrid_augment import augment_with_symbol_graph
+from shared.hybrid_augment import augment_with_symbol_graph, code_map_definitions
 from shared import source_reader
 
 # Configure logging
@@ -1195,6 +1195,27 @@ def rerank_results(
 
 
 
+def _code_map_candidate_reranker(
+    user_email: str, workspace_id: str, source_ip: str, user_agent: str,
+):
+    """Rerank callable for the code-map source fallback (ADR-030 v1.3), or
+    None when reranking is off, so the fallback keeps its word ranking."""
+    if not RERANK_ENABLED:
+        return None
+
+    def _rerank(question: str, docs: List[Dict]) -> List[Dict]:
+        return rerank_results(
+            question,
+            docs,
+            user_email=user_email,
+            workspace_id=workspace_id,
+            source_ip=source_ip,
+            user_agent=user_agent,
+        )
+
+    return _rerank
+
+
 def format_context(results: List[Dict]) -> str:
     """Format search results as context for the prompt."""
     if not results:
@@ -1979,8 +2000,22 @@ def handle_chat_stream(event: Dict) -> Generator[str, None, None]:
 
     # Real source lines for the graph-matched symbol(s): code-maps omit
     # literal values (ADR-027), so exact error codes, messages and field
-    # names come from the code itself (ADR-030 v1.2).
-    source_block = _source_lines_block(graph_augment.get("graph_definitions") or [])
+    # names come from the code itself (ADR-030 v1.2). When the question
+    # names no symbol, take the functions the top code-map hits describe
+    # instead, so "code wins" still has code to win with (ADR-030 v1.3).
+    source_definitions = graph_augment.get("graph_definitions") or []
+    _source_cfg = source_reader.source_lines_config_from_env()
+    if not source_definitions and _source_cfg["enabled"]:
+        source_definitions = code_map_definitions(
+            request.message,
+            search_results or [],
+            workspace_ids,
+            max_definitions=_source_cfg["max_definitions"],
+            rerank_fn=_code_map_candidate_reranker(
+                user_id or "", primary_workspace_id or "", source_ip, user_agent,
+            ),
+        )
+    source_block = _source_lines_block(source_definitions)
     if source_block:
         context = f"{context}\n\n---\n\n{source_block}"
 

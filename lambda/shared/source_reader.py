@@ -33,7 +33,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
 from botocore.exceptions import ClientError
@@ -892,7 +893,7 @@ def slice_window(text: str, line: int, context_lines: int) -> Dict[str, Any]:
 def read_window(platform_info: Dict[str, Any], repo: str, file_path: str,
                 line: int, *, ref: Optional[str] = None,
                 context_lines: int = DEFAULT_CONTEXT_LINES,
-                symbol: str = "") -> Dict[str, Any]:
+                symbol: str = "", keep_text: bool = False) -> Dict[str, Any]:
     """Fetch ``file_path`` and return a window around ``line``.
 
     On success returns the window dict plus ``repo`` / ``file_path`` /
@@ -915,7 +916,10 @@ def read_window(platform_info: Dict[str, Any], repo: str, file_path: str,
         logger.error("read_source unexpected error: %s", exc, exc_info=True)
         return {"error": "read_source failed (see logs)"}
 
-    out = slice_window(raw.decode("utf-8", errors="replace"), line, context_lines)
+    text = raw.decode("utf-8", errors="replace")
+    out = slice_window(text, line, context_lines)
+    if keep_text:
+        out["text"] = text
     relocated_to_line = relocate(out["lines"], bare_name(symbol)) if symbol else None
     out.update({
         "repo": repo,
@@ -940,6 +944,56 @@ DEFAULT_MAX_BLOCK_CHARS = 24_000
 # Lines shown above the definition line, so a decorator or a comment
 # attached to the definition is not cut off.
 _LEADING_LINES = 2
+
+
+# A constant a definition uses but that is defined far from it (a module
+# constant at the top of the file) would otherwise be quoted by name with no
+# value. Names with an underscore only, so HS256 / GET / TTL do not count.
+_CONSTANT_NAME_RE = re.compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b")
+_MAX_CONSTANTS = 8
+_MAX_CONSTANT_CHARS = 300
+
+
+def _constant_definition_re(name: str) -> "re.Pattern[str]":
+    """An assignment of ``name`` at (near) top level: ``NAME = ...``,
+    ``NAME: int = ...``, ``export const NAME = ...``,
+    ``private static final long NAME = ...``, ``NAME := ...``."""
+    return re.compile(
+        r"^\s{0,4}(?:export\s+)?"
+        r"(?:(?:public|private|protected|internal|static|final|const|let|var|val|readonly)\s+)*"
+        r"(?:[\w<>\[\],.?]+\s+)?"
+        + re.escape(name)
+        + r"\s*(?::[^=]*)?:?=(?!=)"
+    )
+
+
+def constants_used(lines: List[Dict[str, Any]], text: str) -> List[Dict[str, Any]]:
+    """Definition lines, elsewhere in the same file, of the ALL_CAPS
+    constants that ``lines`` use. Same file only: a constant imported from
+    another module is not followed. At most ``_MAX_CONSTANTS``."""
+    shown = {e["line"] for e in lines}
+    names: Dict[str, None] = {}
+    for e in lines:
+        for name in _CONSTANT_NAME_RE.findall(e.get("text") or ""):
+            names.setdefault(name, None)
+    if not names:
+        return []
+    file_lines = text.splitlines()
+    out: List[Dict[str, Any]] = []
+    for name in names:
+        pattern = _constant_definition_re(name)
+        for number, line_text in enumerate(file_lines, 1):
+            if pattern.match(line_text):
+                if number not in shown:
+                    out.append({
+                        "name": name,
+                        "line": number,
+                        "text": line_text.rstrip()[:_MAX_CONSTANT_CHARS],
+                    })
+                break
+        if len(out) >= _MAX_CONSTANTS:
+            break
+    return out
 
 
 def _int_env(name: str, default: int, low: int, high: int) -> int:
@@ -1002,6 +1056,7 @@ def read_definition(definition: Dict[str, Any], *,
     window = read_window(
         platform_info, repo_full, file_path, line,
         ref=ref, context_lines=min(max_lines, MAX_CONTEXT_LINES), symbol=symbol,
+        keep_text=True,
     )
     if "error" in window:
         return {"symbol": symbol, "error": window["error"]}
@@ -1018,6 +1073,7 @@ def read_definition(definition: Dict[str, Any], *,
         "file_path": file_path,
         "ref": ref,
         "lines": lines,
+        "constants": constants_used(lines, window.get("text") or ""),
         "truncated": bool(lines) and lines[-1]["line"] < window["total_lines"]
                      and lines[-1]["line"] >= last,
     }
@@ -1038,6 +1094,77 @@ def read_definitions(definitions: List[Dict[str, Any]], *,
         if len(out) >= max_definitions:
             break
     return out
+
+
+_MAX_HEAD_FILES = 8
+"""Max distinct files fetched for definition heads in one call."""
+
+
+def _read_file_text(definition: Dict[str, Any]) -> Optional[str]:
+    """The file holding ``definition`` at the symbol graph's commit, or
+    None when it cannot be read. Never raises."""
+    workspace_id = definition.get("workspace_id", "")
+    site_repo = definition.get("repo", "")
+    file_path = definition.get("file_path", "")
+    if not (workspace_id and site_repo and file_path):
+        return None
+    try:
+        platform_info = resolve_platform(workspace_id)
+        if platform_info is None:
+            return None
+        repo_full, error = full_repo_for_platform(
+            workspace_id, site_repo, platform_info["platform"],
+        )
+        if error:
+            return None
+        ref = graph_sha_for_repo(workspace_id, site_repo)
+        raw = fetch_raw(platform_info, repo_full, file_path, ref=ref)
+        return raw.decode("utf-8", errors="replace")
+    except Exception as exc:  # noqa: BLE001 - a head is optional
+        logger.warning("definition head read failed for %s:%s: %s", site_repo, file_path, exc)
+        return None
+
+
+def definition_heads(definitions: List[Dict[str, Any]], *,
+                     max_lines: int = 8,
+                     max_files: int = _MAX_HEAD_FILES) -> Dict[int, str]:
+    """The first ``max_lines`` lines of each definition (its signature and
+    docstring), joined into one line, keyed by index into ``definitions``.
+
+    Each distinct file is fetched once, in parallel, at most ``max_files``
+    of them (the rest get no head). A stale anchor is relocated to the
+    symbol's name within a few lines, as ``read_definition`` does. Index
+    missing from the result means no head. Never raises.
+    """
+    by_file: Dict[Tuple[str, str, str], List[int]] = {}
+    for i, d in enumerate(definitions or []):
+        key = (d.get("workspace_id", ""), d.get("repo", ""), d.get("file_path", ""))
+        by_file.setdefault(key, []).append(i)
+    files = list(by_file)[:max_files]
+    if not files:
+        return {}
+    with ThreadPoolExecutor(max_workers=min(len(files), 4)) as executor:
+        texts = list(executor.map(
+            lambda key: _read_file_text(definitions[by_file[key][0]]), files,
+        ))
+    heads: Dict[int, str] = {}
+    for key, text in zip(files, texts):
+        if text is None:
+            continue
+        lines = text.splitlines()
+        for i in by_file[key]:
+            d = definitions[i]
+            try:
+                line = int(d.get("line") or 0)
+            except (TypeError, ValueError):
+                continue
+            if line < 1:
+                continue
+            near = slice_window(text, line, _LEADING_LINES)["lines"]
+            anchor = relocate(near, bare_name(d.get("symbol", ""))) or line
+            head = [ln.strip() for ln in lines[anchor - 1:anchor - 1 + max_lines]]
+            heads[i] = " ".join(h for h in head if h)
+    return heads
 
 
 def build_source_lines_block(windows: List[Dict[str, Any]], *,
@@ -1068,6 +1195,13 @@ def build_source_lines_block(windows: List[Dict[str, Any]], *,
             ref = (w.get("ref") or "")[:12] or "default branch"
             body = "\n".join(f"{e['line']:>5} | {e['text']}" for e in lines)
             more = "\n(window ends here; the definition continues)" if w.get("truncated") else ""
+            constants = w.get("constants") or []
+            if constants:
+                const_body = "\n".join(f"{c['line']:>5} | {c['text']}" for c in constants)
+                more += (
+                    f"\nConstants it uses, defined elsewhere in {w['file_path']}:"
+                    f"\n```\n{const_body}\n```"
+                )
             entry = (
                 f"\n\n### {w.get('symbol')} -- {w['repo']}:{w['file_path']}:"
                 f"{lines[0]['line']}-{lines[-1]['line']} @ {ref}\n```\n{body}\n```{more}"

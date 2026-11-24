@@ -275,6 +275,103 @@ retrieval contest more often, which raises the cost of that gap.
   per graph-firing turn, plus one token mint per host. No change for
   turns where the graph does not fire.
 
+## v1.3: Source lines when the question names no symbol
+
+### Context
+
+v1.2 reads source only when hybrid retrieval resolves a symbol the
+question names. A question that names behavior instead of a function
+("how do magic links work, what is in the token, how long is it
+valid") resolves nothing, so no code was read. Code is indexed only as
+code-maps, and code-maps omit literal values (ADR-027), so the only
+retrieved text stating those values was documentation. A stale doc
+then supplied the literals. The prompt rule made the model label them
+doc-sourced, but it could not settle a disagreement between two docs,
+because the code that settles it was never in the context.
+
+The top code-map hits for such a question already name the functions
+that implement the behavior: the auth handler summary names
+`create_magic_token`, `verify_magic_token` and `_claim_magic_token_jti`.
+
+### Decision
+
+When the graph lane returns no definition sites, chat derives them
+from the top code-map hits (`hybrid_augment.code_map_definitions`):
+
+1. Take the top 10 code-map hits (by the merged ranking) whose workspace
+   the caller searched. The summary naming the function that holds the
+   answer is often not in the top three.
+2. Extract snake_case and camelCase names from each hit's summary text.
+3. Keep names that share at least one word with the question (plurals
+   folded, stopwords dropped). Rank first by how many question words
+   the name shares, so a name matching one incidental word ("app") never
+   beats one matching two. Break ties by rarity: each shared word counts
+   1 / (number of candidates containing it), so a topic word every
+   candidate shares ("magic" in a magic-link question) counts for little
+   and an attribute word few share ("token") decides. Remaining ties go
+   to the larger share of the name's words matched, then to order of
+   appearance.
+4. Without a reranker, resolve names in that order (at most 6) through
+   the bare-name index, taking the first definition that lives in the
+   hit's own repo and is not under a test path, until enough are found.
+5. With reranking enabled, resolve the top 20 of that ranking the same
+   way first, dropping names that do not resolve (a variable like
+   `access_token` must never take a read slot). Then rerank the resolved
+   names once against the whole question with the reranker chat already
+   uses (Cohere Rerank), each judged on the summary sentences that
+   mention it plus the first 8 lines of its definition: signature and
+   docstring, read from the repository once per file (at most 8 files,
+   in parallel). Take the top of that order. Word statistics cannot
+   tell the topic of a question ("magic link") from what is asked about
+   it ("token", "how long"), and a summary often names the function
+   holding the answer only in passing ("builds the token with
+   `create_magic_token`"); its docstring ("Create a magic link JWT
+   (1-hour expiry, single-use enforced via jti)") says what it does.
+   Replaying chat's retrieval for four multi-part questions against the
+   live index, asks answered by the functions read rose from 6 of 12
+   (words alone) and 8 of 12 (rerank on summary text, whole question or
+   one rerank per ask) to 9 of 12. Splitting the question into asks
+   added nothing once the definition head was in. If the heads cannot
+   be read, the rerank runs on summary text alone; if the rerank fails,
+   the step 3 order stands.
+6. Feed the result to the same reader as v1.2, under the same
+   `chat_source_max_symbols` and `chat_source_lines_per_symbol` caps
+   and the same `chat_source_lines_enabled` kill switch. Every window
+   (this path and the v1.2 graph path, which share the reader) also
+   carries the definition lines of the ALL_CAPS constants it uses that
+   are defined elsewhere in the same file (up to 8), so a value set at
+   module top (`MAGIC_LINK_EXPIRY = 3600` at line 45, used at line 644)
+   is quoted rather than named. Same file only: the symbol graph has no
+   facts for module constants, and an imported constant is not
+   followed.
+
+It makes DynamoDB reads, at most 8 file reads and one rerank call (no
+LLM call), and it is fail-soft: a rerank error keeps the word ranking,
+and any other error yields no definitions, so the turn answers as before.
+
+### v1.3 Consequences
+
+- **"Code wins" no longer depends on the question naming a function.**
+  Behavior-shaped questions get the implementing functions' real lines
+  whenever a top code-map hit names them.
+- **Selection is lexical.** A function whose name shares no word with
+  the question is not chosen, even when it holds the answer. The cap of
+  3 definitions can also leave a relevant helper out. Both fail toward
+  the v1.2 behavior: the value is reported as needing a check in
+  source, not guessed.
+- **Code-map metadata does not record covered files or symbols.** Names
+  come from summary prose. Recording each code-map's file paths and top
+  defined symbols at generation time would make the mapping exact and
+  is deferred to the next code-map regeneration (ADR-027 v1.3).
+- **Cost.** Only on turns where the graph lane found nothing. Without
+  a reranker: at most 6 bare-name lookups plus definitions lookups. With
+  one: up to 20 of each, at most 8 file reads and one rerank call, which
+  adds roughly a second or two before synthesis starts.
+- **Candidates still come from names that share a question word.** In
+  the replay, the 3 asks still missed needed a function sharing no word
+  with the question (`_process_record` for "how many times is a file
+  retried") or one no top hit names. Ranking cannot fix either.
+
 ## Version History
 
 - v1.0: MCP `read_source` tool, GitHub via the workspace's App installation.
@@ -282,3 +379,6 @@ retrieval contest more often, which raises the cost of that gap.
 - v1.2 (2026-11-22): Shared `source_reader` module; chat attaches source
   lines for graph-matched symbols server-side; the chat and RAG prompts
   name the `SOURCE LINES` block instead of a tool they do not have.
+- v1.3 (2026-11-23): When the question names no symbol, chat derives
+  definition sites from the top code-map hits and attaches their source
+  lines.

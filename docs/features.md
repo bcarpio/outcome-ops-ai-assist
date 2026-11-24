@@ -93,10 +93,13 @@ Keep entries terse — this is the index, not the spec.
   graph, chat reads the real lines of its definition at the graph's
   commit and adds them to the context as a `SOURCE LINES` block, so exact
   error codes, messages and field names come from code, not from a
-  summary. Shared reader `shared/source_reader.py` (also behind the MCP
-  `read_source` tool). Tfvars `chat_source_lines_enabled` (kill switch),
+  summary. When the question names no symbol, chat takes the functions
+  the top code-map hits name and that share words with the question
+  (`hybrid_augment.code_map_definitions`). Shared reader
+  `shared/source_reader.py` (also behind the MCP `read_source` tool).
+  Tfvars `chat_source_lines_enabled` (kill switch),
   `chat_source_lines_per_symbol` (80), `chat_source_max_symbols` (3).
-  ADR-030 v1.2.
+  ADR-030 v1.2, v1.3.
 - **Streaming chat UI** — `lambda/chat` over Lambda Web Adapter,
   NDJSON event stream, citation rendering, file attachments.
 - **Multi-workspace search** — chat can span workspaces the user has

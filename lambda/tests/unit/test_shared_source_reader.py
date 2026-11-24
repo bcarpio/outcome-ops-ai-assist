@@ -251,6 +251,136 @@ class TestReadDefinition:
         assert out["truncated"] is False
 
 
+    def test_constants_defined_elsewhere_in_the_file_come_along(self):
+        text = "\n".join(
+            ["import os", "MAGIC_LINK_EXPIRY = 3600  # 1 hour", "HS256 = 1"]
+            + ["x"] * 7
+            + ["def f():", "    exp = now + MAGIC_LINK_EXPIRY", "    alg = HS256"]
+        ) + "\n"
+        with patch.object(source_reader, "resolve_platform", return_value=GITHUB_INFO), \
+                patch.object(source_reader, "full_repo_for_platform", return_value=("o/r", None)), \
+                patch.object(source_reader, "graph_sha_for_repo", return_value=None), \
+                patch.object(source_reader, "fetch_raw", return_value=text.encode()):
+            out = source_reader.read_definition(_definition(line=11), max_lines=5)
+        assert out["constants"] == [
+            {"name": "MAGIC_LINK_EXPIRY", "line": 2, "text": "MAGIC_LINK_EXPIRY = 3600  # 1 hour"},
+        ]
+
+
+class TestConstantsUsed:
+    @staticmethod
+    def _lines(*texts, start=100):
+        return [{"line": start + i, "text": t} for i, t in enumerate(texts)]
+
+    @pytest.mark.parametrize("definition", [
+        "MAX_RETRIES = 3",
+        "MAX_RETRIES: int = 3",
+        "export const MAX_RETRIES = 3;",
+        "const MAX_RETRIES = 3",
+        "    private static final int MAX_RETRIES = 3;",
+        "MAX_RETRIES := 3",
+    ])
+    def test_finds_the_definition_across_languages(self, definition):
+        text = definition + "\n"
+        found = source_reader.constants_used(self._lines("retry(MAX_RETRIES)"), text)
+        assert [(c["name"], c["line"]) for c in found] == [("MAX_RETRIES", 1)]
+
+    def test_skips_uses_comparisons_and_names_already_shown(self):
+        text = "\n".join([
+            "if MAX_RETRIES == 3:",          # a comparison, not a definition
+            "        MAX_RETRIES = 9",        # too deeply nested to be top level
+            "SHOWN_ALREADY = 1",
+        ]) + "\n"
+        lines = self._lines("f(MAX_RETRIES, SHOWN_ALREADY)") + [{"line": 3, "text": "SHOWN_ALREADY = 1"}]
+        assert source_reader.constants_used(lines, text) == []
+
+    def test_no_constants_and_cap(self):
+        assert source_reader.constants_used(self._lines("return x"), "x = 1\n") == []
+        names = [f"C_{i}" for i in range(12)]
+        text = "\n".join(f"{n} = {i}" for i, n in enumerate(names)) + "\n"
+        found = source_reader.constants_used(self._lines(" ".join(names), start=500), text)
+        assert len(found) == source_reader._MAX_CONSTANTS
+        long_text = "LONG_ONE = '" + "x" * 1000 + "'\n"
+        found = source_reader.constants_used(self._lines("LONG_ONE"), long_text)
+        assert len(found[0]["text"]) == source_reader._MAX_CONSTANT_CHARS
+
+
+class TestDefinitionHeads:
+    TEXT = "\n".join([
+        "import os",
+        "",
+        "def create_magic_token(email):",
+        '    """Create a magic link JWT (1-hour expiry)."""',
+        "    return 1",
+        "",
+        "def other():",
+        "    pass",
+    ]) + "\n"
+
+    def _patched(self, fetch):
+        return (
+            patch.object(source_reader, "resolve_platform", return_value=GITHUB_INFO),
+            patch.object(source_reader, "full_repo_for_platform", return_value=("o/r", None)),
+            patch.object(source_reader, "graph_sha_for_repo", return_value="sha1"),
+            patch.object(source_reader, "fetch_raw", side_effect=fetch),
+        )
+
+    def test_one_fetch_per_file_and_heads_by_index(self):
+        fetch_calls = []
+
+        def _fetch(info, repo, path, ref=None):
+            fetch_calls.append(path)
+            return self.TEXT.encode()
+
+        defs = [
+            _definition(symbol="python:m::create_magic_token", line=3),
+            _definition(symbol="python:m::other", line=7),
+            _definition(symbol="python:m::gone", line=0),
+        ]
+        p1, p2, p3, p4 = self._patched(_fetch)
+        with p1, p2, p3, p4:
+            heads = source_reader.definition_heads(defs, max_lines=2)
+        assert fetch_calls == ["m.py"]
+        assert heads == {
+            0: 'def create_magic_token(email): """Create a magic link JWT (1-hour expiry)."""',
+            1: "def other(): pass",
+        }
+
+    def test_stale_anchor_relocates_to_the_name(self):
+        p1, p2, p3, p4 = self._patched(lambda *a, **k: self.TEXT.encode())
+        with p1, p2, p3, p4:
+            heads = source_reader.definition_heads(
+                [_definition(symbol="python:m::create_magic_token", line=2)], max_lines=1,
+            )
+        assert heads == {0: "def create_magic_token(email):"}
+
+    def test_unreadable_files_get_no_head_and_file_cap(self):
+        def _fetch(info, repo, path, ref=None):
+            if path == "bad.py":
+                raise RuntimeError("404")
+            return self.TEXT.encode()
+
+        defs = [_definition(file_path="bad.py", line=3), _definition(file_path="m.py", line=3),
+                _definition(file_path="later.py", line=3)]
+        p1, p2, p3, p4 = self._patched(_fetch)
+        with p1, p2, p3, p4:
+            heads = source_reader.definition_heads(defs, max_lines=1, max_files=2)
+        assert heads == {1: "def create_magic_token(email):"}
+        assert source_reader.definition_heads([]) == {}
+
+    @pytest.mark.parametrize("platform, repo_error", [(None, None), (GITHUB_INFO, "no row")])
+    def test_platform_or_repo_failures_give_no_head(self, platform, repo_error):
+        with patch.object(source_reader, "resolve_platform", return_value=platform), \
+                patch.object(source_reader, "full_repo_for_platform", return_value=("o/r", repo_error)):
+            assert source_reader.definition_heads([_definition(line=3)]) == {}
+        assert source_reader._read_file_text({"repo": ""}) is None
+
+    def test_bad_line_values_are_skipped(self):
+        p1, p2, p3, p4 = self._patched(lambda *a, **k: self.TEXT.encode())
+        with p1, p2, p3, p4:
+            assert source_reader.definition_heads([_definition(line="x")]) == {}
+
+
 class TestReadDefinitions:
     def test_dedupes_and_caps(self):
         defs = [_definition(), _definition(), _definition(line=60), _definition(line=70)]
@@ -289,6 +419,13 @@ class TestBuildSourceLinesBlock:
         assert "### python:m::f -- o/r:m.py:7-8 @ 0123456789ab" in block
         assert "    8 |     raise E('x')" in block
         assert "continues" not in block
+
+    def test_renders_constants_after_the_window(self):
+        block = source_reader.build_source_lines_block([_window(constants=[
+            {"name": "MAGIC_LINK_EXPIRY", "line": 45, "text": "MAGIC_LINK_EXPIRY = 3600"},
+        ])])
+        assert "Constants it uses, defined elsewhere in m.py:" in block
+        assert "   45 | MAGIC_LINK_EXPIRY = 3600" in block
 
     def test_truncated_and_unpinned(self):
         block = source_reader.build_source_lines_block([_window(ref=None, truncated=True)])

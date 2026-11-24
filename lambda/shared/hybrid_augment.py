@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from shared.router import classify_intent
 from shared.context_builder import (
@@ -29,7 +29,7 @@ from shared.context_builder import (
 
 logger = logging.getLogger(__name__)
 
-__all__ = ("augment_with_symbol_graph",)
+__all__ = ("augment_with_symbol_graph", "code_map_definitions")
 
 
 def _graph_retrieval_enabled() -> bool:
@@ -648,3 +648,364 @@ def augment_with_symbol_graph(
         )
 
     return out
+
+
+# ---------------------------------------------------------------------------
+# Code-map hits -> definition sites (ADR-030 v1.3). When the question names no
+# symbol, the graph lane has nothing to anchor on and chat would answer exact
+# values from documentation alone. The top code-map hits, though, name the
+# functions that implement the behavior being asked about. Pull those names
+# out of the summary text, keep the ones that share words with the question,
+# and resolve them to definition sites in the hit's own workspace and repo so
+# chat can attach their real source lines. DynamoDB reads, plus (with a
+# reranker) definition heads from the repository and one rerank call.
+# ---------------------------------------------------------------------------
+
+_CODE_MAP_HIT_LIMIT = 10
+"""How many of the top code-map hits to mine for symbol names. Wide on
+purpose: the summary that names the function holding the answer is often not
+in the top three, and ranking (shared-word count, then rarity) keeps the
+extra names from crowding it out."""
+
+_CODE_MAP_CANDIDATE_CAP = 6
+"""Max candidate names resolved per turn without a reranker; bounds the
+DynamoDB queries."""
+
+_RERANK_POOL = 20
+"""How many word-ranked candidates are resolved and sent to the reranker
+(one call). Resolved first, so a name that does not resolve (a variable
+like ``access_token``) never takes a read slot."""
+
+_SOURCE_HEAD_LINES = 8
+"""Lines of each candidate's definition (signature and docstring) added to
+what the reranker judges it by."""
+
+_RERANK_TEXT_CHARS = 1200
+"""Max text per candidate sent to the reranker (summary sentences plus the
+definition head)."""
+
+_RERANK_CONTEXT_CHARS = 600
+"""Max summary text, per candidate, that the reranker judges it by."""
+
+RerankFn = Callable[[str, List[Dict[str, Any]]], List[Dict[str, Any]]]
+"""(question, docs with a ``text`` key) -> the docs reordered, each carrying
+``rerank_score``. ``shared.retrieval.rerank`` has this shape once bound to a
+client and model; on failure it returns the docs unscored."""
+
+_CANONICALS_PER_CANDIDATE = 3
+"""Max canonical ids checked for one bare name (overloads across modules)."""
+
+_QUESTION_STOPWORDS = frozenset(
+    "the and for are what how does do did is was were with from this that "
+    "into when where which who why can could should would will about there "
+    "their them they its our your you get set use used using app".split()
+)
+
+_TEST_PATH_RE = re.compile(r"(^|/)(tests?|__tests__|spec)(/|$)|(^|/)test_[^/]*$|_test\.[a-z]+$|\.(test|spec)\.[a-z]+$")
+
+
+def _identifier_parts(name: str) -> List[str]:
+    """Split ``create_magic_token`` / ``createMagicToken`` into lowercase words."""
+    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", name)
+    return [p.lower() for p in re.split(r"[_\s]+", spaced) if p]
+
+
+def _stem(word: str) -> str:
+    """Crude plural fold so 'links' matches 'link' and 'tokens' matches 'token'."""
+    return word[:-1] if len(word) > 3 and word.endswith("s") else word
+
+
+def _question_words(question: str) -> set:
+    words = set()
+    for tok in re.findall(r"[A-Za-z][A-Za-z0-9]*", question or ""):
+        for part in _identifier_parts(tok):
+            if len(part) >= 3 and part not in _QUESTION_STOPWORDS:
+                words.add(_stem(part))
+    return words
+
+
+def _summary_identifiers(text: str) -> List[str]:
+    """Every snake_case / camelCase name in a code-map summary, in order.
+
+    Unlike the question backstop this is uncapped and skips dotted module
+    paths: code-map prose names functions by their bare name, and a dotted
+    path would not resolve through the bare-name index anyway.
+    """
+    seen: Dict[str, None] = {}
+    for tok in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", text or ""):
+        tok = tok.strip("_") if tok.startswith("__") and tok.endswith("__") else tok
+        if tok and "." not in tok and tok not in seen and _looks_like_identifier(tok):
+            seen[tok] = None
+    return list(seen)
+
+
+def _is_code_map_hit(hit: Dict[str, Any]) -> bool:
+    if hit.get("lane") == "code_map":
+        return True
+    if hit.get("lane") == "docs":
+        return False
+    try:
+        from shared.retrieval import CODE_MAP_TYPES  # type: ignore
+    except Exception:  # pragma: no cover - import failure
+        return False
+    return (hit.get("type") or "") in CODE_MAP_TYPES
+
+
+def _bare_repo(repo: str) -> str:
+    return (repo or "").rstrip("/").rsplit("/", 1)[-1]
+
+
+def code_map_definitions(
+    question: str,
+    search_results: List[Dict[str, Any]],
+    workspace_ids: Optional[List[str]],
+    *,
+    max_definitions: int = 3,
+    symbol_graph_table_name: Optional[str] = None,
+    code_maps_table_name: Optional[str] = None,
+    rerank_fn: Optional[RerankFn] = None,
+) -> List[Dict[str, Any]]:
+    """Definition sites for the functions the top code-map hits describe.
+
+    Returns dicts shaped like ``graph_definitions`` (``workspace_id``,
+    ``symbol``, ``repo``, ``file_path``, ``line``) so they feed straight into
+    ``shared.source_reader.read_definitions``. Never raises; an empty list
+    means nothing resolvable was found.
+
+    Scope: a hit is only mined when its workspace is one the caller searched,
+    and a name only counts when it resolves to a non-test definition in the
+    hit's own repo, so a summary that mentions another repo's helper cannot
+    pull that repo's source in.
+
+    ``rerank_fn``, when given, orders the candidates by how well the summary
+    text around each name answers the question. Without it, or if it fails,
+    the word ranking stands.
+    """
+    try:
+        return _code_map_definitions(
+            question,
+            search_results,
+            workspace_ids,
+            max_definitions=max_definitions,
+            symbol_graph_table_name=symbol_graph_table_name,
+            code_maps_table_name=code_maps_table_name,
+            rerank_fn=rerank_fn,
+        )
+    except Exception:  # noqa: BLE001 - fail-soft, chat must still answer
+        logger.exception("[hybrid.code_map_defs] failed; no source lines")
+        return []
+
+
+def _name_context(text: str, name: str) -> str:
+    """The summary sentences that mention ``name``, prefixed with it, capped
+    at ``_RERANK_CONTEXT_CHARS``: what the reranker judges the name by."""
+    pattern = re.compile(r"(?<![A-Za-z0-9_])" + re.escape(name) + r"(?![A-Za-z0-9_])")
+    picked: List[str] = []
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", text or ""):
+        if pattern.search(sentence):
+            picked.append(sentence.strip())
+    return f"{name}: {' '.join(picked)}"[:_RERANK_CONTEXT_CHARS]
+
+
+def _rerank_candidates(
+    question: str,
+    pool: List[Tuple[Any, ...]],
+    contexts: Dict[Tuple[str, str, str], str],
+    rerank_fn: RerankFn,
+) -> Optional[List[Tuple[Any, ...]]]:
+    """``pool`` reordered by the reranker, or None to keep the word order
+    (rerank raised, returned nothing, or fell back to unscored docs)."""
+    docs = [
+        {"text": contexts.get((c[-3], c[-2], c[-1]), c[-1]), "_idx": i}
+        for i, c in enumerate(pool)
+    ]
+    try:
+        ranked = rerank_fn(question, docs)
+    except Exception:  # noqa: BLE001 - fall back to the word ranking
+        logger.exception("[hybrid.code_map_defs] candidate rerank failed")
+        return None
+    if not ranked or any("rerank_score" not in d for d in ranked):
+        return None
+    order = [d["_idx"] for d in ranked if isinstance(d.get("_idx"), int)]
+    seen_idx = set(order)
+    order += [i for i in range(len(pool)) if i not in seen_idx]
+    return [pool[i] for i in order]
+
+
+def _code_map_definitions(
+    question: str,
+    search_results: List[Dict[str, Any]],
+    workspace_ids: Optional[List[str]],
+    *,
+    max_definitions: int,
+    symbol_graph_table_name: Optional[str],
+    code_maps_table_name: Optional[str],
+    rerank_fn: Optional[RerankFn] = None,
+) -> List[Dict[str, Any]]:
+    if max_definitions < 1 or not search_results or not workspace_ids:
+        return []
+    if not _graph_retrieval_enabled():
+        return []
+    symbol_graph_table = (
+        symbol_graph_table_name
+        if symbol_graph_table_name is not None
+        else os.environ.get("SYMBOL_GRAPH_TABLE", "")
+    ) or None
+    code_maps_table = (
+        code_maps_table_name
+        if code_maps_table_name is not None
+        else os.environ.get("CODE_MAPS_TABLE", "")
+    ) or None
+    if not symbol_graph_table:
+        return []
+    q_words = _question_words(question)
+    if not q_words:
+        return []
+    allowed = set(workspace_ids)
+
+    # 1. Candidate names from the top code-map hits that share at least one
+    #    word with the question.
+    matched: List[Tuple[int, str, str, str, set, int]] = []
+    contexts: Dict[Tuple[str, str, str], str] = {}
+    seen = set()
+    order = 0
+    hits = [h for h in search_results if _is_code_map_hit(h)][:_CODE_MAP_HIT_LIMIT]
+    for hit in hits:
+        meta = hit.get("metadata") or {}
+        ws = hit.get("workspace_id") or meta.get("workspace_id") or ""
+        repo = _bare_repo(meta.get("repo") or hit.get("repo") or "")
+        if ws not in allowed or not repo:
+            continue
+        text = hit.get("content") or hit.get("text") or meta.get("content") or ""
+        for name in _summary_identifiers(text):
+            key = (ws, repo, name)
+            if key in seen:
+                continue
+            seen.add(key)
+            parts = {_stem(p) for p in _identifier_parts(name)}
+            shared = parts & q_words
+            if shared:
+                matched.append((order, ws, repo, name, shared, len(parts)))
+                contexts[key] = _name_context(text, name)
+                order += 1
+
+    # 2. Rank by the number of question words the name shares, so a name
+    #    that matches one incidental word ("app") never outranks one that
+    #    matches two. Among names sharing as many words, a word every
+    #    candidate shares ("magic" in a magic-link question) says nothing
+    #    about which function holds the answer; a word only a few share
+    #    ("token") does. So break that tie by the sum of 1 / (number of
+    #    candidates containing the word), then by the share of the name's
+    #    words matched, then by earlier appearance.
+    doc_freq: Dict[str, int] = {}
+    for _o, _ws, _repo, _name, shared, _n in matched:
+        for w in shared:
+            doc_freq[w] = doc_freq.get(w, 0) + 1
+    scored = sorted(
+        (
+            -len(shared),
+            -sum(1.0 / doc_freq[w] for w in shared),
+            -len(shared) / n_parts,
+            o, ws, repo, name,
+        )
+        for o, ws, repo, name, shared, n_parts in matched
+    )
+    from shared.symbol_graph_reader import definitions  # type: ignore
+
+    def _resolve(ws: str, repo: str, name: str) -> Optional[Dict[str, Any]]:
+        """The name's first non-test definition in the hit's repo, or None."""
+        resolution = _fuzzy_resolve_symbol(ws, name, symbol_graph_table)
+        for canonical in list(resolution.canonicals)[:_CANONICALS_PER_CANDIDATE]:
+            sites = definitions(
+                ws,
+                canonical,
+                symbol_graph_table_name=symbol_graph_table,
+                code_maps_table_name=code_maps_table,
+            ).sites
+            site = next(
+                (
+                    s for s in sites
+                    if _bare_repo(getattr(s, "repo", "")) == repo
+                    and not _TEST_PATH_RE.search(getattr(s, "file_path", "") or "")
+                ),
+                None,
+            )
+            if site is not None:
+                return {
+                    "workspace_id": ws,
+                    "symbol": canonical,
+                    "repo": getattr(site, "repo", ""),
+                    "file_path": getattr(site, "file_path", ""),
+                    "line": getattr(site, "line", None),
+                }
+        return None
+
+    # 3. Without a reranker, resolve names in word order until enough
+    #    definitions are found.
+    out: List[Dict[str, Any]] = []
+    resolved_names: List[str] = []
+    ranking = "words"
+    heads_found = 0
+    if rerank_fn is None or len(scored) < 2:
+        for *_rank, ws, repo, name in scored[:_CODE_MAP_CANDIDATE_CAP]:
+            if len(out) >= max_definitions:
+                break
+            site = _resolve(ws, repo, name)
+            if site is not None:
+                out.append(site)
+                resolved_names.append(name)
+    else:
+        # 4. With a reranker: resolve the top of the word ranking first,
+        #    then rerank the resolved names against the whole question,
+        #    each judged on the summary sentences that mention it plus the
+        #    head of its definition (signature and docstring). Word overlap
+        #    cannot tell the topic ("magic link") from what is asked about it
+        #    ("token", "how long"), and a summary often mentions the function
+        #    that holds the answer only in passing ("builds the token with
+        #    create_magic_token"); its docstring ("Create a magic link JWT
+        #    (1-hour expiry, single-use enforced via jti)") says what it does.
+        pool: List[Tuple[Any, ...]] = []
+        sites: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+        for candidate in scored[:_RERANK_POOL]:
+            ws, repo, name = candidate[-3], candidate[-2], candidate[-1]
+            site = _resolve(ws, repo, name)
+            if site is not None:
+                pool.append(candidate)
+                sites[(ws, repo, name)] = site
+        heads = _definition_heads([sites[(c[-3], c[-2], c[-1])] for c in pool])
+        heads_found = sum(1 for h in heads.values() if h)
+        rerank_texts = {
+            (c[-3], c[-2], c[-1]): (
+                contexts.get((c[-3], c[-2], c[-1]), c[-1])
+                + (f" | {heads[i]}" if heads.get(i) else "")
+            )[:_RERANK_TEXT_CHARS]
+            for i, c in enumerate(pool)
+        }
+        ordered = pool
+        if len(pool) > 1:
+            reordered = _rerank_candidates(question, pool, rerank_texts, rerank_fn)
+            if reordered is not None:
+                ordered = reordered
+                ranking = "rerank"
+        for c in ordered[:max_definitions]:
+            out.append(sites[(c[-3], c[-2], c[-1])])
+            resolved_names.append(c[-1])
+    print(
+        f"[SOURCE] code-map fallback: hits={len(hits)} ranking={ranking} "
+        f"candidates={[c[-1] for c in scored[:_RERANK_POOL]]} "
+        f"heads={heads_found} resolved={resolved_names}"
+    )
+    return out
+
+
+def _definition_heads(sites: List[Dict[str, Any]]) -> Dict[int, str]:
+    """Signature-and-docstring text per site index; empty where the file
+    could not be read. Never raises: the rerank still runs on the summary
+    text alone."""
+    try:
+        from shared.source_reader import definition_heads  # type: ignore
+
+        return definition_heads(sites, max_lines=_SOURCE_HEAD_LINES)
+    except Exception:  # noqa: BLE001 - fail-soft, rerank on summaries alone
+        logger.exception("[hybrid.code_map_defs] definition heads failed")
+        return {}
