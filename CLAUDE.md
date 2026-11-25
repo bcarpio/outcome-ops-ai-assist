@@ -146,6 +146,18 @@ should change (e.g. a Fargate task-def image bump after an SSM tag moved), say w
 single change the operator should expect to see in the plan and to stop if the plan
 shows more — do NOT hand over a `-target` command to make it "quick."
 
+**Deploy lifecycle: branch first, merge last.** Feature work is deployed and
+live-tested from its branch before the PR merges:
+
+1. Push the feature branch and open the PR.
+2. The operator runs a full `terraform apply` from that branch against the
+   sandbox (`prd.tfvars`).
+3. Live-test; fixes go on the same branch and are redeployed from it.
+4. Merge only after the PR's "Live:" test-plan item is checked, then pull main.
+
+Deploy instructions in a PR target the branch, not main. Never switch branches
+while an apply from the current branch is running.
+
 ### The Backlog Lives in GitHub Issues (ADR-062)
 
 - Planned work, bugs, follow-ups and tech debt are **GitHub Issues** (Backlog item

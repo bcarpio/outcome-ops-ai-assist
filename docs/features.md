@@ -94,8 +94,11 @@ Keep entries terse — this is the index, not the spec.
   commit and adds them to the context as a `SOURCE LINES` block, so exact
   error codes, messages and field names come from code, not from a
   summary. When the question names no symbol, chat takes the functions
-  the top code-map hits name and that share words with the question
-  (`hybrid_augment.code_map_definitions`). Shared reader
+  the top code-map hits name and that share words with the question,
+  resolves them in the graph, and reranks them (Cohere, one call) on
+  their summary plus the first lines of each definition
+  (`hybrid_augment.code_map_definitions`). File-level constants a window
+  uses (for example an expiry value) are quoted below it. Shared reader
   `shared/source_reader.py` (also behind the MCP `read_source` tool).
   Tfvars `chat_source_lines_enabled` (kill switch),
   `chat_source_lines_per_symbol` (80), `chat_source_max_symbols` (3).
